@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);1591</NoWarn>
+		<CodePage>65001</CodePage>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Hangfire.AspNetCore" Version="1.8.9" />
+		<PackageReference Include="Hangfire.SqlServer" Version="1.8.9" />
+		<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+		<PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+		<PackageReference Include="Serilog.Expressions" Version="5.0.0" />
+		<PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+		<PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\LPS.APS.Application\LPS.APS.Application.csproj" />
+		<ProjectReference Include="..\LPS.APS.Engine\LPS.APS.Engine.csproj" />
+		<ProjectReference Include="..\LPS.APS.Scheduling\LPS.APS.Scheduling.csproj" />
+		<ProjectReference Include="..\LPS.APS.Shared\LPS.APS.Shared.csproj" />
+	</ItemGroup>
+</Project>

@@ -1,0 +1,10 @@
+# 编译目录
+bin/
+obj/
+.vs/
+*.exe
+*.dll
+*.log
+*.zip
+*.rar
+*.bak

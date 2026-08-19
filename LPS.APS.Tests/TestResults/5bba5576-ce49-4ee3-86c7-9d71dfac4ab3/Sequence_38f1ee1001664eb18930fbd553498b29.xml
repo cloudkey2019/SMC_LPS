@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<TestSequence>
+  <Test Name="LPS.APS.Tests.Integration.FrozenStrategySnapshotProviderIntegrationTests.GetFrozenStrategySnapshotAsync_真实数据库_完整装配成功" DisplayName="LPS.APS.Tests.Integration.FrozenStrategySnapshotProviderIntegrationTests.GetFrozenStrategySnapshotAsync_真实数据库_完整装配成功" Source="D:\DEMO\lps\LPS.APS.Tests\bin\Debug\net8.0\LPS.APS.Tests.dll" Completed="False" />
+</TestSequence>

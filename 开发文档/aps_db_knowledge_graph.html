@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>APS 数据库知识图谱</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Microsoft YaHei',sans-serif;background:#0f1117;color:#e0e6f0;height:100vh;display:flex;flex-direction:column}
+#hdr{padding:10px 18px;background:#1a1d2e;border-bottom:1px solid #2d3150;display:flex;align-items:center;gap:14px;flex-shrink:0}
+#hdr h1{font-size:17px;color:#7eb8f7;white-space:nowrap}
+#legend{display:flex;gap:10px;flex-wrap:wrap;margin-left:auto}
+.ld{display:flex;align-items:center;gap:5px;font-size:11px}
+.ldot{width:10px;height:10px;border-radius:50%}
+#tb{padding:7px 14px;background:#13162a;border-bottom:1px solid #2d3150;display:flex;gap:8px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+#search{background:#1e2140;border:1px solid #3a3f6b;color:#e0e6f0;padding:5px 10px;border-radius:5px;width:220px;font-size:12px}
+#search:focus{outline:none;border-color:#7eb8f7}
+.fb{background:#1e2140;border:1px solid #3a3f6b;color:#a0a8c8;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px}
+.fb.on{background:#2d4070;border-color:#7eb8f7;color:#7eb8f7}
+#tip{font-size:11px;color:#505870;margin-left:auto}
+#main{display:flex;flex:1;overflow:hidden}
+#gc{flex:1;position:relative;min-height:0}
+#network{width:100%;height:100%}
+#dp{width:0;background:#1a1d2e;border-left:0px solid #2d3150;overflow:hidden;flex-shrink:0;transition:width .2s,border-width .2s;display:flex;flex-direction:column}
+#dp.open{width:360px;border-left-width:1px}
+#dph{padding:12px 14px;background:#13162a;border-bottom:1px solid #2d3150;display:flex;justify-content:space-between;align-items:flex-start;flex-shrink:0}
+#pt{font-size:14px;font-weight:bold;color:#7eb8f7}
+#pdb{font-size:10px;color:#888;margin-top:2px}
+#cpb{background:none;border:none;color:#888;cursor:pointer;font-size:18px;line-height:1}
+#cpb:hover{color:#e0e6f0}
+#dpb{padding:12px 14px;flex:1;overflow-y:auto}
+.st{font-size:10px;color:#7eb8f7;text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;border-bottom:1px solid #2d3150;padding-bottom:3px}
+.pu{font-size:12px;color:#b0b8d0;line-height:1.65}
+table.ct{width:100%;border-collapse:collapse;font-size:11px;margin-top:4px}
+table.ct th{color:#888;font-weight:normal;padding:4px 5px;text-align:left;border-bottom:1px solid #252840;background:#13162a;white-space:nowrap}
+table.ct td{padding:4px 5px;border-bottom:1px solid #1e2140;color:#c0c8e0;word-break:break-all;vertical-align:top}
+table.ct tr:hover td{background:#1e2240}
+.bpk{background:#1e3010;color:#8acc60;border:1px solid #2a4018;border-radius:3px;padding:1px 4px;font-size:9px}
+.bfk{background:#1e2a10;color:#f0b060;border:1px solid #2a3818;border-radius:3px;padding:1px 4px;font-size:9px}
+.ri{padding:5px 3px;font-size:11px;color:#a0a8c8;border-bottom:1px solid #1e2140;cursor:pointer}
+.ri:hover{color:#7eb8f7}
+</style>
+</head>
+<body>
+<div id="hdr">
+  <h1>🗄 APS 数据库知识图谱</h1>
+  <div id="legend">
+    <div class="ld"><div class="ldot" style="background:#4A90D9"></div>主数据</div>
+    <div class="ld"><div class="ldot" style="background:#E67E22"></div>计划/订单</div>
+    <div class="ld"><div class="ldot" style="background:#27AE60"></div>库存/供给</div>
+    <div class="ld"><div class="ldot" style="background:#8E44AD"></div>BOM处理</div>
+    <div class="ld"><div class="ldot" style="background:#2980B9"></div>ODS</div>
+    <div class="ld"><div class="ldot" style="background:#C0392B"></div>Auth</div>
+  </div>
+</div>
+<div id="tb">
+  <input id="search" type="text" placeholder="🔍 搜索表名…" oninput="onSearch(this.value)">
+  <button class="fb on" onclick="setFilter('all',this)">全部</button>
+  <button class="fb" onclick="setFilter('master',this)">主数据</button>
+  <button class="fb" onclick="setFilter('plan',this)">计划/订单</button>
+  <button class="fb" onclick="setFilter('inv',this)">库存/供给</button>
+  <button class="fb" onclick="setFilter('bom',this)">BOM处理</button>
+  <button class="fb" onclick="setFilter('ods',this)">ODS</button>
+  <button class="fb" onclick="setFilter('auth',this)">Auth</button>
+  <span id="tip">点击节点查看详情 · 滚轮缩放 · 拖拽平移</span>
+</div>
+<div id="main">
+  <div id="gc"><div id="network"></div></div>
+  <div id="dp">
+    <div id="dph">
+      <div><div id="pt">-</div><div id="pdb">-</div></div>
+      <button id="cpb" onclick="closePanel()">×</button>
+    </div>
+    <div id="dpb">
+      <div class="st">用途说明</div>
+      <div class="pu" id="ppurpose"></div>
+      <div class="st">字段列表</div>
+      <div id="pcols"></div>
+      <div class="st">关联表</div>
+      <div id="prels"></div>
+    </div>
+  </div>
+</div>
+<script>
+const TD={
+ ProductFamily:{db:'APS_Production·主数据',pu:'产品族维度（整机/气缸等），是分域排程核心维度，所有订单/物料/资源均归属某产品族。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'唯一代码'},{n:'Name',t:'NVARCHAR(200)',m:'名称'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ Factory:{db:'APS_Production·主数据',pu:'多工厂（CN/BJ/TJ/SH），支持跨厂协同排程与资源隔离。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'工厂代码'},{n:'Name',t:'NVARCHAR(200)',m:'名称'},{n:'TimeZone',t:'NVARCHAR(50)',m:'时区'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ Material:{db:'APS_Production·主数据',pu:'物料主数据，BOM/Routing/Order核心FK锚点。含LLC（低阶码）用于Kahn拓扑排序。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(100)',m:'物料编码'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'MaterialType',t:'NVARCHAR(50)',m:'FINISHED/SEMI/RAW'},{n:'LowLevelCode',t:'INT',m:'LLC，0=顶层'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ BOM:{db:'APS_Production·主数据',pu:'本地BOM父子装配关系，从ODS展开结果同步，支持SCD有效期管理。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ParentMaterialId',t:'INT',f:'fk',m:'父物料'},{n:'ChildMaterialId',t:'INT',f:'fk',m:'子物料'},{n:'Quantity',t:'DECIMAL(18,6)',m:'用量'},{n:'EffectiveFrom',t:'DATETIME2',m:'生效日期'},{n:'EffectiveTo',t:'DATETIME2',m:'失效日期'}]},
+ Resource:{db:'APS_Production·主数据',pu:'生产资源（机台/人工/产线），承载有限产能约束，排程的核心负荷单元。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'资源编码'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'ResourceType',t:'NVARCHAR(50)',m:'MACHINE/LABOR/LINE'},{n:'Capacity',t:'DECIMAL(10,4)',m:'基准产能/小时'}]},
+ ResourceCalendar:{db:'APS_Production·主数据',pu:'资源日历，定义每个资源每日可用时段（班次/停机/节假日），排程引擎直接消费。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ResourceId',t:'INT',f:'fk',m:'资源'},{n:'CalDate',t:'DATE',m:'日期'},{n:'ShiftCode',t:'NVARCHAR(50)',m:'班次代码'},{n:'StartTime',t:'TIME',m:'开始时间'},{n:'EndTime',t:'TIME',m:'结束时间'},{n:'IsWorking',t:'BIT',m:'是否工作'}]},
+ RoutingOperation:{db:'APS_Production·主数据',pu:'工序路由，定义物料在哪个资源上加工多长时间，是任务分解的模板。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'ResourceId',t:'INT',f:'fk',m:'资源'},{n:'StageId',t:'INT',f:'fk',m:'工段'},{n:'RunTimeMins',t:'DECIMAL(10,4)',m:'标准工时(分)'},{n:'Sequence',t:'INT',m:'工序顺序'}]},
+ StageDict:{db:'APS_Production·主数据',pu:'工段字典，定义制造工段层级（铸造/机加/装配等），是物料流转路径的节点。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'工段代码'},{n:'Name',t:'NVARCHAR(200)',m:'名称'},{n:'Level',t:'INT',m:'层级'},{n:'ParentId',t:'INT',f:'fk',m:'父工段'}]},
+ ProductionDepartment:{db:'APS_Production·主数据',pu:'生产部门，与工段关联，用于物料工段上下文（MaterialStageDeptContext）的部门维度。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'部门编码'},{n:'Name',t:'NVARCHAR(200)',m:'部门名称'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'}]},
+ MaterialStageDeptContext:{db:'APS_Production·主数据',pu:'物料工段部门上下文，SCD Type2，定义物料在哪个工段由哪个部门生产，解决跨部门产线共享问题。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'StageId',t:'INT',f:'fk',m:'工段'},{n:'DeptId',t:'INT',f:'fk',m:'部门'},{n:'ValidFrom',t:'DATETIME2',m:'生效'},{n:'ValidTo',t:'DATETIME2',m:'失效'},{n:'IsCurrent',t:'BIT',m:'当前有效'}]},
+ MaterialMapping:{db:'APS_Production·主数据',pu:'ERP物料码→APS物料码映射，SCD Type2，支持历史追溯。返回列表，不可盲目.First()。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ErpCode',t:'NVARCHAR(100)',m:'ERP物料码'},{n:'ApsMaterialId',t:'INT',f:'fk',m:'APS物料'},{n:'Priority',t:'INT',m:'优先级'},{n:'ValidFrom',t:'DATETIME2',m:'生效'},{n:'IsCurrent',t:'BIT',m:'当前有效'}]},
+ FenceConfig:{db:'APS_Production·主数据',pu:'冻结栅栏配置，定义产品族的订单冻结期（不可调整区间）。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'FenceType',t:'NVARCHAR(50)',m:'FROZEN/SLUSHY'},{n:'FenceDays',t:'INT',m:'冻结天数'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ CustomerCodeMap:{db:'APS_Production·主数据',pu:'客户代码→物料映射，将ERP客户代码转换为APS可识别的物料维度。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'CustomerCode',t:'NVARCHAR(100)',m:'客户代码'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'}]},
+ ProduceToFactoryMap:{db:'APS_Production·主数据',pu:'生产归属工厂映射，定义某物料应由哪个工厂生产（多工厂协同路由规则）。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'TargetFactoryId',t:'INT',f:'fk',m:'目标工厂'},{n:'Priority',t:'INT',m:'优先级'}]},
+ ScheduleRun:{db:'APS_Production·计划/订单',pu:'每次排程触发记录，追踪排程运行状态与耗时。PlanVersion的父表。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'RunType',t:'NVARCHAR(50)',m:'FULL/INCREMENTAL'},{n:'Status',t:'NVARCHAR(20)',m:'Running/Done/Failed'},{n:'StartedAt',t:'DATETIME2',m:'开始时间'},{n:'FinishedAt',t:'DATETIME2',m:'完成时间'}]},
+ PlanVersion:{db:'APS_Production·计划/订单',pu:'排程计划版本，每次排程产生一个版本，分区键。Order/Task/Pegging/Summary都按此分区。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'ScheduleRunId',t:'INT',f:'fk',m:'排程运行'},{n:'VersionName',t:'NVARCHAR(100)',m:'版本名称'},{n:'IsPublished',t:'BIT',m:'是否发布'},{n:'CreatedAt',t:'DATETIME2',m:'创建时间'}]},
+ Scenario:{db:'APS_Production·计划/订单',pu:'情景分析，同一排程运行下的多方案对比（悲观/基准/乐观等）。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'ScenarioName',t:'NVARCHAR(100)',m:'情景名'},{n:'ScenarioType',t:'NVARCHAR(50)',m:'BASELINE/PESSIMISTIC/OPTIMISTIC'}]},
+ ERP_Order_Staging:{db:'APS_Production·计划/订单',pu:'从ERP同步的原始订单暂存表（防腐层入口），数据质量未经验证，经ETL转换为Order_Canonical。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ErpOrderNo',t:'NVARCHAR(100)',m:'ERP订单号'},{n:'MaterialCode',t:'NVARCHAR(100)',m:'物料编码'},{n:'Quantity',t:'DECIMAL(18,4)',m:'数量'},{n:'DueDate',t:'DATETIME2',m:'交期'},{n:'SyncedAt',t:'DATETIME2',m:'同步时间'}]},
+ Order_Canonical:{db:'APS_Production·计划/订单',pu:'规范化订单，ERP订单经数据清洗/物料映射后的标准形态，是APS排程的需求输入。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'CanonicalOrderNo',t:'NVARCHAR(100)',m:'规范订单号'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'Quantity',t:'DECIMAL(18,4)',m:'数量'},{n:'DueDate',t:'DATETIME2',m:'交期'},{n:'Priority',t:'INT',m:'优先级'}]},
+ Order:{db:'APS_Production·计划/订单',pu:'排程订单，按PlanVersionId分区。排程引擎的核心计算对象，含计划开工/完工时间。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'Quantity',t:'DECIMAL(18,4)',m:'数量'},{n:'PlannedStart',t:'DATETIME2',m:'计划开始'},{n:'PlannedEnd',t:'DATETIME2',m:'计划完成'},{n:'DueDate',t:'DATETIME2',m:'交期'}]},
+ Task:{db:'APS_Production·计划/订单',pu:'工序任务，订单分解后的最小排程单元，绑定资源与工序，含具体开工完工时间。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'OrderId',t:'BIGINT',f:'fk',m:'所属订单'},{n:'ResourceId',t:'INT',f:'fk',m:'资源'},{n:'OperationId',t:'INT',f:'fk',m:'工序'},{n:'PlannedStart',t:'DATETIME2',m:'计划开始'},{n:'PlannedEnd',t:'DATETIME2',m:'计划完成'},{n:'Sequence',t:'INT',m:'顺序'}]},
+ Pegging:{db:'APS_Production·计划/订单',pu:'需求供给配对（Pegging），记录哪个供应订单满足哪个需求订单的多少数量，支持订单追溯。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'SupplyOrderId',t:'BIGINT',f:'fk',m:'供应订单'},{n:'DemandOrderId',t:'BIGINT',f:'fk',m:'需求订单'},{n:'PeggedQty',t:'DECIMAL(18,4)',m:'配对数量'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'}]},
+ OrderBomRequestLink:{db:'APS_Production·计划/订单',pu:'订单与BOM展开请求的关联表，追踪每个订单触发了哪个BOM请求，支持展开结果回写。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'OrderId',t:'BIGINT',f:'fk',m:'订单'},{n:'RequestId',t:'BIGINT',f:'fk',m:'BOM请求'},{n:'CreatedAt',t:'DATETIME2',m:'创建时间'}]},
+ Domain_Dependency:{db:'APS_Production·计划/订单',pu:'跨域计算依赖图，定义各产品族间的排程计算顺序（Kahn拓扑排序输入），由3号位02:00任务消费。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'FromDomain',t:'NVARCHAR(50)',m:'上游域'},{n:'ToDomain',t:'NVARCHAR(50)',m:'下游域'},{n:'DependencyType',t:'NVARCHAR(50)',m:'依赖类型'}]},
+ OrderScheduleSummary:{db:'APS_Production·计划/订单',pu:'订单排程汇总，每订单一行的宽表，存储排程结果摘要（延迟天数/满足率/优先级分数），供前端报表直接消费。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'OrderId',t:'BIGINT',f:'fk',m:'订单'},{n:'DelayDays',t:'INT',m:'延迟天数'},{n:'FulfillmentRate',t:'DECIMAL(5,4)',m:'满足率'},{n:'PriorityScore',t:'DECIMAL(10,4)',m:'优先级分'}]},
+ ResourceLoadSummary:{db:'APS_Production·计划/订单',pu:'资源负荷汇总，每资源每日一行，展示负荷率/是否瓶颈，供看板和优化决策使用。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ResourceId',t:'INT',f:'fk',m:'资源'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'LoadDate',t:'DATE',m:'日期'},{n:'LoadRate',t:'DECIMAL(5,4)',m:'负荷率'},{n:'IsBottleneck',t:'BIT',m:'是否瓶颈'}]},
+ InventoryFact_ERP:{db:'APS_Production·库存/供给',pu:'ERP原始库存事实表，六层库存架构事实层入口，经同步流程进入候选→规则→明细→余额链路。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'WarehouseCode',t:'NVARCHAR(50)',m:'仓库编码'},{n:'OnHandQty',t:'DECIMAL(18,4)',m:'现有量'},{n:'SyncedAt',t:'DATETIME2',m:'同步时间'}]},
+ InventoryFact_MES:{db:'APS_Production·库存/供给',pu:'MES原始库存事实表，反映车间库位数量（含WIP），与ERP事实表共同作为库存架构事实层。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'Location',t:'NVARCHAR(100)',m:'车间库位'},{n:'OnHandQty',t:'DECIMAL(18,4)',m:'现有量'},{n:'SyncedAt',t:'DATETIME2',m:'同步时间'}]},
+ InventoryAvailabilityRule:{db:'APS_Production·库存/供给',pu:'库存可用性规则，白名单模式定义哪些仓库库存可用于排程扣减及优先级。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'WarehouseCode',t:'NVARCHAR(50)',m:'仓库'},{n:'IsAvailable',t:'BIT',m:'是否可用'},{n:'Priority',t:'INT',m:'扣减优先级'}]},
+ InventoryBalance:{db:'APS_Production·库存/供给',pu:'库存余额汇聚表（六层第5层），由明细汇总生成，排程引擎直接消费此表。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'OnHandQty',t:'DECIMAL(18,4)',m:'可用在手量'},{n:'AllocatedQty',t:'DECIMAL(18,4)',m:'已分配量'},{n:'BatchNo',t:'NVARCHAR(50)',m:'快照批次'}]},
+ SupplyFact_Pipeline:{db:'APS_Production·库存/供给',pu:'管道供给（在途库存），与现货六层并行，来源ERP厂间在途视图。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'SupplyType',t:'NVARCHAR(50)',m:'INTERPLANT_IN_TRANSIT/VMI'},{n:'Quantity',t:'DECIMAL(18,4)',m:'数量'},{n:'ETA',t:'DATETIME2',m:'预计到货'},{n:'AvailableTime',t:'DATETIME2',m:'可用时间'}]},
+ APS_BOM_RAW:{db:'APS_Production·BOM处理',pu:'从MES/ODS导入的原始BOM边表，BOM展开流程起点，每行代表一条父子物料依赖边。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'ParentMaterialCode',t:'NVARCHAR(50)',m:'父物料'},{n:'ChildMaterialCode',t:'NVARCHAR(50)',m:'子物料'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'UsageQty',t:'DECIMAL(18,4)',m:'用量'},{n:'Level',t:'INT',m:'BOM层级'},{n:'IsActive',t:'BIT',m:'是否有效'}]},
+ APS_BOM_STAGE_PATH_RAW:{db:'APS_Production·BOM处理',pu:'BOM展开后工序路径原始宽表，每行代表物料从当前到目标工段的完整路径，供排程引擎计算物料可用时间。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'FromStage',t:'NVARCHAR(50)',m:'起始工段'},{n:'ToStage',t:'NVARCHAR(50)',m:'目标工段'},{n:'TotalLeadTimeDays',t:'DECIMAL(10,2)',m:'全路径前置期'},{n:'BatchId',t:'INT',m:'生成批次'}]},
+ StageProgressSnapshot:{db:'APS_Production·BOM处理',pu:'在制品工段进度快照，记录每个订单在各工段的实时进度，供BOM展开引擎修正WIP剩余前置时间。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'OrderId',t:'BIGINT',f:'fk',m:'订单'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'CurrentStage',t:'NVARCHAR(50)',m:'当前工段'},{n:'CompletedQty',t:'DECIMAL(18,4)',m:'已完成数量'},{n:'SnapshotTime',t:'DATETIME2',m:'快照时间'}]},
+ MESWorkOrderSnapshot:{db:'APS_Production·BOM处理',pu:'MES工单快照，记录工单在各工序的状态和完工时间，配合StageProgressSnapshot提供精确WIP位置。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MesWorkOrderNo',t:'NVARCHAR(50)',m:'MES工单号'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'WorkCenter',t:'NVARCHAR(50)',m:'工作中心'},{n:'Status',t:'NVARCHAR(20)',m:'R/F/C'},{n:'ActualQty',t:'DECIMAL(18,4)',m:'实际完工量'},{n:'ExpectedFinishTime',t:'DATETIME2',m:'预计完工'}]},
+ MES_API_BOM_Request:{db:'ODS·MES_Integration',pu:'BOM展开API请求表，APS向MES发起展开计算时写入请求记录，状态机：Pending→Processing→Done/Failed。',cols:[{n:'RequestId',t:'BIGINT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'请求物料'},{n:'Quantity',t:'DECIMAL(18,4)',m:'需求数量'},{n:'Status',t:'NVARCHAR(20)',m:'Pending/Done/Failed'},{n:'CreatedAt',t:'DATETIME2',m:'请求时间'}]},
+ MES_API_BOM_Request_Detail:{db:'ODS·MES_Integration',pu:'BOM展开请求明细，由MES回写展开节点结果（子物料、层级、前置期），供APS排程引擎消费。',cols:[{n:'DetailId',t:'BIGINT',f:'pk'},{n:'RequestId',t:'BIGINT',f:'fk',m:'请求'},{n:'ParentMaterialCode',t:'NVARCHAR(50)',m:'父物料'},{n:'ChildMaterialCode',t:'NVARCHAR(50)',m:'子物料'},{n:'Level',t:'INT',m:'层级'},{n:'UsageQty',t:'DECIMAL(18,4)',m:'用量'},{n:'LeadTimeDays',t:'DECIMAL(10,2)',m:'前置天数'}]},
+ MES_APS_BOM_Workset:{db:'ODS·MES_Integration',pu:'BOM工作集，批量BOM计算任务容器，一个Workset包含多条展开请求，生命周期由应用层管理。',cols:[{n:'WorksetId',t:'INT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'WorksetName',t:'NVARCHAR(100)',m:'工作集名称'},{n:'Status',t:'NVARCHAR(20)',m:'工作集状态'},{n:'CreatedAt',t:'DATETIME2',m:'创建时间'},{n:'FinishedAt',t:'DATETIME2',m:'完成时间'}]},
+ MES_APS_BOM_Workset_Issues:{db:'ODS·MES_Integration',pu:'BOM工作集异常记录，收集展开过程中的数据质量问题（缺BOM/循环依赖等），供应用层异常处理决策。',cols:[{n:'IssueId',t:'BIGINT',f:'pk'},{n:'WorksetId',t:'INT',f:'fk',m:'工作集'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'问题物料'},{n:'IssueType',t:'NVARCHAR(50)',m:'问题类型'},{n:'IssueDetail',t:'NVARCHAR(500)',m:'问题描述'}]},
+ MES_APS_BOM_Workset_StageDetail:{db:'ODS·MES_Integration',pu:'工作集各工段明细，记录物料在每个工段的前置时间，是排程引擎计算任务开始时间的前置依据。',cols:[{n:'DetailId',t:'BIGINT',f:'pk'},{n:'WorksetId',t:'INT',f:'fk',m:'工作集'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'Stage',t:'NVARCHAR(50)',m:'工段代码'},{n:'LeadTimeDays',t:'DECIMAL(10,2)',m:'前置期'},{n:'Sequence',t:'INT',m:'工段顺序'}]},
+ MES_BOM_Edge_Active:{db:'ODS·MES_Integration',pu:'当前有效BOM边契约视图，防腐层核心输出，物化自MES原始BOM，供APS排程引擎直接消费，数据质量已保证。',cols:[{n:'EdgeId',t:'BIGINT',f:'pk'},{n:'ParentMaterialCode',t:'NVARCHAR(50)',m:'父物料'},{n:'ChildMaterialCode',t:'NVARCHAR(50)',m:'子物料'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'UsageQty',t:'DECIMAL(18,4)',m:'用量'},{n:'EffectiveFrom',t:'DATETIME2',m:'生效日期'},{n:'IsActive',t:'BIT',m:'是否有效'}]},
+ User:{db:'APS_Auth',pu:'系统用户，存储登录凭据（密码哈希）与账户状态，是RBAC体系主体，通过UserRole关联角色。EF Core管理。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Username',t:'NVARCHAR(50)',m:'登录名（唯一）'},{n:'PasswordHash',t:'NVARCHAR(256)',m:'BCrypt哈希'},{n:'DisplayName',t:'NVARCHAR(100)',m:'显示名'},{n:'IsActive',t:'BIT',m:'是否启用'},{n:'LastLoginAt',t:'DATETIME2',m:'最后登录'}]},
+ Role:{db:'APS_Auth',pu:'角色，权限分组定义，通过RolePermission关联权限集，通过UserRole授予用户，支持数据范围策略。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'RoleName',t:'NVARCHAR(50)',m:'角色名'},{n:'Description',t:'NVARCHAR(200)',m:'描述'},{n:'IsSystemRole',t:'BIT',m:'是否系统内置'}]},
+ Permission:{db:'APS_Auth',pu:'权限定义，记录所有可控操作（Resource+Action组合），由系统启动时自动扫描控制器Attribute注册。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Resource',t:'NVARCHAR(100)',m:'资源路径'},{n:'Action',t:'NVARCHAR(50)',m:'操作类型Read/Write/Delete'},{n:'Description',t:'NVARCHAR(200)',m:'描述'}]},
+ UserRole:{db:'APS_Auth',pu:'用户-角色多对多关联，一用户可拥有多角色，支持软删除（IsActive）。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'UserId',t:'INT',f:'fk',m:'用户'},{n:'RoleId',t:'INT',f:'fk',m:'角色'},{n:'AssignedAt',t:'DATETIME2',m:'授权时间'},{n:'IsActive',t:'BIT',m:'是否有效'}]},
+ RolePermission:{db:'APS_Auth',pu:'角色-权限多对多关联，定义每个角色拥有哪些操作权限。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'RoleId',t:'INT',f:'fk',m:'角色'},{n:'PermissionId',t:'INT',f:'fk',m:'权限'},{n:'GrantedAt',t:'DATETIME2',m:'授予时间'}]},
+ DataScopePolicy:{db:'APS_Auth',pu:'数据范围策略，定义角色的数据可见范围（工厂/产品族/全局），用于行级数据过滤防止跨工厂越权。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'RoleId',t:'INT',f:'fk',m:'角色'},{n:'ScopeType',t:'NVARCHAR(20)',m:'Global/Factory/ProductFamily'},{n:'ScopeValue',t:'NVARCHAR(200)',m:'范围值（逗号分隔ID）'}]},
+ AuditLog:{db:'APS_Auth',pu:'审计日志，记录所有关键操作，不可删除，按月分区，用于合规审计和问题追溯。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'UserId',t:'INT',f:'fk',m:'操作用户'},{n:'Action',t:'NVARCHAR(50)',m:'操作类型'},{n:'Resource',t:'NVARCHAR(100)',m:'资源路径'},{n:'OldValue',t:'NVARCHAR(MAX)',m:'变更前JSON'},{n:'NewValue',t:'NVARCHAR(MAX)',m:'变更后JSON'},{n:'CreatedAt',t:'DATETIME2',m:'操作时间'}]},
+ ApprovalFlow:{db:'APS_Auth',pu:'审批流程定义，声明哪类业务操作需要审批（如发布排程），是审批引擎模板。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'FlowName',t:'NVARCHAR(100)',m:'流程名称'},{n:'BusinessType',t:'NVARCHAR(50)',m:'绑定业务类型'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ ApprovalNode:{db:'APS_Auth',pu:'审批节点，定义审批流中每个节点（审批角色、顺序），一条流程含多个有序节点。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'FlowId',t:'INT',f:'fk',m:'流程'},{n:'Sequence',t:'INT',m:'节点顺序'},{n:'ApproverRoleId',t:'INT',f:'fk',m:'审批角色'},{n:'NodeType',t:'NVARCHAR(20)',m:'AND/OR'},{n:'TimeoutHours',t:'INT',m:'超时小时'}]},
+ ApprovalRule:{db:'APS_Auth',pu:'审批触发规则，定义某类业务操作（如发布排程）在何条件下触发审批流。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'FlowId',t:'INT',f:'fk',m:'流程定义'},{n:'TriggerCondition',t:'NVARCHAR(500)',m:'触发条件（JSON）'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ ApprovalRecord:{db:'APS_Auth',pu:'审批记录实例，每次触发审批时创建一条记录，跟踪当前状态与结果，关联发起人、流程定义和当前节点。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'FlowId',t:'INT',f:'fk',m:'流程定义'},{n:'InitiatorId',t:'INT',f:'fk',m:'发起人'},{n:'BusinessKey',t:'NVARCHAR(100)',m:'业务主键（如PlanVersionId）'},{n:'Status',t:'NVARCHAR(20)',m:'Pending/Approved/Rejected'},{n:'CurrentNodeId',t:'INT',f:'fk',m:'当前节点'},{n:'CreatedAt',t:'DATETIME2',m:'发起时间'},{n:'FinishedAt',t:'DATETIME2',m:'完成时间'}]},
+ UserDataScope:{db:'APS_Auth',pu:'用户数据范围，指定某用户可见的数据范围（工厂/产品族），是DataScopePolicy角色级策略的用户级覆写。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'UserId',t:'INT',f:'fk',m:'用户'},{n:'ScopeType',t:'NVARCHAR(20)',m:'Factory/ProductFamily'},{n:'ScopeValue',t:'NVARCHAR(200)',m:'范围值（逗号分隔ID）'},{n:'CreatedAt',t:'DATETIME2',m:'创建时间'}]},
+ RoleDataScope:{db:'APS_Auth',pu:'角色数据范围，指定角色级数据可见范围，与DataScopePolicy配合使用，支持细粒度行级数据隔离。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'RoleId',t:'INT',f:'fk',m:'角色'},{n:'ScopeType',t:'NVARCHAR(20)',m:'Factory/ProductFamily'},{n:'ScopeValue',t:'NVARCHAR(200)',m:'范围值'},{n:'CreatedAt',t:'DATETIME2',m:'创建时间'}]},
+ ResourceGroup:{db:'APS_Production·主数据',pu:'资源组，将同类资源聚合为可替换组，排程引擎先选组再选具体资源（Task.ResourceGroupId）。Task和Routing均可引用。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'资源组编码'},{n:'Name',t:'NVARCHAR(200)',m:'名称'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'ResourceType',t:'NVARCHAR(50)',m:'MACHINE/LABOR/LINE'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ Routing:{db:'APS_Production·主数据',pu:'工艺路线头表（v5.0前线性路由），定义物料的工序序列、标准工时和批量约束。v5.0已拆分为RoutingOperation+RoutingDependency图模型，本表为历史兼容保留。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'OperationSeq',t:'INT',m:'工序顺序'},{n:'OperationCode',t:'NVARCHAR(50)',m:'工序编码'},{n:'ResourceGroupId',t:'INT',f:'fk',m:'资源组'},{n:'StandardDuration',t:'DECIMAL(18,4)',m:'标准工时（分钟）'},{n:'EffectiveFrom',t:'DATE',m:'生效日期'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ RoutingDependency:{db:'APS_Production·主数据',pu:'工序依赖边表（v5.0新增），表达工序间有向依赖关系，支持并行/串行混合工艺图。与RoutingOperation配合构建DAG工艺图。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'ProductionDepartmentId',t:'INT',f:'fk',m:'生产部门'},{n:'RouteCode',t:'NVARCHAR(50)',m:'路径代码'},{n:'FromOperationCode',t:'NVARCHAR(50)',m:'前驱工序'},{n:'ToOperationCode',t:'NVARCHAR(50)',m:'后继工序'},{n:'DependencyType',t:'NVARCHAR(10)',m:'ES/SS/FF'},{n:'LagTime',t:'DECIMAL(18,4)',m:'延迟（分钟）'}]},
+ ProcessTypeDict:{db:'APS_Production·主数据',pu:'工艺类型字典，定义RoutingOperation.ProcessType字段的值域（铸造/机加/装配等）。辅助分组/报表，不参与核心排程计算。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'Code',t:'NVARCHAR(50)',m:'工艺类型码'},{n:'Name',t:'NVARCHAR(200)',m:'名称'},{n:'SortOrder',t:'INT',m:'排序'}]},
+ MaterialSupplyContext:{db:'APS_Production·主数据',pu:'物料供应上下文，定义物料在特定产品族+工厂下的供应策略（自制/外购/协同），供给链路规划依据。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'SupplyStrategy',t:'NVARCHAR(50)',m:'MAKE/BUY/TRANSFER'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ StageLeadTimeParam:{db:'APS_Production·主数据',pu:'工段前置期参数配置，定义物料在各工段的标准前置时间，供BOM展开引擎计算物料可用时间时使用。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'MaterialId',t:'INT',f:'fk',m:'物料'},{n:'StageCode',t:'NVARCHAR(50)',m:'工段代码'},{n:'LeadTimeDays',t:'DECIMAL(10,2)',m:'前置天数'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ InventorySupplyCandidate:{db:'APS_Production·库存/供给',pu:'库存六层架构第2层（候选层），从ERP/MES原始事实表合并后的候选库存，白名单规则筛选前的中间态。IsEligible=0为默认，命中InventoryAvailabilityRule后置1。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'SourceSystem',t:'NVARCHAR(20)',m:'ERP/MES'},{n:'StorageCode',t:'NVARCHAR(50)',m:'仓库/库位'},{n:'Quantity',t:'DECIMAL(18,4)',m:'候选库存量'},{n:'IsEligible',t:'BIT',m:'是否可用（规则筛选后）'},{n:'RejectReason',t:'NVARCHAR(500)',m:'被剔除原因'}]},
+ InventoryAvailableSupplyDetail:{db:'APS_Production·库存/供给',pu:'库存六层架构第4层（明细层），规则筛选后按物料+产品族+工厂+规则明细展开，InventoryBalance由此汇总生成。含追溯字段指向候选层。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'BatchNo',t:'NVARCHAR(50)',m:'快照批次'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族（使用上下文）'},{n:'FactoryId',t:'INT',f:'fk',m:'工厂'},{n:'AvailabilityRuleId',t:'BIGINT',f:'fk',m:'命中规则'},{n:'Quantity',t:'DECIMAL(18,4)',m:'可用数量'},{n:'RulePriority',t:'INT',m:'扣减优先级'},{n:'InventorySupplyCandidateId',t:'BIGINT',m:'追溯候选层（逻辑）'}]},
+ SupplyAvailabilityRule:{db:'APS_Production·库存/供给',pu:'供给可用性规则，定义管道供给（在途）在何种条件下可用于排程分配，与InventoryAvailabilityRule对应管控在途库存。',cols:[{n:'Id',t:'INT',f:'pk'},{n:'ProductFamilyId',t:'INT',f:'fk',m:'产品族'},{n:'SupplyType',t:'NVARCHAR(50)',m:'INTERPLANT_IN_TRANSIT/VMI'},{n:'IsAvailable',t:'BIT',m:'是否可用'},{n:'Priority',t:'INT',m:'优先级'},{n:'IsActive',t:'BIT',m:'是否启用'}]},
+ PlanKpiSummary:{db:'APS_Production·计划/订单',pu:'计划KPI汇总，每个计划版本一行，汇总整体按时交货率/延迟订单数/资源利用率等核心指标，供决策驾驶舱直接消费。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'PlanVersionId',t:'INT',f:'fk',m:'计划版本'},{n:'OTD',t:'DECIMAL(5,4)',m:'按时交货率'},{n:'LateOrderCount',t:'INT',m:'延迟订单数'},{n:'ResourceUtilization',t:'DECIMAL(5,4)',m:'资源利用率'},{n:'BottleneckCount',t:'INT',m:'瓶颈资源数'},{n:'CreatedAt',t:'DATETIME2',m:'生成时间'}]},
+ OperationProgressSnapshot:{db:'APS_Production·BOM处理',pu:'工序级进度快照，记录订单在每个工序（Operation）的完工数量，比StageProgressSnapshot粒度更细，用于精确计算WIP余量。',cols:[{n:'Id',t:'BIGINT',f:'pk'},{n:'OrderId',t:'BIGINT',f:'fk',m:'订单'},{n:'OperationCode',t:'NVARCHAR(50)',m:'工序编码'},{n:'MaterialCode',t:'NVARCHAR(50)',m:'物料编码'},{n:'CompletedQty',t:'DECIMAL(18,4)',m:'已完成数量'},{n:'ScrappedQty',t:'DECIMAL(18,4)',m:'报废数量'},{n:'SnapshotTime',t:'DATETIME2',m:'快照时间'}]}
+};
+const GRP={
+ master:['ProductFamily','Factory','Material','BOM','Resource','ResourceCalendar','RoutingOperation','StageDict','ProductionDepartment','MaterialStageDeptContext','MaterialMapping','FenceConfig','CustomerCodeMap','ProduceToFactoryMap','ResourceGroup','Routing','RoutingDependency','ProcessTypeDict','MaterialSupplyContext','StageLeadTimeParam'],
+ plan:['ScheduleRun','PlanVersion','Scenario','ERP_Order_Staging','Order_Canonical','Order','Task','Pegging','OrderBomRequestLink','Domain_Dependency','OrderScheduleSummary','ResourceLoadSummary','PlanKpiSummary'],
+ inv:['InventoryFact_ERP','InventoryFact_MES','InventoryAvailabilityRule','InventoryBalance','SupplyFact_Pipeline','InventorySupplyCandidate','InventoryAvailableSupplyDetail','SupplyAvailabilityRule'],
+ bom:['APS_BOM_RAW','APS_BOM_STAGE_PATH_RAW','StageProgressSnapshot','MESWorkOrderSnapshot','OperationProgressSnapshot'],
+ ods:['MES_API_BOM_Request','MES_API_BOM_Request_Detail','MES_APS_BOM_Workset','MES_APS_BOM_Workset_Issues','MES_APS_BOM_Workset_StageDetail','MES_BOM_Edge_Active'],
+ auth:['User','Role','Permission','UserRole','RolePermission','DataScopePolicy','AuditLog','ApprovalFlow','ApprovalNode','ApprovalRule','ApprovalRecord','UserDataScope','RoleDataScope']
+};
+const CLR={master:'#4A90D9',plan:'#E67E22',inv:'#27AE60',bom:'#8E44AD',ods:'#2980B9',auth:'#C0392B'};
+function getClr(id){for(const[g,ids]of Object.entries(GRP))if(ids.includes(id))return CLR[g];return'#888';}
+const ED=[
+ ['BOM','Material','父/子物料'],['Resource','Factory','工厂'],['Resource','ProductFamily','产品族'],
+ ['ResourceCalendar','Resource','资源'],
+ ['MaterialStageDeptContext','Material','物料'],['MaterialStageDeptContext','StageDict','工段'],
+ ['MaterialStageDeptContext','ProductionDepartment','部门'],['MaterialMapping','Material','APS物料'],
+ ['FenceConfig','ProductFamily','产品族'],['CustomerCodeMap','Material','物料'],
+ ['ProduceToFactoryMap','Factory','工厂'],['PlanVersion','ScheduleRun','排程运行'],
+ ['Scenario','PlanVersion','版本'],['Order','PlanVersion','版本'],['Order','Material','物料'],
+ ['Order','Factory','工厂'],['Task','Order','订单'],['Task','Resource','资源'],
+ ['Pegging','Task','上/下游任务'],
+ ['OrderBomRequestLink','Order','订单'],['OrderBomRequestLink','MES_API_BOM_Request','BOM请求'],
+ ['Domain_Dependency','PlanVersion','版本'],['OrderScheduleSummary','Order','订单'],
+ ['ResourceLoadSummary','Resource','资源'],['ResourceLoadSummary','PlanVersion','版本'],
+ ['InventoryFact_ERP','Factory','工厂'],['InventoryFact_MES','Factory','工厂'],
+ ['InventoryAvailabilityRule','ProductFamily','产品族'],['InventoryAvailabilityRule','Factory','工厂'],
+ ['InventoryBalance','Factory','工厂'],['InventoryBalance','ProductFamily','产品族'],
+ ['SupplyFact_Pipeline','ProductFamily','产品族'],['APS_BOM_RAW','Factory','工厂'],
+ ['APS_BOM_STAGE_PATH_RAW','ProductFamily','产品族'],['StageProgressSnapshot','Order','订单'],
+ ['MES_API_BOM_Request','PlanVersion','版本'],['MES_API_BOM_Request_Detail','MES_API_BOM_Request','请求'],
+ ['MES_APS_BOM_Workset','PlanVersion','版本'],['MES_APS_BOM_Workset_Issues','MES_APS_BOM_Workset','工作集'],
+ ['MES_APS_BOM_Workset_StageDetail','MES_APS_BOM_Workset','工作集'],
+ ['UserRole','User','用户'],['UserRole','Role','角色'],['RolePermission','Role','角色'],
+ ['RolePermission','Permission','权限'],['DataScopePolicy','Role','角色'],['AuditLog','User','用户'],
+ ['ApprovalNode','ApprovalFlow','流程'],['ApprovalNode','Role','审批角色'],
+ ['ApprovalRule','ApprovalFlow','流程'],
+ ['ApprovalRecord','ApprovalFlow','流程'],['ApprovalRecord','User','发起人'],
+ ['RoutingOperation','ProductionDepartment','部门'],
+ ['Routing','Material','物料'],['Routing','ResourceGroup','资源组'],
+ ['RoutingDependency','Material','物料'],['RoutingDependency','ProductionDepartment','部门'],
+ ['Task','ResourceGroup','资源组'],
+ ['InventorySupplyCandidate','Factory','工厂'],
+ ['InventoryAvailableSupplyDetail','ProductFamily','产品族'],['InventoryAvailableSupplyDetail','Factory','工厂'],
+ ['InventoryAvailableSupplyDetail','InventoryAvailabilityRule','规则'],
+ ['SupplyAvailabilityRule','ProductFamily','产品族'],
+ ['PlanKpiSummary','PlanVersion','版本'],
+ ['OperationProgressSnapshot','Order','订单'],
+ ['UserDataScope','User','用户'],['RoleDataScope','Role','角色']
+];
+let curFilter='all';
+const allNodeDefs=Object.keys(TD).map(id=>({id,label:id,
+ color:{background:getClr(id),border:'#1a1a1a',highlight:{background:getClr(id),border:'#fff'}},
+ font:{color:'#fff',size:12,bold:true},shape:'box',borderWidth:2,shadow:true}));
+const allEdgeDefs=ED.map(([f,t,l],i)=>({id:i,from:f,to:t,label:l,arrows:'to',
+ color:{color:'#555',highlight:'#aaa'},font:{size:9,color:'#888'},
+ smooth:{type:'curvedCW',roundness:0.1}}));
+
+const nodesDS=new vis.DataSet(allNodeDefs);
+const edgesDS=new vis.DataSet(allEdgeDefs);
+const network=new vis.Network(document.getElementById('network'),{nodes:nodesDS,edges:edgesDS},{
+ physics:{enabled:true,solver:'forceAtlas2Based',
+  forceAtlas2Based:{gravitationalConstant:-60,centralGravity:0.01,springLength:120,springConstant:0.08},
+  stabilization:{iterations:300,updateInterval:50}},
+ interaction:{hover:true,navigationButtons:true,keyboard:true,tooltipDelay:200},
+ nodes:{margin:8},edges:{width:1.5}
+});
+network.once('stabilized',()=>network.fit({animation:{duration:600,easingFunction:'easeInOutQuad'}}));
+
+network.on('click',p=>{if(p.nodes.length)showPanel(p.nodes[0]);});
+
+function showPanel(id){
+ const t=TD[id];if(!t)return;
+ document.getElementById('pt').textContent=id;
+ document.getElementById('pdb').textContent=t.db;
+ document.getElementById('ppurpose').textContent=t.pu;
+ const rows=t.cols.map(c=>`<tr><td>${c.n}</td><td style="color:#7eb8f7">${c.t}</td>
+  <td>${c.f==='pk'?'<span class="bpk">PK</span>':c.f==='fk'?'<span class="bfk">FK</span>':'—'}</td>
+  <td style="color:#808898">${c.m||''}</td></tr>`).join('');
+ document.getElementById('pcols').innerHTML=`<table class="ct"><thead><tr>
+  <th>字段</th><th>类型</th><th>标志</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table>`;
+ const rels=ED.filter(e=>e[0]===id||e[1]===id)
+  .map(e=>e[0]===id?`<div class="ri">→ <b>${e[1]}</b> <span style="color:#555">${e[2]}</span></div>`
+   :`<div class="ri" onclick="showPanel('${e[0]}')" style="cursor:pointer">← <b>${e[0]}</b> <span style="color:#555">${e[2]}</span></div>`).join('');
+ document.getElementById('prels').innerHTML=rels||'<span style="color:#505870">无直接关联</span>';
+ document.getElementById('dp').classList.add('open');
+}
+function closePanel(){document.getElementById('dp').classList.remove('open');}
+function setFilter(grp,el){
+ curFilter=grp;
+ document.querySelectorAll('.fb').forEach(b=>b.classList.remove('on'));
+ el.classList.add('on');
+ const keep=grp==='all'?new Set(Object.keys(TD)):new Set(GRP[grp]||[]);
+ nodesDS.update(allNodeDefs.map(n=>({id:n.id,hidden:!keep.has(n.id)})));
+ edgesDS.update(allEdgeDefs.map(e=>({id:e.id,hidden:!(keep.has(e.from)&&keep.has(e.to))})));
+ setTimeout(()=>network.fit({animation:true}),100);
+}
+function onSearch(v){
+ const q=v.trim().toLowerCase();
+ nodesDS.update(allNodeDefs.map(n=>({id:n.id,hidden:q?!n.id.toLowerCase().includes(q):false})));
+}
+</script>
+</body>
+</html>
