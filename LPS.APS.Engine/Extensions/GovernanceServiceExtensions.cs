@@ -14,15 +14,19 @@ namespace LPS.APS.Engine.Extensions;
 public static class GovernanceServiceExtensions
 {
     /// <summary>
-    /// 注册治理仓储（RuleSetVersion / ParameterSetVersion / StrategyProfileVersion / GovernanceAuditLog）
+    /// 注册治理仓储（RuleSetVersion / ParameterSetVersion / StrategyProfile / StrategyProfileVersion / GovernanceAuditLog / ScheduleRun / PlanVersion）
+    /// P0-08 扩展：ScheduleRunRepository / PlanVersionRepository（运行生命周期治理，3号位）
     /// </summary>
     /// <remarks>开发者：3号位</remarks>
     public static IServiceCollection AddGovernanceRepositories(this IServiceCollection services)
     {
         services.AddScoped<IRuleSetVersionRepository, RuleSetVersionRepository>();
         services.AddScoped<IParameterSetVersionRepository, ParameterSetVersionRepository>();
+        services.AddScoped<IStrategyProfileRepository, StrategyProfileRepository>();
         services.AddScoped<IStrategyProfileVersionRepository, StrategyProfileVersionRepository>();
         services.AddScoped<IGovernanceAuditLogRepository, GovernanceAuditLogRepository>();
+        services.AddScoped<IScheduleRunRepository, ScheduleRunRepository>();
+        services.AddScoped<IPlanVersionRepository, PlanVersionRepository>();
 
         return services;
     }

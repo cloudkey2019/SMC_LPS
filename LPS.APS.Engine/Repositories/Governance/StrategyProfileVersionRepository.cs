@@ -101,6 +101,25 @@ public class StrategyProfileVersionRepository : IStrategyProfileVersionRepositor
         await _connectionManager.ExecuteAsync(sql, version, db: DatabaseId.APS);
     }
 
+    public async Task<IReadOnlyList<StrategyProfileVersion>> GetDefaultByRunTypeAsync(string runType, CancellationToken ct = default)
+    {
+        // P0-06：RunType 在父表 StrategyProfile；返回所有候选默认版本全集（不 TOP 1 随机取），
+        // 由 Application 层结合 EffectiveFrom/EffectiveTo 过滤后判定 0/1/多（多 → 歧义报错）
+        const string sql = @"
+            SELECT v.*
+            FROM [dbo].[StrategyProfileVersion] v
+            JOIN [dbo].[StrategyProfile] p ON p.Id = v.StrategyProfileId
+            WHERE v.[IsDefault] = 1
+              AND v.[Status] = 'PUBLISHED'
+              AND p.[RunType] = @RunType
+              AND p.[IsActive] = 1";
+
+        var results = await _connectionManager.QueryAsync<StrategyProfileVersion>(
+            sql, new { RunType = runType }, db: DatabaseId.APS);
+
+        return results.ToList();
+    }
+
     public async Task ClearDefaultFlagAsync(long strategyProfileId, long exceptVersionId, CancellationToken ct = default)
     {
         const string sql = @"

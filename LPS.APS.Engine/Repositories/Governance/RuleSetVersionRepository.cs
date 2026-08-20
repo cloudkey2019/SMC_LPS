@@ -53,11 +53,11 @@ public class RuleSetVersionRepository : IRuleSetVersionRepository
             INSERT INTO [dbo].[RuleSetVersion]
                 ([RuleSetId], [VersionCode], [Status], [DemandPriorityJson],
                  [CreatedAt], [CreatedBy], [UpdatedAt], [UpdatedBy],
-                 [PublishedAt], [PublishedBy], [IsDefault], [Remarks])
+                 [PublishedAt], [PublishedBy], [Remarks])
             VALUES
                 (@RuleSetId, @VersionCode, @Status, @DemandPriorityJson,
                  @CreatedAt, @CreatedBy, @UpdatedAt, @UpdatedBy,
-                 @PublishedAt, @PublishedBy, @IsDefault, @Remarks);
+                 @PublishedAt, @PublishedBy, @Remarks);
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
 
         var id = await _connectionManager.QueryFirstOrDefaultAsync<long>(
@@ -78,41 +78,9 @@ public class RuleSetVersionRepository : IRuleSetVersionRepository
                 [UpdatedBy] = @UpdatedBy,
                 [PublishedAt] = @PublishedAt,
                 [PublishedBy] = @PublishedBy,
-                [IsDefault] = @IsDefault,
                 [Remarks] = @Remarks
             WHERE [Id] = @Id";
 
         await _connectionManager.ExecuteAsync(sql, version, db: DatabaseId.APS);
-    }
-
-    /// <summary>
-    /// 清除同 RuleSet 内其他版本的 IsDefault 标记（A-6 不变量：同 Set 内唯一默认）
-    /// </summary>
-    public async Task ClearDefaultFlagAsync(long ruleSetId, long exceptVersionId, CancellationToken ct = default)
-    {
-        const string sql = @"
-            UPDATE [dbo].[RuleSetVersion]
-            SET [IsDefault] = 0
-            WHERE [RuleSetId] = @RuleSetId
-              AND [Id] != @ExceptVersionId
-              AND [IsDefault] = 1";
-
-        await _connectionManager.ExecuteAsync(
-            sql, new { RuleSetId = ruleSetId, ExceptVersionId = exceptVersionId }, db: DatabaseId.APS);
-    }
-
-    /// <summary>
-    /// 查询默认版本（同 RuleSet 内 IsDefault=true 的版本）
-    /// </summary>
-    public async Task<RuleSetVersion?> GetDefaultByRuleSetIdAsync(long ruleSetId, CancellationToken ct = default)
-    {
-        const string sql = @"
-            SELECT TOP 1 * FROM [dbo].[RuleSetVersion]
-            WHERE [RuleSetId] = @RuleSetId
-              AND [IsDefault] = 1
-            ORDER BY [PublishedAt] DESC";
-
-        return await _connectionManager.QueryFirstOrDefaultAsync<RuleSetVersion>(
-            sql, new { RuleSetId = ruleSetId }, db: DatabaseId.APS);
     }
 }

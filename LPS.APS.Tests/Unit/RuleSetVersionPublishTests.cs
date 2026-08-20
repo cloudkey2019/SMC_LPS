@@ -22,6 +22,8 @@ public class RuleSetVersionPublishTests
         _service = new GovernanceVersionService(
             _repo.Object,
             Mock.Of<IParameterSetVersionRepository>(),
+            Mock.Of<IStrategyProfileRepository>(),
+            Mock.Of<IStrategyProfileVersionRepository>(),
             Mock.Of<IGovernanceAuditLogRepository>());
     }
 
@@ -35,6 +37,36 @@ public class RuleSetVersionPublishTests
             RuleSetId = 10,
             VersionCode = "V1",
             Status = GovernanceVersionStatus.Draft,
+            // P0-05：正式 Publish 强制发布前校验，测试须配合法内容
+            DemandPriorityJson = System.Text.Json.JsonSerializer.Serialize(new LPS.APS.Core.Dto.DemandPriorityBlock
+            {
+                Segments =
+                [
+                    new LPS.APS.Core.Dto.PrioritySegment
+                    {
+                        SegmentOrder = 1,
+                        SegmentName = "紧急订单",
+                        IsEnabled = true,
+                        MatchConditions =
+                        [
+                            new LPS.APS.Core.Dto.SegmentMatchCondition
+                            {
+                                Field = LPS.APS.Core.Dto.DemandField.OrderType,
+                                Operator = LPS.APS.Core.Dto.ConditionOperator.Equals,
+                                Value = "SO"
+                            }
+                        ],
+                        SortFields =
+                        [
+                            new LPS.APS.Core.Dto.SegmentSortField
+                            {
+                                Field = LPS.APS.Core.Dto.DemandField.RemainingTimeHours,
+                                Direction = LPS.APS.Core.Dto.SortDirection.Asc
+                            }
+                        ]
+                    }
+                ]
+            })
         };
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
@@ -51,13 +83,43 @@ public class RuleSetVersionPublishTests
     [Fact]
     public async Task Publish_AlreadyPublishedVersion_ThrowsInvalidOperation()
     {
-        // Arrange —— 历史不可覆盖（R01 核心）
+        // Arrange —— 历史不可覆盖（R01 核心）；
+        // 版本带合法 DemandPriorityJson，穿透 P0-05 校验后由状态机拒绝（确保拦截点确为"已发布"）
         var version = new RuleSetVersion
         {
             Id = 1,
             RuleSetId = 10,
             VersionCode = "V1",
             Status = GovernanceVersionStatus.Published,
+            DemandPriorityJson = System.Text.Json.JsonSerializer.Serialize(new LPS.APS.Core.Dto.DemandPriorityBlock
+            {
+                Segments =
+                [
+                    new LPS.APS.Core.Dto.PrioritySegment
+                    {
+                        SegmentOrder = 1,
+                        SegmentName = "紧急订单",
+                        IsEnabled = true,
+                        MatchConditions =
+                        [
+                            new LPS.APS.Core.Dto.SegmentMatchCondition
+                            {
+                                Field = LPS.APS.Core.Dto.DemandField.OrderType,
+                                Operator = LPS.APS.Core.Dto.ConditionOperator.Equals,
+                                Value = "SO"
+                            }
+                        ],
+                        SortFields =
+                        [
+                            new LPS.APS.Core.Dto.SegmentSortField
+                            {
+                                Field = LPS.APS.Core.Dto.DemandField.RemainingTimeHours,
+                                Direction = LPS.APS.Core.Dto.SortDirection.Asc
+                            }
+                        ]
+                    }
+                ]
+            })
         };
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 

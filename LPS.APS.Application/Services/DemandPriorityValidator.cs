@@ -12,6 +12,23 @@ namespace LPS.APS.Application.Services;
 public sealed class DemandPriorityValidator
 {
     /// <summary>
+    /// Matcher 实际支持的合法匹配/排序字段白名单（P0-07 "Validator 合法字段映射"）。
+    /// 必须与 DemandPriorityMatcher 三处 switch 保持一致；新增 DemandField 枚举值时
+    /// 必须在此显式登记，否则发布前校验拒绝（防运行期 NotSupportedException）。
+    /// </summary>
+    private static readonly HashSet<DemandField> SupportedDemandFields =
+    [
+        DemandField.RemainingTimeHours,
+        DemandField.DelayStatus,
+        DemandField.CustomerTier,
+        DemandField.OrderType,
+        DemandField.IsPmcProtected,
+        DemandField.PriorityLevel,
+        DemandField.DueDate,     // P0-07
+        DemandField.IssueDate,   // P0-07
+    ];
+
+    /// <summary>
     /// 验证 DemandPriorityBlock 配置的合法性
     /// </summary>
     public ValidationResult Validate(DemandPriorityBlock block)
@@ -42,6 +59,7 @@ public sealed class DemandPriorityValidator
         foreach (var segment in block.Segments)
         {
             ValidateSegment(segment, errors, warnings);
+            ValidateFieldMapping(segment, errors);   // P0-07：合法字段映射（与 Matcher 白名单一致）
         }
 
         ValidateNoGlobalPriorityScore(block, errors);
@@ -86,6 +104,29 @@ public sealed class DemandPriorityValidator
              condition.Value is not System.Collections.IEnumerable))
         {
             errors.Add($"Segment {segmentOrder}: IN 操作符的值必须是列表类型");
+        }
+    }
+
+    /// <summary>
+    /// 校验 Segment 引用的所有 DemandField 均在 Matcher 支持白名单内（P0-07）。
+    /// 防止枚举新增值未同步 Matcher 时，配置越过发布校验、运行期才抛 NotSupportedException。
+    /// </summary>
+    private void ValidateFieldMapping(PrioritySegment segment, List<string> errors)
+    {
+        foreach (var condition in segment.MatchConditions)
+        {
+            if (!SupportedDemandFields.Contains(condition.Field))
+            {
+                errors.Add($"Segment {segment.SegmentOrder}: 匹配字段 {condition.Field} 不在合法字段白名单内");
+            }
+        }
+
+        foreach (var sortField in segment.SortFields)
+        {
+            if (!SupportedDemandFields.Contains(sortField.Field))
+            {
+                errors.Add($"Segment {segment.SegmentOrder}: 排序字段 {sortField.Field} 不在合法字段白名单内");
+            }
         }
     }
 

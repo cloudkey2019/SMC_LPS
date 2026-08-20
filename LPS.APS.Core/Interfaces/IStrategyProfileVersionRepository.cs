@@ -26,4 +26,12 @@ public interface IStrategyProfileVersionRepository
 
     /// <summary>清除同一策略包内其他版本的 IsDefault 标志（A-6 不变量）</summary>
     System.Threading.Tasks.Task ClearDefaultFlagAsync(long strategyProfileId, long exceptVersionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 按 RunType 获取所有候选默认版本（P0-06：歧义检测用）
+    /// 语义：RunType 匹配 IsActive=1 父 StrategyProfile 的 IsDefault=1 + PUBLISHED 版本全集。
+    /// 返回 IReadOnlyList 而非单对象（红线 #4：禁止盲目 First()），
+    /// 由 Application 层结合 EffectiveFrom/EffectiveTo 生效窗口过滤后判定 0/1/多（多 → 歧义报错）。
+    /// </summary>
+    System.Threading.Tasks.Task<IReadOnlyList<StrategyProfileVersion>> GetDefaultByRunTypeAsync(string runType, CancellationToken ct = default);
 }

@@ -17,17 +17,23 @@ public class GovernanceController : ControllerBase
     private readonly IGovernanceVersionService _governanceService;
     private readonly IRuleSetVersionRepository _ruleSetVersionRepo;
     private readonly IParameterSetVersionRepository _parameterSetVersionRepo;
+    private readonly IStrategyProfileVersionRepository _strategyProfileVersionRepo;
+    private readonly IRunLifecycleService _runLifecycleService;
     private readonly ILogger<GovernanceController> _logger;
 
     public GovernanceController(
         IGovernanceVersionService governanceService,
         IRuleSetVersionRepository ruleSetVersionRepo,
         IParameterSetVersionRepository parameterSetVersionRepo,
+        IStrategyProfileVersionRepository strategyProfileVersionRepo,
+        IRunLifecycleService runLifecycleService,
         ILogger<GovernanceController> logger)
     {
         _governanceService = governanceService;
         _ruleSetVersionRepo = ruleSetVersionRepo;
         _parameterSetVersionRepo = parameterSetVersionRepo;
+        _strategyProfileVersionRepo = strategyProfileVersionRepo;
+        _runLifecycleService = runLifecycleService;
         _logger = logger;
     }
 
@@ -51,19 +57,6 @@ public class GovernanceController : ControllerBase
         if (version == null)
         {
             return NotFound(new { success = false, error = $"规则集版本不存在：{versionId}" });
-        }
-        return Ok(new { success = true, data = version });
-    }
-
-    /// <summary>获取规则集默认版本</summary>
-    /// <remarks>开发者：3号位</remarks>
-    [HttpGet("rule-set/{ruleSetId}/default-version")]
-    public async Task<IActionResult> GetDefaultRuleSetVersion(long ruleSetId, CancellationToken ct)
-    {
-        var version = await _ruleSetVersionRepo.GetDefaultByRuleSetIdAsync(ruleSetId, ct);
-        if (version == null)
-        {
-            return NotFound(new { success = false, error = $"规则集无默认版本：{ruleSetId}" });
         }
         return Ok(new { success = true, data = version });
     }
@@ -118,19 +111,6 @@ public class GovernanceController : ControllerBase
         if (version == null)
         {
             return NotFound(new { success = false, error = $"参数集版本不存在：{versionId}" });
-        }
-        return Ok(new { success = true, data = version });
-    }
-
-    /// <summary>获取参数集默认版本</summary>
-    /// <remarks>开发者：3号位</remarks>
-    [HttpGet("parameter-set/{parameterSetId}/default-version")]
-    public async Task<IActionResult> GetDefaultParameterSetVersion(long parameterSetId, CancellationToken ct)
-    {
-        var version = await _parameterSetVersionRepo.GetDefaultByParameterSetIdAsync(parameterSetId, ct);
-        if (version == null)
-        {
-            return NotFound(new { success = false, error = $"参数集无默认版本：{parameterSetId}" });
         }
         return Ok(new { success = true, data = version });
     }
@@ -270,6 +250,207 @@ public class GovernanceController : ControllerBase
     }
 
     #endregion
+
+    #region StrategyProfileVersion（P0-06：策略包版本治理完整闭环）
+
+    /// <summary>获取策略包的所有版本</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/{strategyProfileId}/versions")]
+    public async Task<IActionResult> GetStrategyProfileVersions(long strategyProfileId, CancellationToken ct)
+    {
+        var versions = await _strategyProfileVersionRepo.GetByStrategyProfileIdAsync(strategyProfileId, ct);
+        return Ok(new { success = true, data = versions });
+    }
+
+    /// <summary>获取策略包版本详情</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/version/{versionId}")]
+    public async Task<IActionResult> GetStrategyProfileVersion(long versionId, CancellationToken ct)
+    {
+        var version = await _strategyProfileVersionRepo.GetByIdAsync(versionId, ct);
+        if (version == null)
+        {
+            return NotFound(new { success = false, error = $"策略包版本不存在：{versionId}" });
+        }
+        return Ok(new { success = true, data = version });
+    }
+
+    /// <summary>创建策略包版本（初始状态 DRAFT）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("strategy-profile/version")]
+    public async Task<IActionResult> CreateStrategyProfileVersion([FromBody] StrategyProfileVersion version, CancellationToken ct)
+    {
+        version.CreatedAt = DateTime.UtcNow;
+        var created = await _strategyProfileVersionRepo.AddAsync(version, ct);
+        return CreatedAtAction(nameof(GetStrategyProfileVersion), new { versionId = created.Id }, new { success = true, data = created });
+    }
+
+    /// <summary>更新策略包版本（仅限非 PUBLISHED 状态）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPut("strategy-profile/version/{versionId}")]
+    public async Task<IActionResult> UpdateStrategyProfileVersion(long versionId, [FromBody] StrategyProfileVersion version, CancellationToken ct)
+    {
+        var existing = await _strategyProfileVersionRepo.GetByIdAsync(versionId, ct);
+        if (existing == null)
+        {
+            return NotFound(new { success = false, error = $"策略包版本不存在：{versionId}" });
+        }
+
+        version.Id = versionId;
+        await _strategyProfileVersionRepo.UpdateAsync(version, ct);
+        return Ok(new { success = true, data = version });
+    }
+
+    /// <summary>发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；发布前强制校验）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("strategy-profile/version/{versionId}/publish")]
+    public async Task<IActionResult> PublishStrategyProfileVersion(long versionId, [FromBody] PublishRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _governanceService.PublishStrategyProfileVersionAsync(versionId, request?.PublishedBy, ct);
+            return Ok(new { success = true, message = $"策略包版本 {versionId} 发布成功" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>校验策略包版本是否可发布（P0-06）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/version/{versionId}/validate")]
+    public async Task<IActionResult> ValidateStrategyProfileVersionForPublish(long versionId, CancellationToken ct)
+    {
+        var result = await _governanceService.ValidateStrategyProfileVersionForPublishAsync(versionId, ct);
+        return Ok(result);
+    }
+
+    /// <summary>解析当前有效默认 PUBLISHED 策略包（P0-06：跨号位冻结语义；歧义报错不随机取）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/default")]
+    public async Task<IActionResult> ResolveDefaultStrategyProfile([FromQuery] string? runType, [FromQuery] DateTime? asOf, CancellationToken ct)
+    {
+        try
+        {
+            var version = await _governanceService.ResolveDefaultStrategyProfileVersionAsync(runType, asOf, ct);
+            if (version == null)
+            {
+                return NotFound(new { success = false, error = $"RunType={runType} 无当前有效默认 PUBLISHED 策略包" });
+            }
+            return Ok(new { success = true, data = version });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>Run 引用追溯（P0-06：策略包版本 → 父 Profile + 规则集/参数集版本）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/version/{versionId}/trace")]
+    public async Task<IActionResult> GetRunStrategyProfileTrace(long versionId, CancellationToken ct)
+    {
+        try
+        {
+            var trace = await _governanceService.GetRunStrategyProfileTraceAsync(versionId, ct);
+            return Ok(new { success = true, data = trace });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { success = false, error = ex.Message });
+        }
+    }
+
+    #endregion
+
+    #region 运行生命周期（P0-08：ScheduleRun 治理）
+
+    /// <summary>校验 ScheduleRun.ExpectedDomainKeysJson 冻结规则（P0-08：FULL≥1 / RESCHEDULE 恰1）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("run/{scheduleRunId}/validate-domain-keys")]
+    public async Task<IActionResult> ValidateExpectedDomainKeys(int scheduleRunId, CancellationToken ct)
+    {
+        try
+        {
+            await _runLifecycleService.ValidateExpectedDomainKeysAsync(scheduleRunId, ct);
+            return Ok(new { success = true, message = $"ScheduleRun {scheduleRunId} 的 ExpectedDomainKeysJson 冻结规则校验通过" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "ExpectedDomainKeysJson 冻结规则校验失败：{ScheduleRunId}", scheduleRunId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>Candidate 最小人工确认（P0-08：仅记录 Actor/ConfirmedAt/CandidatePlanVersionId/Remark，不转 ACTIVE）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("plan-version/{planVersionId}/confirm-candidate")]
+    public async Task<IActionResult> ConfirmCandidate(int planVersionId, [FromBody] ConfirmCandidateRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _runLifecycleService.ConfirmCandidateAsync(planVersionId, request?.Actor ?? string.Empty, request?.Remark, ct);
+            return Ok(new { success = true, message = $"候选版本 {planVersionId} 已确认（待激活）" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "候选版本确认失败：{PlanVersionId}", planVersionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>激活 Candidate（P0-08：CANDIDATE → ACTIVE，每域单一正式采用版本）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("plan-version/{planVersionId}/activate-candidate")]
+    public async Task<IActionResult> ActivateCandidate(int planVersionId, [FromBody] ActivateCandidateRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _runLifecycleService.ActivateCandidateAsync(planVersionId, request?.Actor ?? string.Empty, ct);
+            return Ok(new { success = true, message = $"候选版本 {planVersionId} 已正式采用（ACTIVE）" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "候选版本激活失败：{PlanVersionId}", planVersionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>FAILED 恢复（P0-08：为 FAILED ScheduleRun 新建一条 RUNNING 重跑，继承基线；旧记录不动）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("run/{failedScheduleRunId}/recover")]
+    public async Task<IActionResult> RecoverFailedRun(int failedScheduleRunId, CancellationToken ct)
+    {
+        try
+        {
+            var newRunId = await _runLifecycleService.RecoverFailedRunAsync(failedScheduleRunId, ct);
+            return Ok(new { success = true, data = new { NewScheduleRunId = newRunId }, message = $"FAILED 运行 {failedScheduleRunId} 已恢复，新建运行 {newRunId}" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "FAILED 运行恢复失败：{ScheduleRunId}", failedScheduleRunId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>Run 引用追溯（P0-08：ScheduleRun → 策略包版本 → 规则集/参数集版本 + 关联 PlanVersion 状态）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("run/{scheduleRunId}/trace")]
+    public async Task<IActionResult> GetRunReferenceTrace(int scheduleRunId, CancellationToken ct)
+    {
+        try
+        {
+            var trace = await _runLifecycleService.GetRunReferenceTraceAsync(scheduleRunId, ct);
+            return Ok(new { success = true, data = trace });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { success = false, error = ex.Message });
+        }
+    }
+
+    #endregion
 }
 
 /// <summary>发布请求 DTO（3号位 Web 层契约）</summary>
@@ -277,4 +458,23 @@ public class GovernanceController : ControllerBase
 public class PublishRequest
 {
     public string? PublishedBy { get; set; }
+}
+
+/// <summary>Candidate 确认请求 DTO（P0-08）</summary>
+/// <remarks>开发者：3号位</remarks>
+public class ConfirmCandidateRequest
+{
+    /// <summary>确认人（必填）</summary>
+    public string? Actor { get; set; }
+
+    /// <summary>必要备注（可空）</summary>
+    public string? Remark { get; set; }
+}
+
+/// <summary>Candidate 激活请求 DTO（P0-08）</summary>
+/// <remarks>开发者：3号位</remarks>
+public class ActivateCandidateRequest
+{
+    /// <summary>激活人（必填）</summary>
+    public string? Actor { get; set; }
 }

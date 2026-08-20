@@ -1,4 +1,5 @@
 using LPS.APS.Core.DTOs.Governance;
+using StrategyProfileVersion = LPS.APS.Core.Entities.APS.StrategyProfileVersion;
 
 namespace LPS.APS.Core.Interfaces;
 
@@ -32,4 +33,29 @@ public interface IGovernanceVersionService
 
     /// <summary>校验参数集版本是否可发布（阶段 A-5：发布前完整校验）</summary>
     Task<PublishValidationResult> ValidateParameterSetVersionForPublishAsync(long parameterSetVersionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 校验策略包版本是否可发布（P0-06：3号位治理完整闭环）
+    /// 校验项：状态可发布 / 版本编码非空 / 引用合法（RuleSetVersion、ParameterSetVersion 存在且 PUBLISHED）/
+    /// 生效窗口（EffectiveFrom &lt; EffectiveTo）/ 默认歧义（IsDefault=1 且同 Profile 已存在另一 PUBLISHED 默认 → 报错）。
+    /// </summary>
+    Task<PublishValidationResult> ValidateStrategyProfileVersionForPublishAsync(long strategyProfileVersionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）
+    /// 发布前强制校验（与 P0-05 一致，无绕过路径）。
+    /// IsDefault=1 时：先清同 Profile 其他默认（ClearDefaultFlagAsync）再置位，避免 UQ_StrategyProfileVersion_DefaultPublished 冲突。
+    /// </summary>
+    Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default);
+
+    /// <summary>
+    /// 解析当前有效默认 PUBLISHED 策略包版本（P0-06：跨号位冻结语义，C2-3）
+    /// 语义：按 RunType 匹配 IsActive=1 StrategyProfile（RunType 在父表）的 IsDefault=1+PUBLISHED 版本，
+    ///       再过滤 EffectiveFrom/EffectiveTo 生效窗口（asOf 为空取当前时刻）。
+    /// 结果：0 个 → null；恰 1 个 → 返回；&gt;1 个 → 抛 InvalidOperationException（歧义，报配置错误，不随机取一个）。
+    /// </summary>
+    Task<StrategyProfileVersion?> ResolveDefaultStrategyProfileVersionAsync(string? runType, DateTime? asOf = null, CancellationToken ct = default);
+
+    /// <summary>Run 引用追溯（P0-06：StrategyProfileVersion → 父 Profile + 引用的 RuleSet/ParameterSet 版本）</summary>
+    Task<RunStrategyProfileTrace> GetRunStrategyProfileTraceAsync(long strategyProfileVersionId, CancellationToken ct = default);
 }

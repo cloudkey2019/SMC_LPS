@@ -61,6 +61,11 @@ public sealed class SegmentSortField
 }
 
 /// <summary>Demand 可匹配字段（强类型；V1 最小集，扩展需 0号位裁决）</summary>
+/// <remarks>
+/// P0-07：补充 DueDate / IssueDate（冻结文档 §4.2 日期排序；0 号位冻结示例
+/// "Delayed SALES_ORDER → DueDate ASC → CustomerTier DESC → IssueDate ASC"）。
+/// 新增枚举值必须同步：DemandRecord 字段 + DemandPriorityMatcher 三处 switch + DemandPriorityValidator 白名单。
+/// </remarks>
 public enum DemandField
 {
     RemainingTimeHours,       // 与 NormalLT 的剩余时间
@@ -69,6 +74,8 @@ public enum DemandField
     OrderType,                // SO / WO / Transfer ...
     IsPmcProtected,           // PMC 人工强保护
     PriorityLevel,            // 业务优先等级（若冻结允许）
+    DueDate,                  // 统一交期（DATE/DATETIME2，客户要求交期）——P0-07
+    IssueDate,                // 订单发行/下发日期（源事实字段，MTS 无值）——P0-07
 }
 
 public enum ConditionOperator { Equals, NotEquals, LessThan, LessOrEqual, GreaterThan, GreaterOrEqual, In }

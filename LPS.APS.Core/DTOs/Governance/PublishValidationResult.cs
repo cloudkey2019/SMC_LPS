@@ -18,6 +18,9 @@ public class PublishValidationResult
 
     /// <summary>校验时间</summary>
     public DateTime ValidatedAt { get; set; }
+
+    /// <summary>汇总全部错误为分号分隔消息（P0-05：发布被拒时的错误摘要）</summary>
+    public string GetErrorMessage() => string.Join("; ", Errors.Select(e => e.Message));
 }
 
 /// <summary>

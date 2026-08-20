@@ -251,7 +251,7 @@ public class FrozenStrategySnapshotProviderTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_JSON为空_返回默认块()
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_JSON为空_装载失败抛异常()
     {
         // Arrange
         const long strategyProfileVersionId = 100;
@@ -289,20 +289,15 @@ public class FrozenStrategySnapshotProviderTests
             .Setup(r => r.GetByIdAsync(300, It.IsAny<CancellationToken>()))
             .ReturnsAsync(parameterSetVersion);
 
-        // Act
-        var snapshot = await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+        // Act & Assert（P0-04：必填 Block 缺失 → Snapshot 装载失败，不静默回退空 Block）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
-        // Assert
-        snapshot.DemandPriority.Should().NotBeNull();
-        snapshot.Lock.Should().NotBeNull();
-        snapshot.Supply.Should().NotBeNull();
-        snapshot.Procurement.Should().NotBeNull();
-        snapshot.SolverStrategy.Should().NotBeNull();
-        snapshot.CandidateGuardrail.Should().NotBeNull();
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*DemandPriorityJson 为空/缺失*");
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_JSON格式错误_返回默认块()
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_JSON格式错误_装载失败抛异常()
     {
         // Arrange
         const long strategyProfileVersionId = 100;
@@ -340,14 +335,10 @@ public class FrozenStrategySnapshotProviderTests
             .Setup(r => r.GetByIdAsync(300, It.IsAny<CancellationToken>()))
             .ReturnsAsync(parameterSetVersion);
 
-        // Act
-        var snapshot = await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+        // Act & Assert（P0-04：JSON/内容损坏 → Snapshot 装载失败，不静默回退空 Block）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
-        // Assert
-        snapshot.Should().NotBeNull();
-        snapshot.DemandPriority.Should().NotBeNull();
-        snapshot.Lock.Should().NotBeNull();
-        snapshot.Supply.Should().NotBeNull();
-        snapshot.Procurement.Should().NotBeNull();
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*DemandPriorityJson 格式无效*");
     }
 }

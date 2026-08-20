@@ -43,6 +43,8 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
             ?? throw new InvalidOperationException($"参数集版本不存在：{strategyProfileVersion.ParameterSetVersionId}");
 
         // 3. 装配 Snapshot（六块 + 三 VersionId 元数据）
+        // P0-04：四块有来源的 JSON 一律禁止静默回退空 Block——缺失/损坏直接装载失败，
+        // 避免"数据库显示本 Run 使用某版本、程序却按空规则执行"的版本追溯失真。
         var snapshot = new FrozenStrategySnapshot
         {
             StrategyProfileVersionId = strategyProfileVersionId,
@@ -51,112 +53,112 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
             FrozenAt = DateTime.UtcNow,
 
             // ① Demand Priority（来自 RuleSetVersion.DemandPriorityJson）
-            DemandPriority = DeserializeDemandPriorityBlock(ruleSetVersion.DemandPriorityJson),
+            DemandPriority = DeserializeDemandPriorityBlock(ruleSetVersion.DemandPriorityJson, ruleSetVersion.Id),
 
             // ② Lock（来自 ParameterSetVersion.LockJson）
-            Lock = DeserializeLockBlock(parameterSetVersion.LockJson),
+            Lock = DeserializeLockBlock(parameterSetVersion.LockJson, parameterSetVersion.Id),
 
             // ③ Supply（来自 ParameterSetVersion.SupplyJson）
-            Supply = DeserializeSupplyBlock(parameterSetVersion.SupplyJson),
+            Supply = DeserializeSupplyBlock(parameterSetVersion.SupplyJson, parameterSetVersion.Id),
 
             // ④ Procurement（来自 ParameterSetVersion.ProcurementJson，含 PlanningYield）
-            Procurement = DeserializeProcurementBlock(parameterSetVersion.ProcurementJson),
+            Procurement = DeserializeProcurementBlock(parameterSetVersion.ProcurementJson, parameterSetVersion.Id),
 
-            // ⑤ Solver Strategy（来自 RuleSetVersion 的 Solver 相关字段，暂用空对象）
+            // ⑤ Solver Strategy（P0-03 待办：P0-01 DDL 方案确认前暂无真实版本来源，保持空对象）
             SolverStrategy = new SolverStrategyBlock(),
 
-            // ⑥ Candidate Guardrail（来自 ParameterSetVersion 的 Candidate 相关字段，暂用空对象）
+            // ⑥ Candidate Guardrail（P0-03 待办：同上，保持空对象）
             CandidateGuardrail = new CandidateGuardrailBlock()
         };
 
         return snapshot;
     }
 
-    /// <summary>反序列化 DemandPriorityJson → DemandPriorityBlock</summary>
-    private DemandPriorityBlock DeserializeDemandPriorityBlock(string? json)
+    /// <summary>反序列化 DemandPriorityJson → DemandPriorityBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
+    private DemandPriorityBlock DeserializeDemandPriorityBlock(string? json, long versionId)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new DemandPriorityBlock();
+            throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            var block = JsonSerializer.Deserialize<DemandPriorityBlock>(json, new JsonSerializerOptions
+            return JsonSerializer.Deserialize<DemandPriorityBlock>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
-            });
-            return block ?? new DemandPriorityBlock();
+            })
+            ?? throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 反序列化结果为空，Snapshot 装载失败");
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return new DemandPriorityBlock();
+            throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 
-    /// <summary>反序列化 LockJson → LockBlock</summary>
-    private LockBlock DeserializeLockBlock(string? json)
+    /// <summary>反序列化 LockJson → LockBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
+    private LockBlock DeserializeLockBlock(string? json, long versionId)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new LockBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            var block = JsonSerializer.Deserialize<LockBlock>(json, new JsonSerializerOptions
+            return JsonSerializer.Deserialize<LockBlock>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
-            });
-            return block ?? new LockBlock();
+            })
+            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 反序列化结果为空，Snapshot 装载失败");
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return new LockBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 
-    /// <summary>反序列化 SupplyJson → SupplyBlock</summary>
-    private SupplyBlock DeserializeSupplyBlock(string? json)
+    /// <summary>反序列化 SupplyJson → SupplyBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
+    private SupplyBlock DeserializeSupplyBlock(string? json, long versionId)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SupplyBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            var block = JsonSerializer.Deserialize<SupplyBlock>(json, new JsonSerializerOptions
+            return JsonSerializer.Deserialize<SupplyBlock>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
-            });
-            return block ?? new SupplyBlock();
+            })
+            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 反序列化结果为空，Snapshot 装载失败");
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return new SupplyBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 
-    /// <summary>反序列化 ProcurementJson → ProcurementBlock（含 PlanningYield，契约 C2-5）</summary>
-    private ProcurementBlock DeserializeProcurementBlock(string? json)
+    /// <summary>反序列化 ProcurementJson → ProcurementBlock（含 PlanningYield，契约 C2-5；P0-04：缺失/损坏一律失败）</summary>
+    private ProcurementBlock DeserializeProcurementBlock(string? json, long versionId)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new ProcurementBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            var block = JsonSerializer.Deserialize<ProcurementBlock>(json, new JsonSerializerOptions
+            return JsonSerializer.Deserialize<ProcurementBlock>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
-            });
-            return block ?? new ProcurementBlock();
+            })
+            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 反序列化结果为空，Snapshot 装载失败");
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return new ProcurementBlock();
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 }

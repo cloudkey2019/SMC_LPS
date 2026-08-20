@@ -20,10 +20,4 @@ public interface IParameterSetVersionRepository
 
     /// <summary>更新版本（仅限非 PUBLISHED 状态的可编辑字段）</summary>
     Task UpdateAsync(ParameterSetVersion version, CancellationToken ct = default);
-
-    /// <summary>清除同 ParameterSet 内其他版本的 IsDefault 标记（A-6 不变量：同 Set 内唯一默认）</summary>
-    Task ClearDefaultFlagAsync(long parameterSetId, long exceptVersionId, CancellationToken ct = default);
-
-    /// <summary>查询默认版本（同 ParameterSet 内 IsDefault=true 的版本）</summary>
-    Task<ParameterSetVersion?> GetDefaultByParameterSetIdAsync(long parameterSetId, CancellationToken ct = default);
 }

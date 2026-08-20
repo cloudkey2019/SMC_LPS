@@ -180,6 +180,14 @@ public sealed class DemandPriorityMatcher
             DemandField.PriorityLevel => direction == SortDirection.Asc
                 ? group.OrderBy(d => d.PriorityLevel)
                 : group.OrderByDescending(d => d.PriorityLevel),
+            // P0-07：日期排序（冻结示例 "DueDate ASC → ... → IssueDate ASC"）
+            // null 语义（LINQ 默认）：Asc 时 null 排最前、Desc 时 null 排最后（CompareValues 同规则）
+            DemandField.DueDate => direction == SortDirection.Asc
+                ? group.OrderBy(d => d.DueDate)
+                : group.OrderByDescending(d => d.DueDate),
+            DemandField.IssueDate => direction == SortDirection.Asc
+                ? group.OrderBy(d => d.IssueDate)
+                : group.OrderByDescending(d => d.IssueDate),
             _ => throw new NotSupportedException($"不支持的排序字段：{field}")
         };
     }
@@ -212,6 +220,13 @@ public sealed class DemandPriorityMatcher
             DemandField.PriorityLevel => direction == SortDirection.Asc
                 ? query.ThenBy(d => d.PriorityLevel)
                 : query.ThenByDescending(d => d.PriorityLevel),
+            // P0-07：日期后续排序（null 语义同 ApplySort：Asc null 最前 / Desc null 最后）
+            DemandField.DueDate => direction == SortDirection.Asc
+                ? query.ThenBy(d => d.DueDate)
+                : query.ThenByDescending(d => d.DueDate),
+            DemandField.IssueDate => direction == SortDirection.Asc
+                ? query.ThenBy(d => d.IssueDate)
+                : query.ThenByDescending(d => d.IssueDate),
             _ => throw new NotSupportedException($"不支持的排序字段：{field}")
         };
     }
@@ -273,6 +288,9 @@ public sealed class DemandPriorityMatcher
             DemandField.OrderType => demand.OrderType,
             DemandField.IsPmcProtected => demand.IsPmcProtected,
             DemandField.PriorityLevel => demand.PriorityLevel,
+            // P0-07：日期字段（配合 CompareValues 的 IComparable 日期比较，支持 LessThan/GreaterThan 等匹配）
+            DemandField.DueDate => demand.DueDate,
+            DemandField.IssueDate => demand.IssueDate,
             _ => throw new NotSupportedException($"不支持的字段：{field}")
         };
     }
@@ -369,4 +387,8 @@ public sealed class DemandRecord
     public string? OrderType { get; init; }
     public bool IsPmcProtected { get; init; }
     public int? PriorityLevel { get; init; }
+    /// <summary>统一交期（P0-07：DemandField.DueDate 排序/匹配；null 语义见排序实现）</summary>
+    public DateTime? DueDate { get; init; }
+    /// <summary>订单发行日期（P0-07：DemandField.IssueDate 排序/匹配；MTS 订单无值可为 null）</summary>
+    public DateTime? IssueDate { get; init; }
 }
