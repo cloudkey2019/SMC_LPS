@@ -303,6 +303,20 @@ ScheduleRun 运行生命周期治理（ExpectedDomainKeysJson 冻结规则 / Str
 - ✅ `dotnet build LPS.APS.sln`：0 错误 0 警告（本次新增代码）
 - ✅ 全量测试：**65/66 通过**（23 个新增 P0-08 测试全绿；唯一失败为既有 `RealSchedulingIntegrationTest` 的 `FiniteCapacitySolver` DI 问题，属 2号位，见"既有问题 1"）
 
+### 集成测试补齐（P0-05/P0-06/P0-07/P0-08，2026-08-20）
+
+给 0 号位复核前补齐修改项集成测试（真实连库 + 真实仓储 + 真实服务编排），新增 3 个文件：
+
+| 文件 | 覆盖 |
+|---|---|
+| `LPS.APS.Tests/Integration/TestEnvironment.cs` | **新增** 环境探测辅助（Auth 库可达性 / ExpectedDomainKeysJson 列存在性；只读探测不碰库结构，红线 #6） |
+| `LPS.APS.Tests/Integration/GovernanceVersionServiceIntegrationTests.cs` | **新增** 发布闭环全链路（校验→发布→默认解析→Run 追溯）、P0-05 坏配置被拒无绕过、P0-06 引用未发布被拒、P0-07 校验器集成（4 个 SkippableFact） |
+| `LPS.APS.Tests/Integration/RunLifecycleServiceIntegrationTests.cs` | **新增** P0-08 恢复新建 RUNNING 继承基线、Run 引用追溯完整链、Candidate 确认与激活落库（3 个 SkippableFact） |
+
+- 集成测试统一 `[SkippableFact]`：测试环境缺依赖（APS_Auth 库 / ExpectedDomainKeysJson 列）时**动态 Skip 并提示需 2 号位补齐**，不假绿不误红；环境补齐后自动转绿无需改测试代码
+- ✅ 全量测试：**73 总数 / 66 通过 / 6 跳过 / 1 失败**（6 个跳过 = 治理链路集成测试依赖 APS_Auth 库；`校验器集成_P007` 不依赖 Auth 已真实连库跑通；唯一失败仍为既有 2号位 DI 问题）
+- ✅ 集成测试数据清理验证：测试后 ScheduleRun/PlanVersion 残留为 0
+
 ### 跨号位边界遵守
 
 - **未修改 2号位** `ScheduleRunService` / `SchedulingOrchestrator` / `DomainSchedulingJob` / `DomainLayerCoordinatorJob`——运行状态执行流转不动
@@ -315,4 +329,7 @@ ScheduleRun 运行生命周期治理（ExpectedDomainKeysJson 冻结规则 / Str
 ## 下一步
 
 - **P0-03 收口**：待 P0-01 DDL 方案 A/B/C 确认后，为 Solver/Candidate 建立真实版本来源（装载层整改）
-- 提示：P0-01~P0-08 八批整改已全部完成（P0-03 装载层部分除外），建议向 0 号位提交验证结果、确认 P0-01 方案后收口 P0-03
+- **集成测试环境缺口（需 2 号位补齐后，6 个治理链路集成测试自动转绿）**：
+  1. **APS_Auth 库未部署**（测试服务器 10.116.2.75 仅有 APS_Production / APS_Hangfire）→ 治理发布/确认/激活/恢复强制写 `GovernanceAuditLog`（EF Core）无法落地
+  2. **测试库 ScheduleRun 缺 `ExpectedDomainKeysJson` 列**（冻结 DDL v5.1.2 §3.1 未迁移）→ P0-08 恢复/追溯链路无法读该列
+- 提示：P0-01~P0-08 八批整改已全部完成（P0-03 装载层部分除外），单元测试 59 + 集成测试补齐完毕，建议向 0 号位提交验证结果、确认 P0-01 方案后收口 P0-03
