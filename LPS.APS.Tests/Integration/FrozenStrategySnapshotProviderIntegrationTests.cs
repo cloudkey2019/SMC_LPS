@@ -74,6 +74,10 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
             _ruleSetRepo,
             _parameterSetRepo
         );
+
+        // B-5 缓存为进程级静态字典（key = VersionId）：集成测试用真实 DB identity，
+        // 可能与单元测试 mock 的 VersionId 冲突，必须在每个测试前清缓存保证隔离
+        FrozenStrategySnapshotProvider.ClearCache();
     }
 
     [Fact]
@@ -98,7 +102,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_多次调用_版本一致()
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_多次调用_命中缓存_返回同一快照()
     {
         await SetupTestDataAsync();
 
@@ -110,7 +114,15 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
         snapshot1.RuleSetVersionId.Should().Be(snapshot2.RuleSetVersionId);
         snapshot1.ParameterSetVersionId.Should().Be(snapshot2.ParameterSetVersionId);
 
-        snapshot1.FrozenAt.Should().NotBe(snapshot2.FrozenAt);
+        // B-5 语义（契约 C2-4）：同 VersionId 二次调用命中缓存、不重复查库；
+        // 命中时从 JSON 快照反序列化重建独立实例（杜绝共享可变对象污染），六块内容值相等（Run 内不刷新），
+        // FrozenAt 为"冻结时点"=每次调用刷新（跨 Run 不陈旧）
+        snapshot2.FrozenAt.Should().BeAfter(snapshot1.FrozenAt);
+        snapshot2.DemandPriority.Should().NotBeSameAs(snapshot1.DemandPriority);
+        snapshot2.DemandPriority.Segments.Should().HaveCount(snapshot1.DemandPriority.Segments.Count);
+        snapshot2.Lock.Trigger.RemainingTimeThresholdHours.Should().Be(snapshot1.Lock.Trigger.RemainingTimeThresholdHours);
+        snapshot2.Supply.Inventory.WarehousePriority.Should().Equal(snapshot1.Supply.Inventory.WarehousePriority);
+        snapshot2.Procurement.PlanningYields.Should().HaveCount(snapshot1.Procurement.PlanningYields.Count);
     }
 
     [Fact]

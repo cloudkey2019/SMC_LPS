@@ -326,10 +326,46 @@ ScheduleRun 运行生命周期治理（ExpectedDomainKeysJson 冻结规则 / Str
 
 ---
 
+## B-5 补全：FrozenStrategySnapshot 缓存（2026-08-21，等 0 号位答复期间推进）
+
+### 背景
+
+清单 #51 性能红线："一次 Run 只加载一次 FrozenStrategySnapshot；Snapshot 可缓存，**Cache Key 必须含 VersionId**；不在 Pegging 循环逐笔查库"。此前 `FrozenStrategySnapshotProvider` 每次调用 3 次仓储查询，**缓存完全缺失**，违反性能红线。
+
+### 实现决策（清单 #51 / 契约 C2-4）
+
+- **缓存容器**：Provider 进程级静态 `ConcurrentDictionary<long, string>`，key = `StrategyProfileVersionId`（契约 C2-4：Cache Key 必须含 VersionId；不同版本天然不污染）
+- **缓存值 = Snapshot JSON 快照（不可变字符串）**：装配完成后序列化入缓存；命中时反序列化**重建独立对象**并刷新 `FrozenAt`（冻结时点=本次调用，跨 Run 不陈旧）
+- **不可变性**：code-review 指出"共享可变 Block 实例被消费者就地修改会污染所有并发/后续 Run"（可 silent 变 HIGH 隐患）——JSON 快照方案根治：每次命中返回独立实例，消费者修改不影响缓存
+- **P0-04 交互**：失败路径（JSON 缺失/损坏）在反序列化抛异常退出，**绝不写入缓存**；已加测试固化
+- **FrozenAt 语义**：每次调用刷新（原设计意图，集成测试原断言 `NotBe` 保留该语义）
+- **`internal ClearCache()`**：供测试隔离；单元/集成测试构造函数均调用（防 mock VersionId 与真实 DB identity 冲突）
+- **LOW 项记录**：静态缓存无上限无淘汰（版本数量受控、条目为几 KB 字符串，watch-item）；缓存有效性依赖"PUBLISHED 内容不可变"治理不变量（R01，符合；未来若允许 VersionId 就地修改须失效缓存或换 key）
+
+### 代码改动
+
+| 文件 | 改动 |
+|---|---|
+| `LPS.APS.Application/Services/FrozenStrategySnapshotProvider.cs` | 静态 JSON 快照缓存（命中反序列化重建 + FrozenAt 刷新）；`JsonOptions` 常量统一 4 处反序列化；internal `ClearCache()` |
+| `LPS.APS.Tests/Unit/FrozenStrategySnapshotProviderTests.cs` | `SetupValidVersions` 辅助方法；+4 缓存测试（命中不查库 / 互不污染三连读 / 独立实例+值相等+FrozenAt 刷新 / 失败装载不缓存重试重新走仓储）；构造函数清缓存 |
+| `LPS.APS.Tests/Integration/FrozenStrategySnapshotProviderIntegrationTests.cs` | 构造函数清缓存；"多次调用"断言改 B-5 语义（独立实例 + 内容值相等 + FrozenAt 刷新） |
+
+### 验证结果
+
+- ✅ `dotnet build`：0 错误 0 警告（本次新增代码）
+- ✅ 单元测试：Provider 类 11/11 通过（原 7 + 新增 4）
+- ✅ 全量测试：**77 总数 / 70 通过 / 6 跳过 / 1 失败**（唯一失败仍为既有 2号位 `FiniteCapacitySolver` DI 问题）
+- ✅ code-reviewer 审查：**APPROVE**（0 CRITICAL / 0 HIGH；2 MEDIUM 已修复 / 2 LOW 已记录）
+
+---
+
 ## 下一步
 
 - **P0-03 收口**：待 P0-01 DDL 方案 A/B/C 确认后，为 Solver/Candidate 建立真实版本来源（装载层整改）
+- **阶段 D 验收测试 R07~R13（D-T）**：DTO 与校验已实现，缺验收测试固化（Protection 触发 / PI 排序 / Warehouse / DefaultLT / Margin / Offset / Yield / ETA Invariant）
+- **E-4 Solver 发布前校验**：On-time 0~100%、Split 超限、Guardrail 为正（独立于 P0-01 装载层裁决，可先做校验层）
+- **阶段 E 验收测试 R14~R17（E-T）**：SolverStrategyBlock/CandidateGuardrailBlock 语义测试
 - **集成测试环境缺口（需 2 号位补齐后，6 个治理链路集成测试自动转绿）**：
   1. **APS_Auth 库未部署**（测试服务器 10.116.2.75 仅有 APS_Production / APS_Hangfire）→ 治理发布/确认/激活/恢复强制写 `GovernanceAuditLog`（EF Core）无法落地
   2. **测试库 ScheduleRun 缺 `ExpectedDomainKeysJson` 列**（冻结 DDL v5.1.2 §3.1 未迁移）→ P0-08 恢复/追溯链路无法读该列
-- 提示：P0-01~P0-08 八批整改已全部完成（P0-03 装载层部分除外），单元测试 59 + 集成测试补齐完毕，建议向 0 号位提交验证结果、确认 P0-01 方案后收口 P0-03
+- 提示：P0-01~P0-08 八批整改已全部完成（P0-03 装载层部分除外）+ B-5 缓存补全；复核提报已发出（2026-08-21），待 0 号位答复确认 P0-01 方案后收口 P0-03
