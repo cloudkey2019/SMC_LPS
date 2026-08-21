@@ -1,0 +1,148 @@
+[2026-07-14 13:34:36.921] [] ========================================
+[2026-07-14 13:34:36.958] [] LPS.APS 应用程序启动中...
+[2026-07-14 13:34:36.958] [] ========================================
+[2026-07-14 13:34:37.130] [] LPS.APS 应用程序启动失败
+System.AggregateException: Some services are not able to be constructed (Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.)
+ ---> System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   at Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(IServiceCollection services, ServiceProviderOptions options)
+   at Microsoft.Extensions.Hosting.HostApplicationBuilder.Build()
+   at Microsoft.AspNetCore.Builder.WebApplicationBuilder.Build()
+   at Program.<Main>$(String[] args) in D:\DEMO\LPS\LPS.APS.Web\Program.cs:line 190
+ ---> (Inner Exception #1) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+ ---> (Inner Exception #2) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+[2026-07-14 13:34:40.562] [] LPS.APS 应用程序关闭
+[2026-07-14 13:35:29.183] [] ========================================
+[2026-07-14 13:35:29.224] [] LPS.APS 应用程序启动中...
+[2026-07-14 13:35:29.225] [] ========================================
+[2026-07-14 13:35:29.884] [] LPS.APS 应用程序启动失败
+System.AggregateException: Some services are not able to be constructed (Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.)
+ ---> System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   at Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(IServiceCollection services, ServiceProviderOptions options)
+   at Microsoft.Extensions.Hosting.HostApplicationBuilder.Build()
+   at Microsoft.AspNetCore.Builder.WebApplicationBuilder.Build()
+   at Program.<Main>$(String[] args) in D:\DEMO\LPS\LPS.APS.Web\Program.cs:line 190
+ ---> (Inner Exception #1) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+ ---> (Inner Exception #2) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+[2026-07-14 13:36:38.648] [] ========================================
+[2026-07-14 13:36:38.693] [] LPS.APS 应用程序启动中...
+[2026-07-14 13:36:38.693] [] ========================================
+[2026-07-14 13:36:39.457] [] LPS.APS 应用程序启动失败
+System.AggregateException: Some services are not able to be constructed (Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.) (Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.)
+ ---> System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: LPS.APS.Core.Interfaces.ISchedulingOrchestrator Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.SchedulingOrchestrator': Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'LPS.APS.Core.Interfaces.ISnapshotService' while attempting to activate 'LPS.APS.Application.Services.SchedulingOrchestrator'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)
+   at Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(IServiceCollection services, ServiceProviderOptions options)
+   at Microsoft.Extensions.Hosting.HostApplicationBuilder.Build()
+   at Microsoft.AspNetCore.Builder.WebApplicationBuilder.Build()
+   at Program.<Main>$(String[] args) in D:\DEMO\LPS\LPS.APS.Web\Program.cs:line 190
+ ---> (Inner Exception #1) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomEdge] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomEdge': Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.String' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomEdge'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+ ---> (Inner Exception #2) System.InvalidOperationException: Error while validating the service descriptor 'ServiceType: System.IEquatable`1[LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot] Lifetime: Scoped ImplementationType: LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot': Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+ ---> System.InvalidOperationException: Unable to resolve service for type 'System.Linq.ILookup`2[System.String,LPS.APS.Application.Services.PeggingOrchestrator+BomEdge]' while attempting to activate 'LPS.APS.Application.Services.PeggingOrchestrator+BomSnapshot'.
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateArgumentCallSites(ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain, ParameterInfo[] parameters, Boolean throwIfCallSiteNotFound)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateConstructorCallSite(ResultCache lifetime, ServiceIdentifier serviceIdentifier, Type implementationType, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.CreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.TryCreateExact(ServiceDescriptor descriptor, ServiceIdentifier serviceIdentifier, CallSiteChain callSiteChain, Int32 slot)
+   at Microsoft.Extensions.DependencyInjection.ServiceLookup.CallSiteFactory.GetCallSite(ServiceDescriptor serviceDescriptor, CallSiteChain callSiteChain)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   --- End of inner exception stack trace ---
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider.ValidateService(ServiceDescriptor descriptor)
+   at Microsoft.Extensions.DependencyInjection.ServiceProvider..ctor(ICollection`1 serviceDescriptors, ServiceProviderOptions options)<---
+
+[2026-07-14 13:38:43.978] [] ========================================
+[2026-07-14 13:38:44.019] [] LPS.APS 应用程序启动中...
+[2026-07-14 13:38:44.020] [] ========================================
+[2026-07-14 13:38:45.185] [] LPS.APS 应用程序启动完成
+[2026-07-14 13:38:45.456] [Microsoft.Hosting.Lifetime] Now listening on: https://localhost:7044
+[2026-07-14 13:38:45.457] [Microsoft.Hosting.Lifetime] Now listening on: http://localhost:5163
+[2026-07-14 13:38:45.803] [Microsoft.Hosting.Lifetime] Application started. Press Ctrl+C to shut down.
+[2026-07-14 13:38:45.804] [Microsoft.Hosting.Lifetime] Hosting environment: Development
+[2026-07-14 13:38:45.804] [Microsoft.Hosting.Lifetime] Content root path: D:\DEMO\LPS\LPS.APS.Web

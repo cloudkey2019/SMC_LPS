@@ -1,0 +1,291 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>LPS.APS.Web</name>
+    </assembly>
+    <members>
+        <member name="T:LPS.APS.Web.Controllers.AuthController">
+            <summary>
+            认证控制器
+            提供登录、刷新Token、登出接口
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.AuthController.Login(LPS.APS.Web.Dto.Auth.LoginRequestDto)">
+            <summary>
+            用户登录
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.AuthController.RefreshToken(LPS.APS.Web.Dto.Auth.RefreshTokenRequestDto)">
+            <summary>
+            刷新 AccessToken
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.AuthController.Logout">
+            <summary>
+            登出
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.AuthController.GetCurrentUser">
+            <summary>
+            获取当前用户信息（验证Token有效性）
+            </summary>
+        </member>
+        <member name="T:LPS.APS.Web.Controllers.GovernanceController">
+            <summary>
+            治理版本管理 API（阶段 A-9：3号位 Web 层实现）
+            提供 RuleSetVersion / ParameterSetVersion 的 CRUD + 发布接口。
+            红线：发布接口仅接受 DRAFT/SUBMITTED/APPROVED 状态（六态状态机 R01 验收）。
+            </summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetRuleSetVersions(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取规则集的所有版本</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetRuleSetVersion(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取规则集版本详情</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.CreateRuleSetVersion(LPS.APS.Core.Entities.APS.RuleSetVersion,System.Threading.CancellationToken)">
+            <summary>创建规则集版本（初始状态 DRAFT）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.UpdateRuleSetVersion(System.Int64,LPS.APS.Core.Entities.APS.RuleSetVersion,System.Threading.CancellationToken)">
+            <summary>更新规则集版本（仅限非 PUBLISHED 状态）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetParameterSetVersions(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取参数集的所有版本</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetParameterSetVersion(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取参数集版本详情</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.CreateParameterSetVersion(LPS.APS.Core.Entities.APS.ParameterSetVersion,System.Threading.CancellationToken)">
+            <summary>创建参数集版本（初始状态 DRAFT）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.UpdateParameterSetVersion(System.Int64,LPS.APS.Core.Entities.APS.ParameterSetVersion,System.Threading.CancellationToken)">
+            <summary>更新参数集版本（仅限非 PUBLISHED 状态）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.PublishRuleSetVersion(System.Int64,LPS.APS.Web.Controllers.PublishRequest,System.Threading.CancellationToken)">
+            <summary>
+            发布规则集版本（六态状态机 R01 验收）
+            红线：仅 DRAFT/SUBMITTED/APPROVED 可发布；PUBLISHED 拒绝（历史不可覆盖）；A-6 不变量自动处理。
+            </summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.PublishParameterSetVersion(System.Int64,LPS.APS.Web.Controllers.PublishRequest,System.Threading.CancellationToken)">
+            <summary>
+            发布参数集版本（六态状态机 R02 验收）
+            红线：仅 DRAFT/SUBMITTED/APPROVED 可发布；新 Run 可引用新版本、旧 Run 引用不变；A-6 不变量自动处理。
+            </summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.CompareRuleSetVersions(System.Int64,System.Int64,System.Threading.CancellationToken)">
+            <summary>对比两个规则集版本的差异（阶段 A-8：版本溯源）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.CompareParameterSetVersions(System.Int64,System.Int64,System.Threading.CancellationToken)">
+            <summary>对比两个参数集版本的差异（阶段 A-8：版本溯源）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ValidateRuleSetVersionForPublish(System.Int64,System.Threading.CancellationToken)">
+            <summary>校验规则集版本是否可发布（阶段 A-5：发布前完整校验）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ValidateParameterSetVersionForPublish(System.Int64,System.Threading.CancellationToken)">
+            <summary>校验参数集版本是否可发布（阶段 A-5：发布前完整校验）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetStrategyProfileVersions(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取策略包的所有版本</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetStrategyProfileVersion(System.Int64,System.Threading.CancellationToken)">
+            <summary>获取策略包版本详情</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.CreateStrategyProfileVersion(LPS.APS.Core.Entities.APS.StrategyProfileVersion,System.Threading.CancellationToken)">
+            <summary>创建策略包版本（初始状态 DRAFT）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.UpdateStrategyProfileVersion(System.Int64,LPS.APS.Core.Entities.APS.StrategyProfileVersion,System.Threading.CancellationToken)">
+            <summary>更新策略包版本（仅限非 PUBLISHED 状态）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.PublishStrategyProfileVersion(System.Int64,LPS.APS.Web.Controllers.PublishRequest,System.Threading.CancellationToken)">
+            <summary>发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；发布前强制校验）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ValidateStrategyProfileVersionForPublish(System.Int64,System.Threading.CancellationToken)">
+            <summary>校验策略包版本是否可发布（P0-06）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ResolveDefaultStrategyProfile(System.String,System.Nullable{System.DateTime},System.Threading.CancellationToken)">
+            <summary>解析当前有效默认 PUBLISHED 策略包（P0-06：跨号位冻结语义；歧义报错不随机取）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetRunStrategyProfileTrace(System.Int64,System.Threading.CancellationToken)">
+            <summary>Run 引用追溯（P0-06：策略包版本 → 父 Profile + 规则集/参数集版本）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ValidateExpectedDomainKeys(System.Int32,System.Threading.CancellationToken)">
+            <summary>校验 ScheduleRun.ExpectedDomainKeysJson 冻结规则（P0-08：FULL≥1 / RESCHEDULE 恰1）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ConfirmCandidate(System.Int32,LPS.APS.Web.Controllers.ConfirmCandidateRequest,System.Threading.CancellationToken)">
+            <summary>Candidate 最小人工确认（P0-08：仅记录 Actor/ConfirmedAt/CandidatePlanVersionId/Remark，不转 ACTIVE）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.ActivateCandidate(System.Int32,LPS.APS.Web.Controllers.ActivateCandidateRequest,System.Threading.CancellationToken)">
+            <summary>激活 Candidate（P0-08：CANDIDATE → ACTIVE，每域单一正式采用版本）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.RecoverFailedRun(System.Int32,System.Threading.CancellationToken)">
+            <summary>FAILED 恢复（P0-08：为 FAILED ScheduleRun 新建一条 RUNNING 重跑，继承基线；旧记录不动）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.GovernanceController.GetRunReferenceTrace(System.Int32,System.Threading.CancellationToken)">
+            <summary>Run 引用追溯（P0-08：ScheduleRun → 策略包版本 → 规则集/参数集版本 + 关联 PlanVersion 状态）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="T:LPS.APS.Web.Controllers.PublishRequest">
+            <summary>发布请求 DTO（3号位 Web 层契约）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="T:LPS.APS.Web.Controllers.ConfirmCandidateRequest">
+            <summary>Candidate 确认请求 DTO（P0-08）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="P:LPS.APS.Web.Controllers.ConfirmCandidateRequest.Actor">
+            <summary>确认人（必填）</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Controllers.ConfirmCandidateRequest.Remark">
+            <summary>必要备注（可空）</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Controllers.ActivateCandidateRequest">
+            <summary>Candidate 激活请求 DTO（P0-08）</summary>
+            <remarks>开发者：3号位</remarks>
+        </member>
+        <member name="P:LPS.APS.Web.Controllers.ActivateCandidateRequest.Actor">
+            <summary>激活人（必填）</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Controllers.ScheduleController">
+             <summary>
+             排程结果查询控制器（3号位，供 4号位前端甘特图调用）
+            
+             路由规范：
+               GET /api/schedule/versions          - 计划版本列表
+               GET /api/schedule/gantt/{id}        - 指定版本的甘特图数据
+               GET /api/schedule/summary/{id}      - 指定版本的排程概要 KPI
+            
+             V1 不包含：触发重排 / 拖拽调整 / 解冻申请 等写操作（后续阶段铺开）
+             </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.ScheduleController.GetVersions(System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            获取计划版本列表（最新优先，默认 30 条）
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.ScheduleController.GetGantt(System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            获取指定计划版本的甘特图数据（资源行 + 任务条）
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Controllers.ScheduleController.GetSummary(System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            获取指定计划版本的排程概要 KPI
+            </summary>
+        </member>
+        <member name="T:LPS.APS.Web.Dto.Auth.LoginRequestDto">
+            <summary>登录请求</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginRequestDto.UserCode">
+            <summary>用户工号</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginRequestDto.Password">
+            <summary>密码</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Dto.Auth.LoginResponseDto">
+            <summary>登录响应</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.AccessToken">
+            <summary>AccessToken（JWT）</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.RefreshToken">
+            <summary>RefreshToken</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.ExpiresAt">
+            <summary>AccessToken 过期时间</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.UserId">
+            <summary>用户ID</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.UserCode">
+            <summary>用户工号</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.UserName">
+            <summary>用户姓名</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.LoginResponseDto.Roles">
+            <summary>角色列表</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Dto.Auth.RefreshTokenRequestDto">
+            <summary>刷新Token请求</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.RefreshTokenRequestDto.AccessToken">
+            <summary>过期的 AccessToken</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.RefreshTokenRequestDto.RefreshToken">
+            <summary>有效的 RefreshToken</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Dto.Auth.UserInfoDto">
+            <summary>当前用户信息</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.UserInfoDto.UserId">
+            <summary>用户ID</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.UserInfoDto.UserCode">
+            <summary>用户工号</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.UserInfoDto.UserName">
+            <summary>用户姓名</summary>
+        </member>
+        <member name="P:LPS.APS.Web.Dto.Auth.UserInfoDto.Roles">
+            <summary>角色列表</summary>
+        </member>
+        <member name="T:LPS.APS.Web.Extensions.HangfireAuthorizationFilter">
+            <summary>
+            Hangfire Dashboard 鉴权过滤器（生产环境使用）
+            开发环境下 Dashboard 无鉴权限制，可直接访问
+            生产环境下需要验证用户身份（后续接入 APS_Auth 权限体系）
+            </summary>
+        </member>
+        <member name="T:LPS.APS.Web.Extensions.HangfireServiceExtensions">
+            <summary>
+            Hangfire定时服务配置扩展
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Extensions.HangfireServiceExtensions.AddHangfireServices(Microsoft.Extensions.DependencyInjection.IServiceCollection,Microsoft.Extensions.Configuration.IConfiguration)">
+            <summary>
+            注册Hangfire服务（使用独立 APS_Hangfire 库存储Job数据）
+            </summary>
+        </member>
+        <member name="M:LPS.APS.Web.Extensions.HangfireServiceExtensions.UseHangfireJobs(Microsoft.AspNetCore.Builder.WebApplication)">
+            <summary>
+            注册所有Hangfire定时任务（在 app.Build() 之后调用）
+            开发环境：注册但使用永不触发的cron，仅支持 Dashboard 手动触发
+            生产环境：使用真实cron自动执行
+            </summary>
+        </member>
+        <member name="T:LPS.APS.Web.Filters.GlobalExceptionFilter">
+            <summary>
+            全局异常过滤器
+            捕获所有 Controller 未处理的异常，统一包装为 ApiResponse 格式返回
+            </summary>
+        </member>
+    </members>
+</doc>

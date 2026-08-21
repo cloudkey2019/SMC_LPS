@@ -1,0 +1,406 @@
+using Xunit;
+using Moq;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using LPS.APS.Application.Services;
+using LPS.APS.Core.Dto;
+using LPS.APS.Core.Interfaces;
+using LPS.APS.Engine.Data;
+using LPS.APS.Scheduling.Solvers;
+using Microsoft.Extensions.Logging;
+
+namespace LPS.APS.Tests.Integration;
+
+/// <summary>
+/// v5.1.2架构集成测试 - PeggingOrchestrator与SchedulingOrchestrator交互流程
+///
+/// 测试目标：
+/// 1. Task表单一写入路径（PeggingOrchestrator独占INSERT）
+/// 2. SchedulingOrchestrator只UPDATE Task
+/// 3. Task与PeggingSupplyAllocation事务一致性
+/// 4. 幂等性保证（重跑不重复）
+/// 5. AllocationSequence生成时机正确
+/// </summary>
+public class PeggingSchedulingWorkflowTests : IDisposable
+{
+    private readonly Mock<DatabaseConnectionManager> _mockConnectionManager;
+    private readonly Mock<IFiniteCapacityScheduler> _mockSolver;
+    private readonly Mock<ILogger<PeggingOrchestrator>> _mockPeggingLogger;
+    private readonly Mock<ILogger<SchedulingOrchestrator>> _mockSchedulingLogger;
+    private readonly PeggingOrchestrator _peggingOrchestrator;
+    private readonly SchedulingOrchestrator _schedulingOrchestrator;
+
+    private readonly List<string> _executedSqlCommands;
+    private readonly Dictionary<string, object> _inMemoryDatabase;
+
+    public PeggingSchedulingWorkflowTests()
+    {
+        _mockConnectionManager = new Mock<IDatabaseConnectionManager>();
+        _mockSolver = new Mock<IFiniteCapacityScheduler>();
+        _mockPeggingLogger = new Mock<ILogger<PeggingOrchestrator>>();
+        _mockSchedulingLogger = new Mock<ILogger<SchedulingOrchestrator>>();
+
+        _executedSqlCommands = new List<string>();
+        _inMemoryDatabase = new Dictionary<string, object>();
+
+        // 模拟事务行为
+        SetupMockDatabase();
+
+        _peggingOrchestrator = new PeggingOrchestrator(
+            _mockConnectionManager.Object,
+            _mockPeggingLogger.Object);
+
+        _schedulingOrchestrator = new SchedulingOrchestrator(
+            _mockConnectionManager.Object,
+            _peggingOrchestrator,
+            _mockSolver.Object,
+            _mockSchedulingLogger.Object);
+    }
+
+    #region 测试1：Task表单一写入路径验证
+
+    [Fact(DisplayName = "v5.1.2-001: SchedulingOrchestrator阶段0执行全局DELETE")]
+    public async Task Test_SchedulingOrchestrator_ShouldDeleteAllTasksInPhase0()
+    {
+        // Arrange
+        int planVersionId = 1001;
+        _executedSqlCommands.Clear();
+
+        // Act
+        await _schedulingOrchestrator.ExecuteSchedulingWorkflowAsync(
+            planVersionId,
+            CancellationToken.None);
+
+        // Assert
+        var deleteCommands = _executedSqlCommands
+            .Where(sql => sql.Contains("DELETE FROM [Task]"))
+            .ToList();
+
+        Assert.Single(deleteCommands); // 只有一次DELETE
+        Assert.Contains("WHERE PlanVersionId = @Id", deleteCommands[0]); // 全局DELETE，无TaskType过滤
+
+        // 验证DELETE在INSERT之前
+        var firstDeleteIndex = _executedSqlCommands.IndexOf(deleteCommands[0]);
+        var firstInsertIndex = _executedSqlCommands.FindIndex(sql => sql.Contains("INSERT INTO [Task]"));
+
+        Assert.True(firstDeleteIndex < firstInsertIndex, "DELETE必须在INSERT之前执行");
+    }
+
+    [Fact(DisplayName = "v5.1.2-002: PeggingOrchestrator只INSERT不DELETE")]
+    public async Task Test_PeggingOrchestrator_ShouldOnlyInsertTasks()
+    {
+        // Arrange
+        int planVersionId = 1002;
+        var orders = CreateMockOrders();
+        var context = new SchedulingContext();
+        _executedSqlCommands.Clear();
+
+        // Act
+        await _peggingOrchestrator.ExecuteBatchPeggingWorkflowAsync(
+            planVersionId,
+            orders,
+            context,
+            CancellationToken.None);
+
+        // Assert - PeggingOrchestrator内部不应有DELETE
+        var deleteInPegging = _executedSqlCommands
+            .Where(sql => sql.Contains("DELETE FROM [Task]"))
+            .ToList();
+
+        Assert.Empty(deleteInPegging); // v5.1.2优化：PeggingOrchestrator不再DELETE
+    }
+
+    [Fact(DisplayName = "v5.1.2-003: SchedulingOrchestrator只UPDATE不INSERT")]
+    public async Task Test_SchedulingOrchestrator_ShouldOnlyUpdateTasks()
+    {
+        // Arrange
+        int planVersionId = 1003;
+
+        // 模拟PeggingOrchestrator已生成Task
+        SeedTasksInDatabase(planVersionId, taskCount: 5);
+
+        _executedSqlCommands.Clear();
+
+        // Act
+        await _schedulingOrchestrator.ExecuteSchedulingWorkflowAsync(
+            planVersionId,
+            CancellationToken.None);
+
+        // Assert - 持久化阶段只有UPDATE
+        var persistPhaseCommands = _executedSqlCommands
+            .SkipWhile(sql => !sql.Contains("PersistSchedulingResult"))
+            .ToList();
+
+        var updateCommands = persistPhaseCommands
+            .Where(sql => sql.Contains("UPDATE [Task]"))
+            .ToList();
+
+        var insertCommands = persistPhaseCommands
+            .Where(sql => sql.Contains("INSERT INTO [Task]"))
+            .ToList();
+
+        Assert.NotEmpty(updateCommands); // 有UPDATE
+        Assert.Empty(insertCommands);    // 无INSERT（INSERT由PeggingOrchestrator完成）
+    }
+
+    #endregion
+
+    #region 测试2：事务一致性验证
+
+    [Fact(DisplayName = "v5.1.2-004: Task与PeggingSupplyAllocation在同一事务")]
+    public async Task Test_TaskAndAllocation_ShouldBeInSameTransaction()
+    {
+        // Arrange
+        int planVersionId = 1004;
+        var orders = CreateMockOrders();
+        var context = new SchedulingContext();
+
+        var transactionLog = new List<(string Operation, bool InTransaction)>();
+
+        _mockConnectionManager
+            .Setup(m => m.ExecuteInTransactionAsync<It.IsAnyType>(
+                It.IsAny<Func<IDbConnection, IDbTransaction, Task<It.IsAnyType>>>(),
+                It.IsAny<DatabaseId>()))
+            .Callback<Func<object, object, Task<object>>, DatabaseId>((func, db) =>
+            {
+                transactionLog.Add(("Task INSERT", true));
+                transactionLog.Add(("PeggingSupplyAllocation INSERT", true));
+            });
+
+        // Act
+        await _peggingOrchestrator.ExecuteBatchPeggingWorkflowAsync(
+            planVersionId, orders, context, CancellationToken.None);
+
+        // Assert
+        Assert.All(transactionLog, entry => Assert.True(entry.InTransaction));
+    }
+
+    [Fact(DisplayName = "v5.1.2-005: 事务回滚时Task和Allocation都不落库")]
+    public async Task Test_TransactionRollback_ShouldRevertBothTables()
+    {
+        // Arrange
+        int planVersionId = 1005;
+        var orders = CreateMockOrders();
+        var context = new SchedulingContext();
+
+        // 模拟PeggingSupplyAllocation写入失败
+        _mockConnectionManager
+            .Setup(m => m.ExecuteAsync(
+                It.Is<string>(sql => sql.Contains("INSERT INTO PeggingSupplyAllocation")),
+                It.IsAny<object>(),
+                It.IsAny<DatabaseId>(),
+                It.IsAny<IDbTransaction>()))
+            .ThrowsAsync(new Exception("模拟写入失败"));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<Exception>(async () =>
+        {
+            await _peggingOrchestrator.ExecuteBatchPeggingWorkflowAsync(
+                planVersionId, orders, context, CancellationToken.None);
+        });
+
+        // 验证：Task表和PeggingSupplyAllocation表都没有数据
+        var taskCount = GetTaskCountInDatabase(planVersionId);
+        var allocationCount = GetAllocationCountInDatabase(planVersionId);
+
+        Assert.Equal(0, taskCount);
+        Assert.Equal(0, allocationCount);
+    }
+
+    #endregion
+
+    #region 测试3：幂等性验证
+
+    [Fact(DisplayName = "v5.1.2-006: 重跑排程不产生重复Task")]
+    public async Task Test_Rerun_ShouldNotDuplicateTasks()
+    {
+        // Arrange
+        int planVersionId = 1006;
+
+        // Act - 第一次运行
+        await _schedulingOrchestrator.ExecuteSchedulingWorkflowAsync(
+            planVersionId, CancellationToken.None);
+        var tasksAfterFirstRun = GetTaskCountInDatabase(planVersionId);
+
+        // Act - 第二次运行（模拟重跑）
+        await _schedulingOrchestrator.ExecuteSchedulingWorkflowAsync(
+            planVersionId, CancellationToken.None);
+        var tasksAfterSecondRun = GetTaskCountInDatabase(planVersionId);
+
+        // Assert
+        Assert.Equal(tasksAfterFirstRun, tasksAfterSecondRun);
+    }
+
+    #endregion
+
+    #region 测试4：AllocationSequence生成时机
+
+    [Fact(DisplayName = "v5.1.2-007: AllocationSequence在供需扣减时生成")]
+    public async Task Test_AllocationSequence_ShouldBeGeneratedDuringDeduction()
+    {
+        // Arrange
+        var supplyEntry = new SupplyLedgerEntry
+        {
+            MaterialId = 101,
+            RemainingQty = 100m,
+            SupplySourceId = 1001,
+            SourceType = "INVENTORY"
+        };
+
+        var voucher = new PeggingResultVoucher
+        {
+            NextAllocationSequence = 1,
+            SupplyAllocations = new List<SupplyAllocationItem>()
+        };
+
+        // Act - 调用原子分配方法
+        var allocatedQty = AllocateSupplyToDemand(
+            supplyEntry,
+            demandRemainingQty: 50m,
+            bomLevel: 0,
+            voucher);
+
+        // Assert
+        Assert.Equal(50m, allocatedQty);
+        Assert.Equal(50m, supplyEntry.RemainingQty); // 供应剩余50
+        Assert.Single(voucher.SupplyAllocations);
+        Assert.Equal(1, voucher.SupplyAllocations[0].AllocationSequence); // ✅ 扣减时立即生成
+        Assert.Equal(2, voucher.NextAllocationSequence); // 自增+1
+    }
+
+    [Fact(DisplayName = "v5.1.2-008: AllocationSequence连续递增无跳号")]
+    public async Task Test_AllocationSequence_ShouldBeSequential()
+    {
+        // Arrange
+        var supplyEntry = new SupplyLedgerEntry
+        {
+            MaterialId = 101,
+            RemainingQty = 100m,
+            SupplySourceId = 1001,
+            SourceType = "INVENTORY"
+        };
+
+        var voucher = new PeggingResultVoucher
+        {
+            NextAllocationSequence = 1,
+            SupplyAllocations = new List<SupplyAllocationItem>()
+        };
+
+        // Act - 连续3次分配
+        AllocateSupplyToDemand(supplyEntry, 20m, 0, voucher);
+        AllocateSupplyToDemand(supplyEntry, 30m, 0, voucher);
+        AllocateSupplyToDemand(supplyEntry, 40m, 0, voucher);
+
+        // Assert
+        Assert.Equal(3, voucher.SupplyAllocations.Count);
+        Assert.Equal(new[] { 1, 2, 3 }, voucher.SupplyAllocations.Select(a => a.AllocationSequence));
+        Assert.Equal(4, voucher.NextAllocationSequence);
+    }
+
+    #endregion
+
+    #region 测试5：context.Tasks回填验证
+
+    [Fact(DisplayName = "v5.1.2-009: PeggingOrchestrator返回凭证，SchedulingOrchestrator回填context")]
+    public async Task Test_Voucher_ShouldBeUsedToFillContext()
+    {
+        // Arrange
+        int planVersionId = 1009;
+        var orders = CreateMockOrders();
+        var context = new SchedulingContext();
+
+        // Act
+        var voucher = await _peggingOrchestrator.ExecuteBatchPeggingWorkflowAsync(
+            planVersionId, orders, context, CancellationToken.None);
+
+        // SchedulingOrchestrator应该从voucher回填context.Tasks
+        // （这部分在SchedulingOrchestrator内部实现）
+
+        // Assert
+        Assert.NotNull(voucher);
+        Assert.NotEmpty(voucher.FinalTasks);
+
+        // 验证凭证包含必要信息
+        foreach (var task in voucher.FinalTasks)
+        {
+            Assert.True(task.Id > 0); // Task已INSERT，有真实ID
+            Assert.NotNull(task.FinalDraftId);
+            Assert.True(task.Quantity > 0);
+        }
+    }
+
+    #endregion
+
+    #region 辅助方法
+
+    private void SetupMockDatabase()
+    {
+        // 模拟ExecuteAsync - 记录SQL命令
+        _mockConnectionManager
+            .Setup(m => m.ExecuteAsync(
+                It.IsAny<string>(),
+                It.IsAny<object>(),
+                It.IsAny<DatabaseId>(),
+                It.IsAny<IDbTransaction>()))
+            .Callback<string, object, DatabaseId, IDbTransaction>((sql, param, db, txn) =>
+            {
+                _executedSqlCommands.Add(sql);
+
+                // 模拟DELETE
+                if (sql.Contains("DELETE FROM [Task]"))
+                {
+                    var planVersionId = GetParamValue<int>(param, "PlanVersionId");
+                    _inMemoryDatabase.Remove($"Tasks_{planVersionId}");
+                }
+
+                // 模拟INSERT
+                if (sql.Contains("INSERT INTO [Task]"))
+                {
+                    var planVersionId = GetParamValue<int>(param, "PlanVersionId");
+                    var currentCount = GetTaskCountInDatabase(planVersionId);
+                    _inMemoryDatabase[$"Tasks_{planVersionId}"] = currentCount + 1;
+                }
+            })
+            .ReturnsAsync(1);
+    }
+
+    // Note: Removed CreateMockOrders method that referenced private OrderLoadDto type
+
+    private void SeedTasksInDatabase(int planVersionId, int taskCount)
+    {
+        _inMemoryDatabase[$"Tasks_{planVersionId}"] = taskCount;
+    }
+
+    private int GetTaskCountInDatabase(int planVersionId)
+    {
+        return _inMemoryDatabase.TryGetValue($"Tasks_{planVersionId}", out var count)
+            ? (int)count
+            : 0;
+    }
+
+    private int GetAllocationCountInDatabase(int planVersionId)
+    {
+        return _inMemoryDatabase.TryGetValue($"Allocations_{planVersionId}", out var count)
+            ? (int)count
+            : 0;
+    }
+
+    private T GetParamValue<T>(object param, string propertyName)
+    {
+        var property = param.GetType().GetProperty(propertyName);
+        return property != null ? (T)property.GetValue(param) : default;
+    }
+
+    // Note: Removed AllocateSupplyToDemand method that referenced private types
+
+    public void Dispose()
+    {
+        _inMemoryDatabase.Clear();
+        _executedSqlCommands.Clear();
+    }
+
+    #endregion
+}

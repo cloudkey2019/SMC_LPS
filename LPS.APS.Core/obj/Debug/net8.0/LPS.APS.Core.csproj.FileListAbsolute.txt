@@ -1,0 +1,16 @@
+D:\DEMO\lps\LPS.APS.Core\bin\Debug\net8.0\LPS.APS.Core.deps.json
+D:\DEMO\lps\LPS.APS.Core\bin\Debug\net8.0\LPS.APS.Core.dll
+D:\DEMO\lps\LPS.APS.Core\bin\Debug\net8.0\LPS.APS.Core.pdb
+D:\DEMO\lps\LPS.APS.Core\bin\Debug\net8.0\LPS.APS.Shared.dll
+D:\DEMO\lps\LPS.APS.Core\bin\Debug\net8.0\LPS.APS.Shared.pdb
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.csproj.AssemblyReference.cache
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.GeneratedMSBuildEditorConfig.editorconfig
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.AssemblyInfoInputs.cache
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.AssemblyInfo.cs
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.csproj.CoreCompileInputs.cache
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS..5F651C71.Up2Date
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.dll
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\refint\LPS.APS.Core.dll
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.pdb
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\ref\LPS.APS.Core.dll
+D:\DEMO\lps\LPS.APS.Core\obj\Debug\net8.0\LPS.APS.Core.sourcelink.json

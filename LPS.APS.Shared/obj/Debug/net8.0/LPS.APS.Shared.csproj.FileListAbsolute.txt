@@ -1,0 +1,13 @@
+D:\DEMO\lps\LPS.APS.Shared\bin\Debug\net8.0\LPS.APS.Shared.deps.json
+D:\DEMO\lps\LPS.APS.Shared\bin\Debug\net8.0\LPS.APS.Shared.dll
+D:\DEMO\lps\LPS.APS.Shared\bin\Debug\net8.0\LPS.APS.Shared.pdb
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.csproj.AssemblyReference.cache
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.GeneratedMSBuildEditorConfig.editorconfig
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.AssemblyInfoInputs.cache
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.AssemblyInfo.cs
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.csproj.CoreCompileInputs.cache
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.dll
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\refint\LPS.APS.Shared.dll
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.pdb
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\ref\LPS.APS.Shared.dll
+D:\DEMO\lps\LPS.APS.Shared\obj\Debug\net8.0\LPS.APS.Shared.sourcelink.json
