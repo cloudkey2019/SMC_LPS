@@ -359,10 +359,46 @@ ScheduleRun 运行生命周期治理（ExpectedDomainKeysJson 冻结规则 / Str
 
 ---
 
+## D-8 ETA Invariant 固化 + D-T 验收测试（已完成，2026-08-21）
+
+### 核对结论（先核对再动手）
+
+- **D-8 定义**（《3号位开发任务清单》D-8 / 裁决 D）：ETA 优先级链 `Manual ETA > ERP ETA > DefaultLT` **不可配置化**
+- **裁决来源**（《3号位实施包》§10.2 已冻结）："这是业务规则，不需要做成可任意重排的 Rule Chain"
+- **业务语义**（《Pegging业务说明》§10.1~10.3）：人工 ETA 取消后回落 ERP；ERP 为空再回落 DefaultLT；DefaultLT 推算保留"估算"属性，不得伪装真实供应商承诺
+- **结构层事实**：六块 Snapshot DTO（DemandPriority/Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail）经核实**无任何 ETA 字段**——"无配置入口"结构层天然成立，行为层以 EtaInvariant 固化
+
+### 实现决策
+
+- 新增 `LPS.APS.Core/Rules/EtaInvariant.cs`（领域规则层，纯静态零 I/O，符合 Core 红线）：
+  - `EtaSource` 枚举（None/Manual/Erp/DefaultLt，序数即优先级）
+  - `EtaResolution` record（EffectiveEta + Source + IsEstimated + HasEta）
+  - `EtaInvariant.Resolve(manualEta, erpEta, defaultLtEta)` 纯函数：Manual 优先 → 回落 ERP → 回落 DefaultLT（IsEstimated=true）→ 全空 None
+- **无配置入口双重固化**：结构层（DTO 无 ETA 字段）+ 行为层（EtaInvariant 是唯一表达）+ 测试反射断言（新增 ETA 优先级重排属性即失败）
+- 红线遵守：未引入 ETA 数据承载（Manual/ERP ETA 数据域属 2号位/5号位）；放大判定（D-7：已有 PI Supply 不得按 Yield 放大）属下游消费方，参数层只表达 YieldPercent
+- **落点说明（code-review 提出，待 0/5 号位确认）**：`EtaInvariant` 放 `Core/Rules` 而非 `LPS.APS.BusinessRules`——理由：① 裁决 D 将"ETA 优先级冻结"明确列为 3 号位治理职责（工作条目清单 307-310 行）；② BusinessRules 项目语义为"5 号位运行时规则插件"（Pegging/LotSizing/Priority），而 ETA Invariant 是配置治理层的固化不变式、非运行插件；③ Core 层纯函数零 I/O 符合 DDD 领域规则定位。若 0/5 号位另有判定，可迁至 BusinessRules 而不改行为（纯静态无依赖）
+
+### 代码改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `LPS.APS.Core/Rules/EtaInvariant.cs` | **新增**：ETA 链固化不变式（枚举 + record + 纯函数） |
+| `LPS.APS.Tests/Unit/EtaInvariantTests.cs` | **新增**：6 个链语义测试 + 4 个 DTO 无配置入口反射断言 |
+| `LPS.APS.Tests/Unit/StageDTests.cs` | **新增**：D-T 验收 R07（Protection 触发）/ R08（PI 排序）/ R09（Warehouse Avail）/ R10（ETA 链）/ R11（Margin）/ R12（Offset 按 Warehouse 级生效）/ R13（Yield 按 Material/Stage 取值） |
+
+### 验证结果
+
+- ✅ `dotnet build`：0 错误 0 警告（本次新增代码）
+- ✅ 单元测试：EtaInvariantTests 10/10 + StageDTests 8/8 全绿（TDD：RED→GREEN）
+- ✅ 全量测试：**95 总数 / 88 通过 / 6 跳过 / 1 失败**（较上轮 +18，唯一失败仍为既有 2号位 `FiniteCapacitySolver` DI 问题，6 跳过仍为治理链路环境缺口）
+- ✅ code-reviewer 审查：**APPROVE with warnings**（0 CRITICAL / 0 HIGH；5 MEDIUM 全部修复 / 4 LOW 已记录）——MEDIUM 修复：① 反射测试扩为六块+容器+一层嵌套探测并改为启发式冒烟措辞；② 新增契约字面 JSON 形状反序列化测试；③ 枚举注释改"序数值不代表优先级权重"；④ IsEstimated 改派生计算属性（杜绝不一致构造）；⑤ 落点说明写入文档待 0/5 号位确认
+
+---
+
 ## 下一步
 
 - **P0-03 收口**：待 P0-01 DDL 方案 A/B/C 确认后，为 Solver/Candidate 建立真实版本来源（装载层整改）
-- **阶段 D 验收测试 R07~R13（D-T）**：DTO 与校验已实现，缺验收测试固化（Protection 触发 / PI 排序 / Warehouse / DefaultLT / Margin / Offset / Yield / ETA Invariant）
+- **D-8 + D-T**：✅ 已完成（2026-08-21）——阶段 D 六块参数可表达 + ETA 链不可配置化固化，门 R07~R13 绿
 - **E-4 Solver 发布前校验**：On-time 0~100%、Split 超限、Guardrail 为正（独立于 P0-01 装载层裁决，可先做校验层）
 - **阶段 E 验收测试 R14~R17（E-T）**：SolverStrategyBlock/CandidateGuardrailBlock 语义测试
 - **集成测试环境缺口（需 2 号位补齐后，6 个治理链路集成测试自动转绿）**：
