@@ -9,3 +9,5 @@ obj/
 *.rar
 *.bak
 LPS.APS.Tests/TestResults/
+bfg.jar
+..bfg-report/
