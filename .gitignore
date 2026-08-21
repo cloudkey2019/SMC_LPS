@@ -11,3 +11,5 @@ obj/
 LPS.APS.Tests/TestResults/
 bfg.jar
 ..bfg-report/
+bfg.jar
+..bfg-report/
