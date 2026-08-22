@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LPS.APS.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a9de0109a921e8fd6c8ac83c5afbc50179166816")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a5741a7afd055e718479394ce81670b0666f45c8")]
 [assembly: System.Reflection.AssemblyProductAttribute("LPS.APS.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LPS.APS.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

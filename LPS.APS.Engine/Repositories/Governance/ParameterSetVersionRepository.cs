@@ -51,13 +51,15 @@ public class ParameterSetVersionRepository : IParameterSetVersionRepository
     {
         const string sql = @"
             INSERT INTO [dbo].[ParameterSetVersion]
-                ([ParameterSetId], [VersionCode], [Status], [LockJson], [SupplyJson], [ProcurementJson],
-                 [CreatedAt], [CreatedBy], [UpdatedAt], [UpdatedBy],
-                 [PublishedAt], [PublishedBy], [Remarks])
+                ([ParameterSetId], [VersionCode], [Status], [ContentSnapshotJson],
+                 [EffectiveFrom], [EffectiveTo],
+                 [PublishedAt], [PublishedBy], [ApprovedAt], [ApprovedBy],
+                 [CreatedAt], [CreatedBy])
             VALUES
-                (@ParameterSetId, @VersionCode, @Status, @LockJson, @SupplyJson, @ProcurementJson,
-                 @CreatedAt, @CreatedBy, @UpdatedAt, @UpdatedBy,
-                 @PublishedAt, @PublishedBy, @Remarks);
+                (@ParameterSetId, @VersionCode, @Status, @ContentSnapshotJson,
+                 @EffectiveFrom, @EffectiveTo,
+                 @PublishedAt, @PublishedBy, @ApprovedAt, @ApprovedBy,
+                 @CreatedAt, @CreatedBy);
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
 
         var id = await _connectionManager.QueryFirstOrDefaultAsync<long>(
@@ -73,14 +75,13 @@ public class ParameterSetVersionRepository : IParameterSetVersionRepository
             UPDATE [dbo].[ParameterSetVersion]
             SET [VersionCode] = @VersionCode,
                 [Status] = @Status,
-                [LockJson] = @LockJson,
-                [SupplyJson] = @SupplyJson,
-                [ProcurementJson] = @ProcurementJson,
-                [UpdatedAt] = @UpdatedAt,
-                [UpdatedBy] = @UpdatedBy,
+                [ContentSnapshotJson] = @ContentSnapshotJson,
+                [EffectiveFrom] = @EffectiveFrom,
+                [EffectiveTo] = @EffectiveTo,
                 [PublishedAt] = @PublishedAt,
                 [PublishedBy] = @PublishedBy,
-                [Remarks] = @Remarks
+                [ApprovedAt] = @ApprovedAt,
+                [ApprovedBy] = @ApprovedBy
             WHERE [Id] = @Id";
 
         await _connectionManager.ExecuteAsync(sql, version, db: DatabaseId.APS);

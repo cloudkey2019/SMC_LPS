@@ -39,7 +39,10 @@ public class FrozenStrategySnapshotProviderTests
         FrozenStrategySnapshotProvider.ClearCache();
     }
 
-    /// <summary>B-5 测试辅助：装配一套合法三版本（六块 JSON 均为合法内容，P0-04 不误伤）</summary>
+    /// <summary>
+    /// B-5 测试辅助：装配一套合法三版本（六块经 ContentSnapshotJson 真实来源，P0-02 收口后不误伤）。
+    /// SolverStrategy/CandidateGuardrail 为真实内容（R14~R17 重放断言基准）。
+    /// </summary>
     private void SetupValidVersions(
         long strategyProfileVersionId,
         long ruleSetVersionId,
@@ -60,13 +63,14 @@ public class FrozenStrategySnapshotProviderTests
             Id = ruleSetVersionId,
             RuleSetId = 2,
             VersionCode = "R1.0",
-            DemandPriorityJson = JsonSerializer.Serialize(new DemandPriorityBlock
-            {
-                Segments = new List<PrioritySegment>
+            ContentSnapshotJson = BuildRuleSetSnapshot(
+                new DemandPriorityBlock
                 {
-                    new PrioritySegment { SegmentOrder = 1, SegmentName = "紧急订单", IsEnabled = true }
-                }
-            }),
+                    Segments = new List<PrioritySegment>
+                    {
+                        new PrioritySegment { SegmentOrder = 1, SegmentName = "紧急订单", IsEnabled = true }
+                    }
+                }),
             Status = "PUBLISHED"
         };
 
@@ -75,21 +79,36 @@ public class FrozenStrategySnapshotProviderTests
             Id = parameterSetVersionId,
             ParameterSetId = 3,
             VersionCode = "P1.0",
-            LockJson = JsonSerializer.Serialize(new LockBlock
-            {
-                Trigger = new ProtectionTriggerParams { UseRemainingTimeThreshold = true, RemainingTimeThresholdHours = 24 }
-            }),
-            SupplyJson = JsonSerializer.Serialize(new SupplyBlock
-            {
-                Inventory = new InventoryAvailabilityRule { IsEnabled = true, WarehousePriority = new List<string> { "WH01" } }
-            }),
-            ProcurementJson = JsonSerializer.Serialize(new ProcurementBlock
-            {
-                PlanningYields = new List<PlanningYieldRule>
+            ContentSnapshotJson = BuildParameterSetSnapshot(
+                new LockBlock
                 {
-                    new PlanningYieldRule { MaterialId = "MAT001", YieldPercent = 0.95m }
-                }
-            }),
+                    Trigger = new ProtectionTriggerParams { UseRemainingTimeThreshold = true, RemainingTimeThresholdHours = 24 }
+                },
+                new SupplyBlock
+                {
+                    Inventory = new InventoryAvailabilityRule { IsEnabled = true, WarehousePriority = new List<string> { "WH01" } }
+                },
+                new ProcurementBlock
+                {
+                    PlanningYields = new List<PlanningYieldRule>
+                    {
+                        new PlanningYieldRule { MaterialId = "MAT001", YieldPercent = 0.95m }
+                    }
+                },
+                new SolverStrategyBlock
+                {
+                    Mode = SolverStrategyMode.Forward,
+                    OnTimeTarget = new OnTimeTargetParams { TargetPercent = 90, IsPrimaryObjective = true },
+                    Setup = new SetupParams { DefaultSetupMinutes = 30, SetupLookAheadSize = 5 }
+                },
+                new CandidateGuardrailBlock
+                {
+                    NormalMs = 60_000,
+                    SoftMs = 90_000,
+                    LocalHardMs = 180_000,
+                    MaxRepairAttempts = 5,
+                    MaxPropagationRounds = 10
+                }),
             Status = "PUBLISHED"
         };
 
@@ -105,6 +124,26 @@ public class FrozenStrategySnapshotProviderTests
             .Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(parameterSetVersion);
     }
+
+    /// <summary>测试辅助：组装 RuleSet 侧 ContentSnapshotJson（DemandPriority 子块，契约 §6.10.5 键名）</summary>
+    private static string BuildRuleSetSnapshot(DemandPriorityBlock demandPriority)
+        => JsonSerializer.Serialize(new Dictionary<string, object> { ["DemandPriority"] = demandPriority });
+
+    /// <summary>测试辅助：组装 ParameterSet 侧 ContentSnapshotJson（五子块，契约 §6.10.5 键名）</summary>
+    private static string BuildParameterSetSnapshot(
+        LockBlock lockBlock,
+        SupplyBlock supplyBlock,
+        ProcurementBlock procurementBlock,
+        SolverStrategyBlock solverStrategyBlock,
+        CandidateGuardrailBlock candidateGuardrailBlock)
+        => JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["Lock"] = lockBlock,
+            ["Supply"] = supplyBlock,
+            ["Procurement"] = procurementBlock,
+            ["SolverStrategy"] = solverStrategyBlock,
+            ["CandidateGuardrail"] = candidateGuardrailBlock
+        });
 
     [Fact]
     public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_正常装配六块_成功()
@@ -142,7 +181,10 @@ public class FrozenStrategySnapshotProviderTests
             Id = ruleSetVersionId,
             RuleSetId = 2,
             VersionCode = "R1.0",
-            DemandPriorityJson = demandPriorityJson,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["DemandPriority"] = JsonSerializer.Deserialize<DemandPriorityBlock>(demandPriorityJson)
+            }),
             Status = "PUBLISHED"
         };
 
@@ -176,14 +218,35 @@ public class FrozenStrategySnapshotProviderTests
             }
         });
 
+        var solverStrategyJson = JsonSerializer.Serialize(new SolverStrategyBlock
+        {
+            Mode = SolverStrategyMode.Backward,
+            OnTimeTarget = new OnTimeTargetParams { TargetPercent = 85 },
+            Setup = new SetupParams { DefaultSetupMinutes = 45, SetupLookAheadSize = 4 }
+        });
+
+        var candidateGuardrailJson = JsonSerializer.Serialize(new CandidateGuardrailBlock
+        {
+            NormalMs = 70_000,
+            SoftMs = 110_000,
+            LocalHardMs = 200_000,
+            MaxRepairAttempts = 7,
+            MaxPropagationRounds = 12
+        });
+
         var parameterSetVersion = new ParameterSetVersion
         {
             Id = parameterSetVersionId,
             ParameterSetId = 3,
             VersionCode = "P1.0",
-            LockJson = lockJson,
-            SupplyJson = supplyJson,
-            ProcurementJson = procurementJson,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = JsonSerializer.Deserialize<LockBlock>(lockJson),
+                ["Supply"] = JsonSerializer.Deserialize<SupplyBlock>(supplyJson),
+                ["Procurement"] = JsonSerializer.Deserialize<ProcurementBlock>(procurementJson),
+                ["SolverStrategy"] = JsonSerializer.Deserialize<SolverStrategyBlock>(solverStrategyJson),
+                ["CandidateGuardrail"] = JsonSerializer.Deserialize<CandidateGuardrailBlock>(candidateGuardrailJson)
+            }),
             Status = "PUBLISHED"
         };
 
@@ -226,8 +289,17 @@ public class FrozenStrategySnapshotProviderTests
         snapshot.Procurement.PlanningYields.Should().HaveCount(1);
         snapshot.Procurement.PlanningYields[0].YieldPercent.Should().Be(0.95m);
 
-        snapshot.SolverStrategy.Should().NotBeNull();
-        snapshot.CandidateGuardrail.Should().NotBeNull();
+        // R14~R17 真实重放断言（P0-02：不能只断言 NotNull，须断言具体值等于该版本 JSON 中内容）
+        snapshot.SolverStrategy.Mode.Should().Be(SolverStrategyMode.Backward);
+        snapshot.SolverStrategy.OnTimeTarget.TargetPercent.Should().Be(85);
+        snapshot.SolverStrategy.Setup.DefaultSetupMinutes.Should().Be(45);
+        snapshot.SolverStrategy.Setup.SetupLookAheadSize.Should().Be(4);
+
+        snapshot.CandidateGuardrail.NormalMs.Should().Be(70_000);
+        snapshot.CandidateGuardrail.SoftMs.Should().Be(110_000);
+        snapshot.CandidateGuardrail.LocalHardMs.Should().Be(200_000);
+        snapshot.CandidateGuardrail.MaxRepairAttempts.Should().Be(7);
+        snapshot.CandidateGuardrail.MaxPropagationRounds.Should().Be(12);
 
         // 验证仓储调用
         _mockStrategyProfileRepo.Verify(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>()), Times.Once);
@@ -336,15 +408,15 @@ public class FrozenStrategySnapshotProviderTests
         var ruleSetVersion = new RuleSetVersion
         {
             Id = 200,
-            DemandPriorityJson = null
+            ContentSnapshotJson = null,
+            Status = "PUBLISHED"
         };
 
         var parameterSetVersion = new ParameterSetVersion
         {
             Id = 300,
-            LockJson = string.Empty,
-            SupplyJson = "   ",
-            ProcurementJson = null
+            ContentSnapshotJson = string.Empty,
+            Status = "PUBLISHED"
         };
 
         _mockStrategyProfileRepo
@@ -359,11 +431,11 @@ public class FrozenStrategySnapshotProviderTests
             .Setup(r => r.GetByIdAsync(300, It.IsAny<CancellationToken>()))
             .ReturnsAsync(parameterSetVersion);
 
-        // Act & Assert（P0-04：必填 Block 缺失 → Snapshot 装载失败，不静默回退空 Block）
+        // Act & Assert（P0-02 六块统一：ContentSnapshotJson 缺失 → Snapshot 装载失败，不静默回退空 Block）
         var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*DemandPriorityJson 为空/缺失*");
+            .WithMessage("*ContentSnapshotJson 为空/缺失*");
     }
 
     [Fact]
@@ -382,15 +454,15 @@ public class FrozenStrategySnapshotProviderTests
         var ruleSetVersion = new RuleSetVersion
         {
             Id = 200,
-            DemandPriorityJson = "{ invalid json }"
+            ContentSnapshotJson = "{ invalid json }",
+            Status = "PUBLISHED"
         };
 
         var parameterSetVersion = new ParameterSetVersion
         {
             Id = 300,
-            LockJson = "not json at all",
-            SupplyJson = "{\"unclosed\":",
-            ProcurementJson = "[]"
+            ContentSnapshotJson = "not json at all",
+            Status = "PUBLISHED"
         };
 
         _mockStrategyProfileRepo
@@ -405,11 +477,11 @@ public class FrozenStrategySnapshotProviderTests
             .Setup(r => r.GetByIdAsync(300, It.IsAny<CancellationToken>()))
             .ReturnsAsync(parameterSetVersion);
 
-        // Act & Assert（P0-04：JSON/内容损坏 → Snapshot 装载失败，不静默回退空 Block）
+        // Act & Assert（P0-02 六块统一：ContentSnapshotJson 损坏 → Snapshot 装载失败，不静默回退空 Block）
         var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*DemandPriorityJson 格式无效*");
+            .WithMessage("*ContentSnapshotJson 格式无效*");
     }
 
     // ===================== B-5：Snapshot 缓存（清单 #51 性能红线 / 契约 C2-4） =====================
@@ -500,15 +572,15 @@ public class FrozenStrategySnapshotProviderTests
         // Arrange（P0-04 × B-5 交互：坏配置装载失败绝不写入缓存，避免"陈旧坏快照"被后续同版本命中）
         const long strategyProfileVersionId = 105;
 
-        // 第一次：DemandPriorityJson 为空 → 装载失败
+        // 第一次：ContentSnapshotJson 为空 → 装载失败
         var badStrategyProfileVersion = new StrategyProfileVersion
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = 205,
             ParameterSetVersionId = 305
         };
-        var badRuleSetVersion = new RuleSetVersion { Id = 205, DemandPriorityJson = null };
-        var badParameterSetVersion = new ParameterSetVersion { Id = 305, LockJson = "{}", SupplyJson = "{}", ProcurementJson = "{}" };
+        var badRuleSetVersion = new RuleSetVersion { Id = 205, ContentSnapshotJson = null, Status = "PUBLISHED" };
+        var badParameterSetVersion = new ParameterSetVersion { Id = 305, ContentSnapshotJson = "{}", Status = "PUBLISHED" };
 
         _mockStrategyProfileRepo
             .Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>()))
@@ -522,7 +594,7 @@ public class FrozenStrategySnapshotProviderTests
 
         var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*DemandPriorityJson 为空/缺失*");
+            .WithMessage("*ContentSnapshotJson 为空/缺失*");
 
         // 修复配置后重试同一 VersionId → 必须重新走仓储（证明失败未写入缓存，无陈旧坏快照）
         SetupValidVersions(strategyProfileVersionId, 205, 305);
@@ -533,5 +605,202 @@ public class FrozenStrategySnapshotProviderTests
         snapshot.DemandPriority.Segments.Should().HaveCount(1);
         // 失败装载 1 次 + 修复后重试成功 1 次 = 共 2 次仓储查询（若失败写入了缓存，则重试命中缓存仅 1 次）
         _mockStrategyProfileRepo.Verify(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    // ===================== P0-02：六块统一失败语义（R14~R17，契约 §6.10.5） =====================
+
+    [Fact]
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_参数集快照缺少SolverStrategy子块_装载失败()
+    {
+        // Arrange（R14~R17：六块统一缺失即失败；SolverStrategy 为 P0-02 收口核心）
+        const long strategyProfileVersionId = 106;
+        const long ruleSetVersionId = 206;
+        const long parameterSetVersionId = 306;
+
+        var strategyProfileVersion = new StrategyProfileVersion
+        {
+            Id = strategyProfileVersionId,
+            RuleSetVersionId = ruleSetVersionId,
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "PUBLISHED"
+        };
+
+        var ruleSetVersion = new RuleSetVersion
+        {
+            Id = ruleSetVersionId,
+            ContentSnapshotJson = BuildRuleSetSnapshot(new DemandPriorityBlock { Segments = [] }),
+            Status = "PUBLISHED"
+        };
+
+        // 参数集快照缺 SolverStrategy 子块（其余四块齐全）
+        var parameterSetVersion = new ParameterSetVersion
+        {
+            Id = parameterSetVersionId,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = new LockBlock(),
+                ["Supply"] = new SupplyBlock(),
+                ["Procurement"] = new ProcurementBlock(),
+                ["CandidateGuardrail"] = new CandidateGuardrailBlock()
+            }),
+            Status = "PUBLISHED"
+        };
+
+        _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
+        _mockRuleSetRepo.Setup(r => r.GetByIdAsync(ruleSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(ruleSetVersion);
+        _mockParameterSetRepo.Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(parameterSetVersion);
+
+        // Act & Assert（P0-02 六块统一：缺任一子块 → Snapshot 装载失败，不静默回退）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*缺少 SolverStrategy 子块*");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_参数集快照缺少CandidateGuardrail子块_装载失败()
+    {
+        // Arrange（R14~R17：CandidateGuardrail 同样六块统一缺失即失败）
+        const long strategyProfileVersionId = 107;
+        const long ruleSetVersionId = 207;
+        const long parameterSetVersionId = 307;
+
+        var strategyProfileVersion = new StrategyProfileVersion
+        {
+            Id = strategyProfileVersionId,
+            RuleSetVersionId = ruleSetVersionId,
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "PUBLISHED"
+        };
+
+        var ruleSetVersion = new RuleSetVersion
+        {
+            Id = ruleSetVersionId,
+            ContentSnapshotJson = BuildRuleSetSnapshot(new DemandPriorityBlock { Segments = [] }),
+            Status = "PUBLISHED"
+        };
+
+        // 参数集快照缺 CandidateGuardrail 子块（其余四块齐全）
+        var parameterSetVersion = new ParameterSetVersion
+        {
+            Id = parameterSetVersionId,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = new LockBlock(),
+                ["Supply"] = new SupplyBlock(),
+                ["Procurement"] = new ProcurementBlock(),
+                ["SolverStrategy"] = new SolverStrategyBlock()
+            }),
+            Status = "PUBLISHED"
+        };
+
+        _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
+        _mockRuleSetRepo.Setup(r => r.GetByIdAsync(ruleSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(ruleSetVersion);
+        _mockParameterSetRepo.Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(parameterSetVersion);
+
+        // Act & Assert（P0-02 六块统一：缺任一子块 → Snapshot 装载失败，不静默回退）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*缺少 CandidateGuardrail 子块*");
+    }
+
+    // ===================== P1-01：装载前版本状态防御 =====================
+
+    [Fact]
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_规则集版本非PUBLISHED_装载失败()
+    {
+        // Arrange（P1-01：Run 装载必须 PUBLISHED，未发布版本直接失败）
+        const long strategyProfileVersionId = 108;
+        const long ruleSetVersionId = 208;
+        const long parameterSetVersionId = 308;
+
+        var strategyProfileVersion = new StrategyProfileVersion
+        {
+            Id = strategyProfileVersionId,
+            RuleSetVersionId = ruleSetVersionId,
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "PUBLISHED"
+        };
+
+        var ruleSetVersion = new RuleSetVersion
+        {
+            Id = ruleSetVersionId,
+            ContentSnapshotJson = BuildRuleSetSnapshot(new DemandPriorityBlock { Segments = [] }),
+            Status = "DRAFT"   // 未发布 → 拒绝装载
+        };
+
+        var parameterSetVersion = new ParameterSetVersion
+        {
+            Id = parameterSetVersionId,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = new LockBlock(),
+                ["Supply"] = new SupplyBlock(),
+                ["Procurement"] = new ProcurementBlock(),
+                ["SolverStrategy"] = new SolverStrategyBlock(),
+                ["CandidateGuardrail"] = new CandidateGuardrailBlock()
+            }),
+            Status = "PUBLISHED"
+        };
+
+        _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
+        _mockRuleSetRepo.Setup(r => r.GetByIdAsync(ruleSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(ruleSetVersion);
+        _mockParameterSetRepo.Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(parameterSetVersion);
+
+        // Act & Assert（P1-01：非 PUBLISHED → 装载失败）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*非 PUBLISHED*");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_参数集版本已失效_装载失败()
+    {
+        // Arrange（P1-01：EffectiveTo 已过 → 拒绝装载）
+        const long strategyProfileVersionId = 109;
+        const long ruleSetVersionId = 209;
+        const long parameterSetVersionId = 309;
+
+        var strategyProfileVersion = new StrategyProfileVersion
+        {
+            Id = strategyProfileVersionId,
+            RuleSetVersionId = ruleSetVersionId,
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "PUBLISHED"
+        };
+
+        var ruleSetVersion = new RuleSetVersion
+        {
+            Id = ruleSetVersionId,
+            ContentSnapshotJson = BuildRuleSetSnapshot(new DemandPriorityBlock { Segments = [] }),
+            Status = "PUBLISHED"
+        };
+
+        var parameterSetVersion = new ParameterSetVersion
+        {
+            Id = parameterSetVersionId,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = new LockBlock(),
+                ["Supply"] = new SupplyBlock(),
+                ["Procurement"] = new ProcurementBlock(),
+                ["SolverStrategy"] = new SolverStrategyBlock(),
+                ["CandidateGuardrail"] = new CandidateGuardrailBlock()
+            }),
+            Status = "PUBLISHED",
+            EffectiveTo = DateTime.UtcNow.AddHours(-1)   // 已失效
+        };
+
+        _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
+        _mockRuleSetRepo.Setup(r => r.GetByIdAsync(ruleSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(ruleSetVersion);
+        _mockParameterSetRepo.Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(parameterSetVersion);
+
+        // Act & Assert（P1-01：失效版本 → 装载失败）
+        var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*已失效*");
     }
 }

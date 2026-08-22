@@ -218,8 +218,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
             PublishedAt = now,
             PublishedBy = "IntegrationTest",
             CreatedAt = now,
-            CreatedBy = "IntegrationTest",
-            UpdatedAt = now
+            CreatedBy = "IntegrationTest"
         };
 
         ruleSetVersion = await _ruleSetRepo.AddAsync(ruleSetVersion);
@@ -306,8 +305,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
             PublishedAt = now,
             PublishedBy = "IntegrationTest",
             CreatedAt = now,
-            CreatedBy = "IntegrationTest",
-            UpdatedAt = now
+            CreatedBy = "IntegrationTest"
         };
 
         parameterSetVersion = await _parameterSetRepo.AddAsync(parameterSetVersion);

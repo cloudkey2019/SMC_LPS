@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LPS.APS.Web")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ba18a4eb2dc80623dcc573ffbe7b424cee3182aa")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a5741a7afd055e718479394ce81670b0666f45c8")]
 [assembly: System.Reflection.AssemblyProductAttribute("LPS.APS.Web")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LPS.APS.Web")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

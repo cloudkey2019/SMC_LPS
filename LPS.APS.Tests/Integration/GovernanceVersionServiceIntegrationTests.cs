@@ -217,7 +217,6 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
             Status = "DRAFT",
             CreatedAt = _now,
             CreatedBy = "IntegrationTest",
-            UpdatedAt = _now,
         };
         ruleSetVersion = await _ruleSetVersionRepo.AddAsync(ruleSetVersion);
         _testRuleSetVersionId = ruleSetVersion.Id;
@@ -251,7 +250,6 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
             Status = "DRAFT",
             CreatedAt = _now,
             CreatedBy = "IntegrationTest",
-            UpdatedAt = _now,
         };
         parameterSetVersion = await _parameterSetVersionRepo.AddAsync(parameterSetVersion);
         _testParameterSetVersionId = parameterSetVersion.Id;

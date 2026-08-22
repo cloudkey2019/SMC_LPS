@@ -29,6 +29,12 @@ public class GovernanceVersionService : IGovernanceVersionService
     /// <summary>Demand Priority 业务校验器（无状态纯校验，P0-05 强制接入发布前校验）</summary>
     private readonly DemandPriorityValidator _demandPriorityValidator = new();
 
+    /// <summary>Solver Strategy 业务校验器（无状态纯校验，E-4；P0-02b 接入参数集发布前校验）</summary>
+    private readonly SolverStrategyValidator _solverStrategyValidator = new();
+
+    /// <summary>Candidate Guardrail 业务校验器（无状态纯校验，E-4；P0-02b 接入参数集发布前校验）</summary>
+    private readonly CandidateGuardrailValidator _candidateGuardrailValidator = new();
+
     public GovernanceVersionService(
         IRuleSetVersionRepository ruleSetVersionRepository,
         IParameterSetVersionRepository parameterSetVersionRepository,
@@ -61,6 +67,10 @@ public class GovernanceVersionService : IGovernanceVersionService
         EnsurePublishable(version.Status, ruleSetVersionId);
 
         var beforeStatus = version.Status;
+
+        // P0-02b：发布时聚合 DemandPriority 子块 → ContentSnapshotJson（契约 §6.10.5，Run 装载重放载体）
+        version.ContentSnapshotJson = BuildRuleSetContentSnapshot(version);
+
         version.Status = GovernanceVersionStatus.Published;
         version.PublishedAt = DateTime.UtcNow;
         version.PublishedBy = publishedBy;
@@ -97,6 +107,10 @@ public class GovernanceVersionService : IGovernanceVersionService
         EnsurePublishable(version.Status, parameterSetVersionId);
 
         var beforeStatus = version.Status;
+
+        // P0-02b：发布时聚合五子块（Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail）→ ContentSnapshotJson（契约 §6.10.5）
+        version.ContentSnapshotJson = BuildParameterSetContentSnapshot(version);
+
         version.Status = GovernanceVersionStatus.Published;
         version.PublishedAt = DateTime.UtcNow;
         version.PublishedBy = publishedBy;
@@ -394,8 +408,92 @@ public class GovernanceVersionService : IGovernanceVersionService
         ValidateSupplyJson(version.SupplyJson, result);
         ValidateProcurementJson(version.ProcurementJson, result);
 
+        // P0-02b：SolverStrategy / CandidateGuardrail 两 Validator 接入发布链（E-4，契约 §6.10.5 校验器接线）
+        ValidateSolverStrategyJson(version.SolverStrategyJson, result);
+        ValidateCandidateGuardrailJson(version.CandidateGuardrailJson, result);
+
         result.IsValid = result.Errors.Count == 0;
         return result;
+    }
+
+    /// <summary>校验 SolverStrategyJson：缺失/损坏/业务约束（E-4 SolverStrategyValidator 接线，P0-02b）</summary>
+    private void ValidateSolverStrategyJson(string? json, PublishValidationResult result)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            result.Errors.Add(new ValidationError
+            {
+                Code = "EMPTY_SOLVER_STRATEGY",
+                Message = "SolverStrategyJson 不能为空（参数集版本须含 Solver 策略配置）",
+                FieldName = "SolverStrategyJson"
+            });
+            return;
+        }
+
+        try
+        {
+            var block = System.Text.Json.JsonSerializer.Deserialize<SolverStrategyBlock>(json, JsonOptions);
+            if (block == null)
+            {
+                result.Errors.Add(new ValidationError { Code = "INVALID_JSON", Message = "SolverStrategyJson 反序列化结果为空", FieldName = "SolverStrategyJson" });
+                return;
+            }
+
+            var ssResult = _solverStrategyValidator.Validate(block);
+            foreach (var err in ssResult.Errors)
+            {
+                result.Errors.Add(new ValidationError
+                {
+                    Code = "INVALID_SOLVER_STRATEGY",
+                    Message = err,
+                    FieldName = "SolverStrategyJson"
+                });
+            }
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            result.Errors.Add(new ValidationError { Code = "INVALID_JSON", Message = "SolverStrategyJson 格式无效", FieldName = "SolverStrategyJson", Details = ex.Message });
+        }
+    }
+
+    /// <summary>校验 CandidateGuardrailJson：缺失/损坏/业务约束（E-4 CandidateGuardrailValidator 接线，P0-02b）</summary>
+    private void ValidateCandidateGuardrailJson(string? json, PublishValidationResult result)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            result.Errors.Add(new ValidationError
+            {
+                Code = "EMPTY_CANDIDATE_GUARDRAIL",
+                Message = "CandidateGuardrailJson 不能为空（参数集版本须含 Candidate 技术 Guardrail 配置）",
+                FieldName = "CandidateGuardrailJson"
+            });
+            return;
+        }
+
+        try
+        {
+            var block = System.Text.Json.JsonSerializer.Deserialize<CandidateGuardrailBlock>(json, JsonOptions);
+            if (block == null)
+            {
+                result.Errors.Add(new ValidationError { Code = "INVALID_JSON", Message = "CandidateGuardrailJson 反序列化结果为空", FieldName = "CandidateGuardrailJson" });
+                return;
+            }
+
+            var cgResult = _candidateGuardrailValidator.Validate(block);
+            foreach (var err in cgResult.Errors)
+            {
+                result.Errors.Add(new ValidationError
+                {
+                    Code = "INVALID_CANDIDATE_GUARDRAIL",
+                    Message = err,
+                    FieldName = "CandidateGuardrailJson"
+                });
+            }
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            result.Errors.Add(new ValidationError { Code = "INVALID_JSON", Message = "CandidateGuardrailJson 格式无效", FieldName = "CandidateGuardrailJson", Details = ex.Message });
+        }
     }
 
     /// <summary>校验 LockJson：缺失/损坏/业务约束（P0-05）</summary>
@@ -571,6 +669,52 @@ public class GovernanceVersionService : IGovernanceVersionService
     {
         PropertyNameCaseInsensitive = true
     };
+
+    /// <summary>
+    /// 发布时聚合 RuleSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：DemandPriority 子块）。
+    /// 调用前 Validate 已保证 DemandPriorityJson 非空合法；此处反序列化失败按防御性错误抛出（发布链不应走到）。
+    /// </summary>
+    private static string BuildRuleSetContentSnapshot(RuleSetVersion version)
+    {
+        var blocks = new Dictionary<string, object>
+        {
+            ["DemandPriority"] = System.Text.Json.JsonSerializer.Deserialize<DemandPriorityBlock>(version.DemandPriorityJson!, JsonOptions)
+                ?? throw new InvalidOperationException($"规则集版本 {version.Id} 的 DemandPriorityJson 反序列化失败，无法聚合发布快照")
+        };
+
+        return System.Text.Json.JsonSerializer.Serialize(blocks);
+    }
+
+    /// <summary>
+    /// 发布时聚合 ParameterSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail 五子块）。
+    /// 调用前 Validate 已保证各主题 JSON 非空合法；此处反序列化失败按防御性错误抛出。
+    /// </summary>
+    private static string BuildParameterSetContentSnapshot(ParameterSetVersion version)
+    {
+        var blocks = new Dictionary<string, object>
+        {
+            ["Lock"] = DeserializeRequired<LockBlock>(version.LockJson, "Lock", version.Id),
+            ["Supply"] = DeserializeRequired<SupplyBlock>(version.SupplyJson, "Supply", version.Id),
+            ["Procurement"] = DeserializeRequired<ProcurementBlock>(version.ProcurementJson, "Procurement", version.Id),
+            ["SolverStrategy"] = DeserializeRequired<SolverStrategyBlock>(version.SolverStrategyJson, "SolverStrategy", version.Id),
+            ["CandidateGuardrail"] = DeserializeRequired<CandidateGuardrailBlock>(version.CandidateGuardrailJson, "CandidateGuardrail", version.Id)
+        };
+
+        return System.Text.Json.JsonSerializer.Serialize(blocks);
+    }
+
+    /// <summary>聚合辅助：反序列化主题 JSON → 块对象，缺失/损坏抛防御性错误</summary>
+    private static TBlock DeserializeRequired<TBlock>(string? json, string blockName, long versionId)
+        where TBlock : class
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            throw new InvalidOperationException($"参数集版本 {versionId} 的 {blockName}Json 为空，无法聚合发布快照");
+        }
+
+        return System.Text.Json.JsonSerializer.Deserialize<TBlock>(json, JsonOptions)
+            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 {blockName}Json 反序列化结果为空，无法聚合发布快照");
+    }
 
     // ==================== P0-06：StrategyProfileVersion 治理完整闭环 ====================
 

@@ -267,7 +267,6 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
             Status = "PUBLISHED",
             CreatedAt = _now,
             CreatedBy = "IntegrationTest",
-            UpdatedAt = _now,
         });
         _testRuleSetVersionId = ruleSetVersion.Id;
 
@@ -278,7 +277,6 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
             Status = "PUBLISHED",
             CreatedAt = _now,
             CreatedBy = "IntegrationTest",
-            UpdatedAt = _now,
         });
         _testParameterSetVersionId = parameterSetVersion.Id;
 

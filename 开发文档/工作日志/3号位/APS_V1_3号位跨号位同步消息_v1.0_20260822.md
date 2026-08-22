@@ -95,7 +95,7 @@
 |---|---|---|---|
 | 1 | 按冻结 VersionId 一次装载 + 内存执行、不漂移 | ✅ Provider 入参即 VersionId，无逐笔 | 端到端调用验证 |
 | 2 | 三 VersionId 同源、一 Run 一致 | ✅ DTO 显式 + 集成测试断言 | 对齐 |
-| 3 | 默认版本语义（未指定时取唯一 PUBLISHED） | ✅ 默认治理就绪（A-6 不变量） | **取默认 SQL 由 2号位 实现**（契约不冻结） |
+| 3 | 默认版本语义（未指定时取唯一 PUBLISHED） | ✅ 默认治理就绪（A-6 不变量）+ `ResolveDefaultStrategyProfileVersionAsync`（3号位 已实现） | **2号位 Run 启动调用 3号位 默认解析一次并缓存，不建第二套默认 SQL**（0号位 P1-02 修正，见附录） |
 | 4 | Cache Key 含 VersionId + 不污染 + 不刷新 | ✅ B-5 已实现 | 缓存键字符串对齐（不冻结） |
 | 5 | 六块 + PlanningYield 覆盖、三 VersionId 显式 | ✅ 结构齐全 | 核对 |
 | 6 | 2号位 抽 FrozenFactParameters 转交 5号位 | ✅ 契约已禁 `Snapshot.ToFrozenFactParameters()`（避免 3→5 隐形依赖） | **抽取 Mapping 由 2号位 实现** |
@@ -103,7 +103,7 @@
 ### 四、需 2号位 配合/回执的 5 点
 
 1. Run 启动调用 Provider 一次装载验证（检查点 1 端到端）；
-2. 默认版本取数 SQL 实现（检查点 3）；
+2. Run 启动调用 3号位 默认解析（`ResolveDefaultStrategyProfileVersionAsync`）一次并缓存（检查点 3，0号位 P1-02 修正：2号位 不自行实现默认版本 SQL）；
 3. 缓存键字符串对齐（检查点 4）；
 4. `FrozenFactParameters` 抽取 Mapping（检查点 6）；
 5. ⚠️ Solver/Candidate 两块真实来源**待 0号位 DDL 方案 A/B/C 裁决**——与四块**解耦**，不阻塞四块联调。
@@ -114,9 +114,53 @@
 
 ---
 
+## 与 0号位验收包 §六 对照（汇报附件）
+
+> 依据：《APS_V1_0号位总体项目验收包_v1.0_20260814.md》§六（3号位验收）。3号位 全部提报/证据按此对照，0号位 复核时以此为准。
+
+### §6.1 必须交付（11 项）
+
+| # | 验收项 | 3号位 状态 | 证据落点 |
+|---|---|---|---|
+| 1 | 六张规则/参数治理表后端 | ✅ | 阶段 A（A-1~A-9，交付物 1） |
+| 2 | 版本发布 | ✅ | A-5~A-8（交付物 2） |
+| 3 | FrozenStrategySnapshot | ✅ | B-1~B-5（交付物 3） |
+| 4 | Priority Segment | ✅ | C-1~C-4（交付物 4，R04~R06 绿） |
+| 5 | Demand Protection 参数 | ✅ | D-1（交付物 5，R07 绿） |
+| 6 | Procurement 参数 | ✅ | D-2~D-8（交付物 6，R08~R13 绿） |
+| 7 | Solver Strategy | 🟡 E-1~E-3 阻塞 0号位 DDL 裁决；E-4 校验器已闭环 | 蓝图备妥，裁决即执行 |
+| 8 | Candidate Guardrail | 🟡 E-3 阻塞同上；E-4 校验器已闭环 | 同上 |
+| 9 | ScheduleRun 生命周期 | ✅ | F-1~F-4（交付物 8，R18~R20 绿） |
+| 10 | Candidate 最小确认 | ✅ | F-5~F-6（交付物 9，R21~R22 绿） |
+| 11 | R01~R22 测试结果 | 🟡 18/22 绿（R14~R17 阻塞） | 《R01-R22验收证据映射表》 |
+
+### §6.2 必须确认（A~D）
+
+| 确认项 | 3号位 状态 | 证据落点 |
+|---|---|---|
+| A. 一次 Run 只用一份冻结版本 | ✅ 冻结语义已实现（按指定 VersionId 一次装载，不漂移）；端到端行为待 2号位 验证 | B-4 + 联调检查点 1（契约 §六 #1） |
+| B. 不恢复 PriorityScore | ✅ 排序链路 CalculationLayer → Priority Segment → First Match → Segment Sort，无全局 Score | C-2/C-3 + 验收提报 §三 19 |
+| C. 不做逐笔在线规则调用 | ✅ 一次装载进内存，无逐笔 RPC | B-4 + 联调检查点 1 |
+| D. 不建设万能规则平台 | ✅ 无 DSL/脚本/任意 SQL/Plugin/通用编排 | 验收提报 §三 19 + 红线 #5 |
+
+> ⚠️ 7/8/11 三项（Solver Strategy / Candidate Guardrail / R14~R17）收敛到同一个外部依赖：**0号位 DDL 方案 A/B/C 裁决**（检查项 11~13）。裁决后按《P0-02执行蓝图》收口，§6.1 即 11/11 全 ✅。
+
+---
+
+## 附录：0号位 答复与裁决应用（2026-08-22）
+
+依据《APS_V1_3号位代码第三轮正式复审报告_a5741a7_Commit冻结版(1).md》：
+
+1. **DDL 方案 A/B/C 裁决**：批准**方案 A**——RuleSetVersion / ParameterSetVersion 各增 1 个通用发布内容快照字段 `ContentSnapshotJson NVARCHAR(MAX) NULL`；不新增表/版本体系/主题专用列；不新增 ChangeReason（用 GovernanceAuditLog）；由数据库责任方（2号位）执行正式 DDL 同步，3号位 提交变更申请。
+2. **P0-01 未关闭**：Repository 与冻结 DDL 双向不一致（依赖非冻结主题 JSON/Updated/Remarks + 遗漏 EffectiveFrom/EffectiveTo/ApprovedAt/ApprovedBy 落库）；3号位 自述"未扩写依赖非冻结字段的 Repository SQL"与源码不符，已更正。
+3. **P0-02 未关闭**：Solver/Candidate 空对象 + 两 Validator 未接入发布链 + R14~R17 无真实值重放；按 §7 一次收口（发布阶段聚合 ContentSnapshotJson / Run 装载阶段六块还原）。
+4. **P1-01**：Provider 需加三版本 PUBLISHED + 有效期硬校验（一处权威防御）。
+5. **P1-02（本消息 2 修正）**：**不采纳**"默认版本取数 SQL 由 2号位 实现"——3号位 已实现 `ResolveDefaultStrategyProfileVersionAsync`，正确边界为 2号位 Run 启动调用一次并缓存；本消息 §三 检查点 3 / §四 待回执点 2 已按此修正。
+6. **联调结论**：联调方向保留；2号位 不需重新确认业务契约，仅代码联调；本轮无新增 2号位 业务 P0。
+
 ## 留痕状态
 
 - [x] 消息 1（致 0号位）已起草落盘，2026-08-22
 - [x] 消息 2（致 2号位）已起草落盘，2026-08-22
-- [ ] 0号位 DDL 方案 A/B/C 裁决回执（映射表 §六 四项）
-- [ ] 2号位 六项检查点回执（交付物 11 闭环）
+- [x] 0号位 裁决回执（2026-08-22）：**批准方案 A**；P1-02 修正；P0-01/P0-02 收口清单 15 项（详见附录）
+- [ ] 2号位 六项检查点回执（交付物 11 闭环，按 P1-02 修正后口径）

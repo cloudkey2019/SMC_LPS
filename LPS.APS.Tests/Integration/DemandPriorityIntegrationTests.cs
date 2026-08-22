@@ -115,8 +115,7 @@ public class DemandPriorityIntegrationTests : IDisposable
             PublishedAt = now,
             PublishedBy = "IntegrationTest",
             CreatedAt = now,
-            CreatedBy = "IntegrationTest",
-            UpdatedAt = now
+            CreatedBy = "IntegrationTest"
         };
 
         var savedVersion = await _ruleSetRepo.AddAsync(ruleSetVersion);

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using LPS.APS.Core.Dto;
+using LPS.APS.Core.Enum;
 using LPS.APS.Core.Interfaces;
 
 namespace LPS.APS.Application.Services;
@@ -75,8 +76,13 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
         var parameterSetVersion = await _parameterSetVersionRepo.GetByIdAsync(strategyProfileVersion.ParameterSetVersionId, ct)
             ?? throw new InvalidOperationException($"参数集版本不存在：{strategyProfileVersion.ParameterSetVersionId}");
 
-        // 3. 装配 Snapshot（六块 + 三 VersionId 元数据）
-        // P0-04：四块有来源的 JSON 一律禁止静默回退空 Block——缺失/损坏直接装载失败，
+        // 3. P1-01 防御：仅 PUBLISHED 且处于有效区间内的版本可装载（防止 Run 装载未发布/失效版本）
+        EnsureLoadable(ruleSetVersion, strategyProfileVersionId, "规则集");
+        EnsureLoadable(parameterSetVersion, strategyProfileVersionId, "参数集");
+
+        // 4. 装配 Snapshot（六块 + 三 VersionId 元数据）
+        // 方案 A（0号位 §7.2）：六块统一从 ContentSnapshotJson 结构化子块反序列化（契约 §6.10.5）。
+        // 缺失/损坏一律装载失败（P0-02 六块统一），不静默回退空 Block——
         // 避免"数据库显示本 Run 使用某版本、程序却按空规则执行"的版本追溯失真。
         var snapshot = new FrozenStrategySnapshot
         {
@@ -85,23 +91,19 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
             ParameterSetVersionId = parameterSetVersion.Id,
             FrozenAt = DateTime.UtcNow,
 
-            // ① Demand Priority（来自 RuleSetVersion.DemandPriorityJson）
-            DemandPriority = DeserializeDemandPriorityBlock(ruleSetVersion.DemandPriorityJson, ruleSetVersion.Id),
+            // ① Demand Priority（来自 RuleSetVersion.ContentSnapshotJson.DemandPriority 子块）
+            DemandPriority = DeserializeRuleSetBlock(ruleSetVersion, strategyProfileVersionId),
 
-            // ② Lock（来自 ParameterSetVersion.LockJson）
-            Lock = DeserializeLockBlock(parameterSetVersion.LockJson, parameterSetVersion.Id),
+            // ②~④ 来自 ParameterSetVersion.ContentSnapshotJson 子块
+            Lock = DeserializeParameterSetBlock<LockBlock>(parameterSetVersion, "Lock", strategyProfileVersionId),
+            Supply = DeserializeParameterSetBlock<SupplyBlock>(parameterSetVersion, "Supply", strategyProfileVersionId),
+            Procurement = DeserializeParameterSetBlock<ProcurementBlock>(parameterSetVersion, "Procurement", strategyProfileVersionId),
 
-            // ③ Supply（来自 ParameterSetVersion.SupplyJson）
-            Supply = DeserializeSupplyBlock(parameterSetVersion.SupplyJson, parameterSetVersion.Id),
+            // ⑤ Solver Strategy（P0-02 收口：真实来源，替代原空对象）
+            SolverStrategy = DeserializeParameterSetBlock<SolverStrategyBlock>(parameterSetVersion, "SolverStrategy", strategyProfileVersionId),
 
-            // ④ Procurement（来自 ParameterSetVersion.ProcurementJson，含 PlanningYield）
-            Procurement = DeserializeProcurementBlock(parameterSetVersion.ProcurementJson, parameterSetVersion.Id),
-
-            // ⑤ Solver Strategy（P0-03 待办：P0-01 DDL 方案确认前暂无真实版本来源，保持空对象）
-            SolverStrategy = new SolverStrategyBlock(),
-
-            // ⑥ Candidate Guardrail（P0-03 待办：同上，保持空对象）
-            CandidateGuardrail = new CandidateGuardrailBlock()
+            // ⑥ Candidate Guardrail（P0-02 收口：真实来源，替代原空对象）
+            CandidateGuardrail = DeserializeParameterSetBlock<CandidateGuardrailBlock>(parameterSetVersion, "CandidateGuardrail", strategyProfileVersionId)
         };
 
         // B-5：写入缓存（失败路径已在上述反序列化抛异常退出，不会写入坏快照）。
@@ -111,79 +113,111 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
         return snapshot;
     }
 
-    /// <summary>反序列化 DemandPriorityJson → DemandPriorityBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
-    private DemandPriorityBlock DeserializeDemandPriorityBlock(string? json, long versionId)
+    /// <summary>
+    /// P1-01 防御：规则集版本装载前置校验——仅 PUBLISHED 且处于有效区间内的版本可装载。
+    /// EffectiveFrom/EffectiveTo 为空时忽略该侧边界（冻结 DDL v5.1.2 允许 NULL）。
+    /// </summary>
+    private static void EnsureLoadable(
+        LPS.APS.Core.Entities.APS.RuleSetVersion version,
+        long strategyProfileVersionId,
+        string kind)
     {
-        if (string.IsNullOrWhiteSpace(json))
+        var now = DateTime.UtcNow;
+        if (version.Status != GovernanceVersionStatus.Published)
         {
-            throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 为空/缺失，Snapshot 装载失败");
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本状态为 {version.Status}，非 PUBLISHED，Snapshot 装载失败");
         }
 
-        try
+        if (version.EffectiveFrom.HasValue && version.EffectiveFrom.Value > now)
         {
-            return JsonSerializer.Deserialize<DemandPriorityBlock>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 反序列化结果为空，Snapshot 装载失败");
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本生效时间未到（EffectiveFrom={version.EffectiveFrom.Value:O}），Snapshot 装载失败");
         }
-        catch (JsonException ex)
+
+        if (version.EffectiveTo.HasValue && version.EffectiveTo.Value < now)
         {
-            throw new InvalidOperationException($"规则集版本 {versionId} 的 DemandPriorityJson 格式无效，Snapshot 装载失败", ex);
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本已失效（EffectiveTo={version.EffectiveTo.Value:O}），Snapshot 装载失败");
         }
     }
 
-    /// <summary>反序列化 LockJson → LockBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
-    private LockBlock DeserializeLockBlock(string? json, long versionId)
+    /// <summary>
+    /// P1-01 防御：参数集版本装载前置校验——仅 PUBLISHED 且处于有效区间内的版本可装载。
+    /// EffectiveFrom/EffectiveTo 为空时忽略该侧边界（冻结 DDL v5.1.2 允许 NULL）。
+    /// </summary>
+    private static void EnsureLoadable(
+        LPS.APS.Core.Entities.APS.ParameterSetVersion version,
+        long strategyProfileVersionId,
+        string kind)
     {
-        if (string.IsNullOrWhiteSpace(json))
+        var now = DateTime.UtcNow;
+        if (version.Status != GovernanceVersionStatus.Published)
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 为空/缺失，Snapshot 装载失败");
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本状态为 {version.Status}，非 PUBLISHED，Snapshot 装载失败");
         }
 
-        try
+        if (version.EffectiveFrom.HasValue && version.EffectiveFrom.Value > now)
         {
-            return JsonSerializer.Deserialize<LockBlock>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 反序列化结果为空，Snapshot 装载失败");
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本生效时间未到（EffectiveFrom={version.EffectiveFrom.Value:O}），Snapshot 装载失败");
         }
-        catch (JsonException ex)
+
+        if (version.EffectiveTo.HasValue && version.EffectiveTo.Value < now)
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 LockJson 格式无效，Snapshot 装载失败", ex);
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本已失效（EffectiveTo={version.EffectiveTo.Value:O}），Snapshot 装载失败");
         }
     }
 
-    /// <summary>反序列化 SupplyJson → SupplyBlock（P0-04：缺失/损坏一律失败，不静默回退）</summary>
-    private SupplyBlock DeserializeSupplyBlock(string? json, long versionId)
+    /// <summary>从 RuleSetVersion.ContentSnapshotJson 反序列化 DemandPriority 子块（P0-02 六块统一失败）</summary>
+    private DemandPriorityBlock DeserializeRuleSetBlock(
+        LPS.APS.Core.Entities.APS.RuleSetVersion version,
+        long strategyProfileVersionId)
     {
-        if (string.IsNullOrWhiteSpace(json))
+        if (string.IsNullOrWhiteSpace(version.ContentSnapshotJson))
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 为空/缺失，Snapshot 装载失败");
+            throw new InvalidOperationException($"规则集版本 {version.Id} 的 ContentSnapshotJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            return JsonSerializer.Deserialize<SupplyBlock>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 反序列化结果为空，Snapshot 装载失败");
+            using var doc = JsonDocument.Parse(version.ContentSnapshotJson);
+            if (!doc.RootElement.TryGetProperty("DemandPriority", out var blockElement))
+            {
+                throw new InvalidOperationException($"规则集版本 {version.Id} 的 ContentSnapshotJson 缺少 DemandPriority 子块，Snapshot 装载失败");
+            }
+
+            return blockElement.Deserialize<DemandPriorityBlock>(JsonOptions)
+                ?? throw new InvalidOperationException($"规则集版本 {version.Id} 的 DemandPriority 子块反序列化结果为空，Snapshot 装载失败");
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 SupplyJson 格式无效，Snapshot 装载失败", ex);
+            throw new InvalidOperationException($"规则集版本 {version.Id} 的 ContentSnapshotJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 
-    /// <summary>反序列化 ProcurementJson → ProcurementBlock（含 PlanningYield，契约 C2-5；P0-04：缺失/损坏一律失败）</summary>
-    private ProcurementBlock DeserializeProcurementBlock(string? json, long versionId)
+    /// <summary>从 ParameterSetVersion.ContentSnapshotJson 反序列化指定子块（P0-02 六块统一失败）</summary>
+    private TBlock DeserializeParameterSetBlock<TBlock>(
+        LPS.APS.Core.Entities.APS.ParameterSetVersion version,
+        string blockName,
+        long strategyProfileVersionId)
+        where TBlock : class
     {
-        if (string.IsNullOrWhiteSpace(json))
+        if (string.IsNullOrWhiteSpace(version.ContentSnapshotJson))
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 为空/缺失，Snapshot 装载失败");
+            throw new InvalidOperationException($"参数集版本 {version.Id} 的 ContentSnapshotJson 为空/缺失，Snapshot 装载失败");
         }
 
         try
         {
-            return JsonSerializer.Deserialize<ProcurementBlock>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 反序列化结果为空，Snapshot 装载失败");
+            using var doc = JsonDocument.Parse(version.ContentSnapshotJson);
+            if (!doc.RootElement.TryGetProperty(blockName, out var blockElement))
+            {
+                throw new InvalidOperationException($"参数集版本 {version.Id} 的 ContentSnapshotJson 缺少 {blockName} 子块，Snapshot 装载失败");
+            }
+
+            return blockElement.Deserialize<TBlock>(JsonOptions)
+                ?? throw new InvalidOperationException($"参数集版本 {version.Id} 的 {blockName} 子块反序列化结果为空，Snapshot 装载失败");
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 ProcurementJson 格式无效，Snapshot 装载失败", ex);
+            throw new InvalidOperationException($"参数集版本 {version.Id} 的 ContentSnapshotJson 格式无效，Snapshot 装载失败", ex);
         }
     }
 }

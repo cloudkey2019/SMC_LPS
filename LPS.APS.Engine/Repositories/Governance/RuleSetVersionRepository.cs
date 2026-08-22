@@ -51,13 +51,15 @@ public class RuleSetVersionRepository : IRuleSetVersionRepository
     {
         const string sql = @"
             INSERT INTO [dbo].[RuleSetVersion]
-                ([RuleSetId], [VersionCode], [Status], [DemandPriorityJson],
-                 [CreatedAt], [CreatedBy], [UpdatedAt], [UpdatedBy],
-                 [PublishedAt], [PublishedBy], [Remarks])
+                ([RuleSetId], [VersionCode], [Status], [ContentSnapshotJson],
+                 [EffectiveFrom], [EffectiveTo],
+                 [PublishedAt], [PublishedBy], [ApprovedAt], [ApprovedBy],
+                 [CreatedAt], [CreatedBy])
             VALUES
-                (@RuleSetId, @VersionCode, @Status, @DemandPriorityJson,
-                 @CreatedAt, @CreatedBy, @UpdatedAt, @UpdatedBy,
-                 @PublishedAt, @PublishedBy, @Remarks);
+                (@RuleSetId, @VersionCode, @Status, @ContentSnapshotJson,
+                 @EffectiveFrom, @EffectiveTo,
+                 @PublishedAt, @PublishedBy, @ApprovedAt, @ApprovedBy,
+                 @CreatedAt, @CreatedBy);
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
 
         var id = await _connectionManager.QueryFirstOrDefaultAsync<long>(
@@ -73,12 +75,13 @@ public class RuleSetVersionRepository : IRuleSetVersionRepository
             UPDATE [dbo].[RuleSetVersion]
             SET [VersionCode] = @VersionCode,
                 [Status] = @Status,
-                [DemandPriorityJson] = @DemandPriorityJson,
-                [UpdatedAt] = @UpdatedAt,
-                [UpdatedBy] = @UpdatedBy,
+                [ContentSnapshotJson] = @ContentSnapshotJson,
+                [EffectiveFrom] = @EffectiveFrom,
+                [EffectiveTo] = @EffectiveTo,
                 [PublishedAt] = @PublishedAt,
                 [PublishedBy] = @PublishedBy,
-                [Remarks] = @Remarks
+                [ApprovedAt] = @ApprovedAt,
+                [ApprovedBy] = @ApprovedBy
             WHERE [Id] = @Id";
 
         await _connectionManager.ExecuteAsync(sql, version, db: DatabaseId.APS);

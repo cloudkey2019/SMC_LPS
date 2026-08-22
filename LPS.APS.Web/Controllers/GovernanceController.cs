@@ -67,7 +67,6 @@ public class GovernanceController : ControllerBase
     public async Task<IActionResult> CreateRuleSetVersion([FromBody] RuleSetVersion version, CancellationToken ct)
     {
         version.CreatedAt = DateTime.UtcNow;
-        version.UpdatedAt = DateTime.UtcNow;
         var created = await _ruleSetVersionRepo.AddAsync(version, ct);
         return CreatedAtAction(nameof(GetRuleSetVersion), new { versionId = created.Id }, new { success = true, data = created });
     }
@@ -84,7 +83,6 @@ public class GovernanceController : ControllerBase
         }
 
         version.Id = versionId;
-        version.UpdatedAt = DateTime.UtcNow;
         await _ruleSetVersionRepo.UpdateAsync(version, ct);
         return Ok(new { success = true, data = version });
     }
@@ -121,7 +119,6 @@ public class GovernanceController : ControllerBase
     public async Task<IActionResult> CreateParameterSetVersion([FromBody] ParameterSetVersion version, CancellationToken ct)
     {
         version.CreatedAt = DateTime.UtcNow;
-        version.UpdatedAt = DateTime.UtcNow;
         var created = await _parameterSetVersionRepo.AddAsync(version, ct);
         return CreatedAtAction(nameof(GetParameterSetVersion), new { versionId = created.Id }, new { success = true, data = created });
     }
@@ -138,7 +135,6 @@ public class GovernanceController : ControllerBase
         }
 
         version.Id = versionId;
-        version.UpdatedAt = DateTime.UtcNow;
         await _parameterSetVersionRepo.UpdateAsync(version, ct);
         return Ok(new { success = true, data = version });
     }
