@@ -172,6 +172,21 @@ dotnet build LPS.APS.sln   → 0 错误
 - 归属：2 号位/1 号位层，3 号位按红线不擅自修改
 - 建议：在 `AddSchedulingServices()` 补 `services.AddSingleton<FiniteCapacitySolver>()`，或 `SchedulingOrchestrator` 改依赖接口
 
+### 跟进状态（2026-08-22，本轮二批整改后复测）
+
+> 二轮复审第二批（P0-03~P0-06 Candidate 生命周期 + P1-01）已合入。上述 3 项跨号位事项**状态不变、仍开放**，等待 2 号位行动：
+>
+> ```
+> dotnet build LPS.APS.sln   → 0 错误
+> dotnet test LPS.APS.Tests  → 总计 97 / 通过 90 / 跳过 6 / 失败 1
+> ```
+>
+> - 6 跳过 = 上述第 1、2 项（APS_Auth 库 / ExpectedDomainKeysJson 列），2 号位补齐环境后自动转绿
+> - 1 失败 = 上述第 3 项（FiniteCapacitySolver DI），2 号位修复后全绿
+> - 本轮新增 3 号位整改未引入任何新的失败/跳过（RunLifecycle 单测 27/27 全绿，其中 P0-03/04/05/06 + P1-01 共 9 项）
+>
+> 逐项映射见《APS_V1_3号位R01-R22验收证据映射表_v1.0_20260822》§四。
+
 ## 七、跨号位边界遵守声明
 
 - ✅ 未修改 2 号位运行状态执行逻辑：`ScheduleRunService` / `SchedulingOrchestrator` / `DomainSchedulingJob` / `DomainLayerCoordinatorJob`

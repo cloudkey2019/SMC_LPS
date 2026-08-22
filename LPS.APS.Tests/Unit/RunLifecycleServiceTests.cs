@@ -67,8 +67,8 @@ public class RunLifecycleServiceTests
             StartedAt = DateTime.UtcNow,
         };
 
-    /// <summary>构造 CANDIDATE 计划版本</summary>
-    private static PlanVersion CandidateVersion(int id = 5, string? domainKey = "D1")
+    /// <summary>构造 CANDIDATE 计划版本（默认关联可激活来源 Run 2）</summary>
+    private static PlanVersion CandidateVersion(int id = 5, string? domainKey = "D1", int? sourceScheduleRunId = 2)
         => new()
         {
             Id = id,
@@ -76,7 +76,35 @@ public class RunLifecycleServiceTests
             VersionCategory = "RESCHEDULE",
             DomainKey = domainKey,
             Status = "CANDIDATE",
+            SourceScheduleRunId = sourceScheduleRunId,
             CreatedAt = DateTime.UtcNow,
+        };
+
+    /// <summary>构造"已完成最小人工确认"的审计记录（P0-04 激活硬前置）</summary>
+    private static IReadOnlyList<GovernanceAuditLog> ConfirmedLogs(int planVersionId = 5)
+        => new[]
+        {
+            new GovernanceAuditLog
+            {
+                OperationType = "ConfirmCandidate",
+                EntityType = "PlanVersion",
+                EntityId = planVersionId,
+                OperatedBy = "u1",
+                OperatedAt = DateTime.UtcNow,
+            },
+        };
+
+    /// <summary>构造 INSERT_ORDER_WHATIF 来源 Run（CTP/INSERT_IMPACT_ANALYSIS，永远不得激活）</summary>
+    private static ScheduleRunGov WhatIfRun(int id = 3)
+        => new()
+        {
+            Id = id,
+            RunType = "INSERT_ORDER_WHATIF",
+            Status = "COMPLETED",
+            TriggeredBy = "API",
+            DataCutoffTime = DateTime.UtcNow,
+            ExpectedDomainKeysJson = """["D1"]""",
+            StartedAt = DateTime.UtcNow,
         };
 
     // ==================== ValidateExpectedDomainKeysAsync ====================
@@ -134,6 +162,20 @@ public class RunLifecycleServiceTests
 
         // Assert
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Validate_FullSchedule_重复DomainKey_抛异常()
+    {
+        // Arrange（P1-01）：FULL 预期 Domain 集合含重复 DomainKey
+        _scheduleRunRepo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(FullRun(expectedJson: """["D1","D1"]"""));
+
+        // Act
+        var act = async () => await _service.ValidateExpectedDomainKeysAsync(1, CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
     [Fact]
@@ -237,37 +279,39 @@ public class RunLifecycleServiceTests
     }
 
     [Fact]
-    public async Task Confirm_同域已有ACTIVE_抛异常()
+    public async Task Confirm_同域已有ACTIVE_仍可正常确认()
     {
-        // Arrange
-        _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(CandidateVersion(5, "D1"));
-        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", 5, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PlanVersion { Id = 3, DomainKey = "D1", Status = "ACTIVE" });
+        // Arrange：Base ACTIVE 存在（正常"Base ACTIVE → Candidate 比较/确认 → 新 Candidate 采用"流程）
+        var version = CandidateVersion(5, "D1");
+        _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
-        // Act
-        var act = async () => await _service.ConfirmCandidateAsync(5, "u1", null, CancellationToken.None);
+        // Act：确认不预检同域 ACTIVE（P0-06：确认与唯一性无关，只记录事实）
+        await _service.ConfirmCandidateAsync(5, "u1", "基于 Base ACTIVE 的新 Candidate", CancellationToken.None);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        // Assert：确认成功，仅记审计，不写 Activated、不转 ACTIVE、不触碰同域 ACTIVE
+        version.Status.Should().Be("CANDIDATE");
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<GovernanceAuditLog>(l =>
+                l.OperationType == "ConfirmCandidate"
+                && l.EntityId == 5),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task Confirm_合法_写Activated并记审计()
+    public async Task Confirm_合法_仅记审计不写Activated()
     {
         // Arrange
         var version = CandidateVersion(5, "D1");
         _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
-        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", 5, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((PlanVersion?)null);
 
         // Act
         await _service.ConfirmCandidateAsync(5, "u1", "人工确认", CancellationToken.None);
 
-        // Assert：确认仅写 ActivatedAt/ActivatedBy，状态保持 CANDIDATE（激活是独立步骤）
-        version.ActivatedAt.Should().NotBeNull();
-        version.ActivatedBy.Should().Be("u1");
+        // Assert（P0-05）：确认不污染 ActivatedAt/ActivatedBy，状态保持 CANDIDATE，不写库
+        version.ActivatedAt.Should().BeNull();
+        version.ActivatedBy.Should().BeNull();
         version.Status.Should().Be("CANDIDATE");
-        _planVersionRepo.Verify(r => r.UpdateAsync(version, It.IsAny<CancellationToken>()), Times.Once);
+        _planVersionRepo.Verify(r => r.UpdateAsync(It.IsAny<PlanVersion>(), It.IsAny<CancellationToken>()), Times.Never);
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<GovernanceAuditLog>(l =>
                 l.OperationType == "ConfirmCandidate"
@@ -310,37 +354,106 @@ public class RunLifecycleServiceTests
     }
 
     [Fact]
-    public async Task Activate_同域已有ACTIVE_抛异常()
+    public async Task Activate_未确认_抛异常()
     {
-        // Arrange
+        // Arrange（P0-04）：无 ConfirmCandidate 审计
         _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(CandidateVersion(5, "D1"));
-        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", 5, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PlanVersion { Id = 3, DomainKey = "D1", Status = "ACTIVE" });
+        _auditRepo.Setup(r => r.GetByEntityAsync("PlanVersion", 5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<GovernanceAuditLog>());
+
+        // Act
+        var act = async () => await _service.ActivateCandidateAsync(5, "u1", CancellationToken.None);
+
+        // Assert：激活被拒，未触碰来源 Run / 仓储写
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _planVersionRepo.Verify(r => r.ReplaceActiveAsync(
+            It.IsAny<PlanVersion>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Activate_来源Run为INSERT_ORDER_WHATIF_抛异常()
+    {
+        // Arrange（P0-03）：已确认，但来源 Run 为 INSERT_ORDER_WHATIF（CTP/INSERT_IMPACT_ANALYSIS，永远不得激活）
+        var version = CandidateVersion(5, "D1", sourceScheduleRunId: 3);
+        _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
+        _auditRepo.Setup(r => r.GetByEntityAsync("PlanVersion", 5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConfirmedLogs());
+        _scheduleRunRepo.Setup(r => r.GetByIdAsync(3, It.IsAny<CancellationToken>())).ReturnsAsync(WhatIfRun(3));
+
+        // Act
+        var act = async () => await _service.ActivateCandidateAsync(5, "u1", CancellationToken.None);
+
+        // Assert：无条件拒绝激活，未触发原子替换
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _planVersionRepo.Verify(r => r.ReplaceActiveAsync(
+            It.IsAny<PlanVersion>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Activate_SourceScheduleRunId为空_抛异常()
+    {
+        // Arrange（P0-03 防绕过）：无法证明来源 Run 可激活 → 拒绝
+        _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CandidateVersion(5, "D1", sourceScheduleRunId: null));
+        _auditRepo.Setup(r => r.GetByEntityAsync("PlanVersion", 5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConfirmedLogs());
 
         // Act
         var act = async () => await _service.ActivateCandidateAsync(5, "u1", CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();
+        _planVersionRepo.Verify(r => r.ReplaceActiveAsync(
+            It.IsAny<PlanVersion>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task Activate_合法_状态转ACTIVE并记审计()
+    public async Task Activate_同域已有ACTIVE_原子替换()
     {
-        // Arrange
+        // Arrange（P0-06）：Base ACTIVE 存在不再是失败，激活走原子替换（归档旧 ACTIVE + 新版本置 ACTIVE）
         var version = CandidateVersion(5, "D1");
         _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
-        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", 5, It.IsAny<CancellationToken>()))
-            .ReturnsAsync((PlanVersion?)null);
+        _auditRepo.Setup(r => r.GetByEntityAsync("PlanVersion", 5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConfirmedLogs());
+        _scheduleRunRepo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>())).ReturnsAsync(CandidateRun(2));
 
         // Act
         await _service.ActivateCandidateAsync(5, "u1", CancellationToken.None);
 
-        // Assert：激活 = 正式采用，CANDIDATE → ACTIVE + 写 ActivatedAt/ActivatedBy
+        // Assert：CANDIDATE → ACTIVE + 走原子替换（非单版本 UpdateAsync），不因同域 ACTIVE 拒绝
         version.Status.Should().Be("ACTIVE");
         version.ActivatedAt.Should().NotBeNull();
         version.ActivatedBy.Should().Be("u1");
-        _planVersionRepo.Verify(r => r.UpdateAsync(version, It.IsAny<CancellationToken>()), Times.Once);
+        _planVersionRepo.Verify(r => r.ReplaceActiveAsync(version, "u1", It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+        _planVersionRepo.Verify(r => r.UpdateAsync(It.IsAny<PlanVersion>(), It.IsAny<CancellationToken>()), Times.Never);
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<GovernanceAuditLog>(l =>
+                l.OperationType == "ActivateCandidate"
+                && l.EntityType == "PlanVersion"
+                && l.EntityId == 5
+                && l.BeforeStatus == "CANDIDATE"
+                && l.AfterStatus == "ACTIVE"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Activate_合法_已确认且来源可激活_状态转ACTIVE()
+    {
+        // Arrange：已完成最小确认 + 来源 Run 为可激活的 MANUAL_RESCHEDULE
+        var version = CandidateVersion(5, "D1");
+        _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
+        _auditRepo.Setup(r => r.GetByEntityAsync("PlanVersion", 5, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ConfirmedLogs());
+        _scheduleRunRepo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>())).ReturnsAsync(CandidateRun(2));
+
+        // Act
+        await _service.ActivateCandidateAsync(5, "u1", CancellationToken.None);
+
+        // Assert：激活 = 正式采用，CANDIDATE → ACTIVE + 写 ActivatedAt/ActivatedBy + 原子替换
+        version.Status.Should().Be("ACTIVE");
+        version.ActivatedAt.Should().NotBeNull();
+        version.ActivatedBy.Should().Be("u1");
+        _planVersionRepo.Verify(r => r.ReplaceActiveAsync(version, "u1", It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<GovernanceAuditLog>(l =>
                 l.OperationType == "ActivateCandidate"

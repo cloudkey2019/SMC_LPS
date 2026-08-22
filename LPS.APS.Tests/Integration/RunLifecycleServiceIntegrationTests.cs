@@ -140,14 +140,14 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
         await SetupCandidateAsync();
 
-        // 确认：仅写 ActivatedAt/ActivatedBy，状态保持 CANDIDATE
+        // 确认（二轮复审 P0-05）：仅记审计，不写 ActivatedAt/ActivatedBy、不转 ACTIVE
         await _service.ConfirmCandidateAsync(_testPlanVersionId, "tester", "集成测试确认", CancellationToken.None);
         var confirmed = await _planVersionRepo.GetByIdAsync(_testPlanVersionId);
         confirmed!.Status.Should().Be("CANDIDATE");
-        confirmed.ActivatedAt.Should().NotBeNull();
-        confirmed.ActivatedBy.Should().Be("tester");
+        confirmed.ActivatedAt.Should().BeNull();
+        confirmed.ActivatedBy.Should().BeNull();
 
-        // 激活：CANDIDATE → ACTIVE
+        // 激活（二轮复审 P0-03/04/06）：已确认 + 来源 MANUAL_RESCHEDULE 可激活 → 原子替换 CANDIDATE → ACTIVE
         await _service.ActivateCandidateAsync(_testPlanVersionId, "tester", CancellationToken.None);
         var activated = await _planVersionRepo.GetByIdAsync(_testPlanVersionId);
         activated!.Status.Should().Be("ACTIVE");

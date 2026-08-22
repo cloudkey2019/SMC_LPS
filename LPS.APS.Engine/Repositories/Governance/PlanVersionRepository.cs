@@ -15,6 +15,7 @@ namespace LPS.APS.Engine.Repositories.Governance;
 public class PlanVersionRepository : IPlanVersionRepository
 {
     private const string PlanVersionActiveStatus = "ACTIVE";
+    private const string PlanVersionArchivedStatus = "ARCHIVED";
 
     private readonly DatabaseConnectionManager _connectionManager;
     private readonly ILogger<PlanVersionRepository> _logger;
@@ -37,20 +38,6 @@ public class PlanVersionRepository : IPlanVersionRepository
             sql, new { Id = id }, db: DatabaseId.APS);
     }
 
-    public async Task<PlanVersion?> GetActiveByDomainKeyAsync(string domainKey, int? exceptPlanVersionId = null, CancellationToken ct = default)
-    {
-        const string sql = @"
-            SELECT * FROM [dbo].[PlanVersion]
-            WHERE [DomainKey] = @DomainKey
-              AND [Status] = @ActiveStatus
-              AND (@ExceptId IS NULL OR [Id] <> @ExceptId)";
-
-        return await _connectionManager.QueryFirstOrDefaultAsync<PlanVersion>(
-            sql,
-            new { DomainKey = domainKey, ActiveStatus = PlanVersionActiveStatus, ExceptId = exceptPlanVersionId },
-            db: DatabaseId.APS);
-    }
-
     public async Task UpdateAsync(PlanVersion version, CancellationToken ct = default)
     {
         const string sql = @"
@@ -70,6 +57,65 @@ public class PlanVersionRepository : IPlanVersionRepository
                 version.ActivatedBy,
             },
             db: DatabaseId.APS);
+    }
+
+    public async Task ReplaceActiveAsync(
+        PlanVersion candidate,
+        string actor,
+        DateTime activatedAt,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(candidate.DomainKey))
+        {
+            throw new InvalidOperationException($"原子替换失败：候选版本 {candidate.Id} 的 DomainKey 为空");
+        }
+
+        // 单事务原子替换：① 同域既有 ACTIVE 归档（Status→ARCHIVED + ArchivedAt）；
+        //                 ② 本 Candidate 置 ACTIVE（Status→ACTIVE + ActivatedAt/ActivatedBy）。
+        // UQ_PlanVersion_OneActivePerDomain 红线保留：任意时点同域最多一个 ACTIVE。
+        var archivedCount = await _connectionManager.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            const string archiveSql = @"
+                UPDATE [dbo].[PlanVersion]
+                SET [Status]      = @ArchivedStatus,
+                    [ArchivedAt]  = @ArchivedAt
+                WHERE [DomainKey] = @DomainKey
+                  AND [Status]    = @ActiveStatus
+                  AND [Id]        <> @CandidateId";
+
+            const string activateSql = @"
+                UPDATE [dbo].[PlanVersion]
+                SET [Status]      = @ActiveStatus,
+                    [ActivatedAt] = @ActivatedAt,
+                    [ActivatedBy] = @ActivatedBy
+                WHERE [Id] = @CandidateId";
+
+            var affected = await connection.ExecuteAsync(archiveSql,
+                new
+                {
+                    ArchivedStatus = PlanVersionArchivedStatus,
+                    ActiveStatus = PlanVersionActiveStatus,
+                    DomainKey = candidate.DomainKey,
+                    ArchivedAt = activatedAt,
+                    CandidateId = candidate.Id,
+                },
+                transaction);
+
+            await connection.ExecuteAsync(activateSql,
+                new
+                {
+                    ActiveStatus = PlanVersionActiveStatus,
+                    ActivatedAt = activatedAt,
+                    ActivatedBy = actor,
+                    CandidateId = candidate.Id,
+                },
+                transaction);
+
+            return affected;
+        }, db: DatabaseId.APS);
+
+        _logger.LogInformation("PlanVersion 原子替换成功：CandidateId={CandidateId}, Domain={DomainKey}, 归档同域 ACTIVE 数={ArchivedCount}",
+            candidate.Id, candidate.DomainKey, archivedCount);
     }
 
     public async Task<PlanVersion?> GetLatestByScheduleRunIdAsync(int scheduleRunId, CancellationToken ct = default)

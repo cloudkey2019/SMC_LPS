@@ -24,8 +24,9 @@ LPS.APS/
 │   │   └── Sync/                 # ERP订单同步服务（ODS ext_视图 → Staging → Canonical）
 │   ├── Utilities/                # 工具类（ConsoleHelper）
 │   └── Extensions/               # DI扩展（AddDatabaseServices + Scrutor自动扫描注册）
-├── LPS.APS.BusinessRules/        # 业务规则层（5号位）
-│   └── (待实现 Pegging、LotSizing、Priority 规则)
+├── LPS.APS.BusinessRules/        # 业务规则层（5号位）【⚠️ Deprecated：仅骨架】
+│   └── (V1 的 Pegging / LotSizing / Priority 由 2号位 SchedulingOrchestrator 主链实现；
+│        本层仅保留规则插件骨架，待后续版本按契约演进)
 ├── LPS.APS.Core/                 # 核心领域层（领域实体中心）
 │   ├── Entities/APS/             # APS库领域实体（Material、Order、Task、BOM、Pegging等16个）
 │   ├── Entities/Auth/            # Auth库领域实体（User、Role、Permission等11个）
@@ -56,7 +57,7 @@ LPS.APS/
 | **核心域** | LPS.APS.Core | 领域实体、值对象、域服务 | 严禁I/O操作 |
 | **排程算法** | LPS.APS.Scheduling | 时间槽寻址、换型优化、IntervalTree | **纯内存、零I/O、零数据库依赖** |
 | **数据引擎** | LPS.APS.Engine | 数据库访问、仓储、批量操作 | 不写业务规则 |
-| **业务规则** | LPS.APS.BusinessRules | Pegging、LotSizing、优先级 | 只写规则插件 |
+| **业务规则** | LPS.APS.BusinessRules | ⚠️ Deprecated（仅骨架）：V1 的 Pegging/LotSizing/Priority 由 2号位主链实现 | 只写规则插件 |
 | **基础设施** | LPS.APS.Shared | 缓存、日志、序列化、配置 | 通用抽象 |
 
 ### 三库架构（物理隔离）
@@ -282,16 +283,18 @@ services.Scan(scan => scan
    - 递归展开逻辑
    - 结果缓存到ODS库
 
-### 阶段二：业务规则实现（5号位）
-1. **Pegging规则**
-   - 需求-供应匹配
-   - 优先级排序
-2. **LotSizing规则**
-   - 批量计算
-   - 合并拆分逻辑
-3. **优先级计算**
-   - 交期权重
-   - 客户优先级
+### 阶段二：业务规则（⚠️ Deprecated 历史口径）
+> 本段为历史口径，V1 已演进：Pegging / LotSizing / Priority 由 **2号位 SchedulingOrchestrator 主链**实现；
+> 5号位 `LPS.APS.BusinessRules` 仅保留规则插件骨架，待后续版本按契约演进。勿按本段在 5号位另建并行实现。
+1. ~~**Pegging规则**~~
+   - ~~需求-供应匹配~~
+   - ~~优先级排序~~
+2. ~~**LotSizing规则**~~
+   - ~~批量计算~~
+   - ~~合并拆分逻辑~~
+3. ~~**优先级计算**~~
+   - ~~交期权重~~
+   - ~~客户优先级~~
 
 ### 阶段三：应用服务编排（3号位）
 1. **排程用例**

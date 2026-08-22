@@ -25,6 +25,10 @@ public class RunLifecycleService : IRunLifecycleService
     private const string PlanVersionCandidateStatus = "CANDIDATE";
     /// <summary>计划版本状态：ACTIVE（每域单一正式采用版本）</summary>
     private const string PlanVersionActiveStatus = "ACTIVE";
+    /// <summary>INSERT_ORDER_WHATIF RunType：仅组合 CTP / INSERT_IMPACT_ANALYSIS，永远不得激活（实施包十九）</summary>
+    private const string InsertOrderWhatifRunType = "INSERT_ORDER_WHATIF";
+    /// <summary>最小人工确认审计操作类型（P0-04 激活硬前置）</summary>
+    private const string ConfirmCandidateOperation = "ConfirmCandidate";
 
     private readonly IScheduleRunRepository _scheduleRunRepo;
     private readonly IPlanVersionRepository _planVersionRepo;
@@ -95,6 +99,12 @@ public class RunLifecycleService : IRunLifecycleService
             {
                 throw new InvalidOperationException($"{displayName} 为 FULL_SCHEDULE，预期 Domain 数须 ≥ 1（当前 {domains.Count}）");
             }
+
+            // P1-01：FULL 场景重复 DomainKey 拒绝（预期 Domain 集合不可重复）
+            if (domains.Distinct().Count() != domains.Count)
+            {
+                throw new InvalidOperationException($"{displayName} 为 FULL_SCHEDULE，预期 Domain 集合含重复 DomainKey（须去重后唯一）");
+            }
         }
         else
         {
@@ -106,7 +116,12 @@ public class RunLifecycleService : IRunLifecycleService
         }
     }
 
-    /// <summary>Candidate 最小人工确认（P0-08：仅记录 Actor / ConfirmedAt / CandidatePlanVersionId / Remark；不转 ACTIVE）</summary>
+    /// <summary>
+    /// Candidate 最小人工确认（P0-08 / 二轮复审 P0-05 / P0-06）。
+    /// 语义：确认**仅记录确认事实，不写 ActivatedAt/ActivatedBy、不转 ACTIVE、不预检同域 ACTIVE**；
+    ///       Base ACTIVE 存在时仍可正常确认。确认事实唯一落点是 ConfirmCandidate 审计记录，
+    ///       ActivateCandidateAsync 以该审计作为"已完成最小人工确认"的硬前置。
+    /// </summary>
     public async Task ConfirmCandidateAsync(int planVersionId, string actor, string? remark, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(actor))
@@ -119,18 +134,10 @@ public class RunLifecycleService : IRunLifecycleService
 
         EnsureCandidateConfirmable(version);
 
-        // 同域唯一预检（UQ_PlanVersion_OneActivePerDomain 应用层预检；排除自身）
-        await EnsureNoActiveInSameDomainAsync(version, planVersionId, ct);
-
-        version.ActivatedAt = DateTime.UtcNow;
-        version.ActivatedBy = actor;
-
-        await _planVersionRepo.UpdateAsync(version, ct);
-
-        // 审计：仅记录 Actor / ConfirmedAt / CandidatePlanVersionId(=planVersionId) / 必要 Remark
+        // 仅记审计：Actor / ConfirmedAt / CandidatePlanVersionId(=planVersionId) / 必要 Remark
         await _auditLogRepository.AddAsync(new GovernanceAuditLog
         {
-            OperationType = "ConfirmCandidate",
+            OperationType = ConfirmCandidateOperation,
             EntityType = "PlanVersion",
             EntityId = planVersionId,
             BeforeStatus = PlanVersionCandidateStatus,
@@ -142,7 +149,16 @@ public class RunLifecycleService : IRunLifecycleService
         }, ct);
     }
 
-    /// <summary>激活 Candidate（确认后正式采用：CANDIDATE → ACTIVE + 写 ActivatedAt/ActivatedBy）</summary>
+    /// <summary>
+    /// 激活 Candidate（确认后正式采用：CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）。
+    /// 前置（硬校验，缺失/不满足一律抛 InvalidOperationException）：
+    ///   a) DomainKey 非空（V1 必填）；
+    ///   b) 已完成最小人工确认（存在 ConfirmCandidate 审计记录，二轮复审 P0-04）；
+    ///   c) 来源 Run 可激活（SourceScheduleRunId 非空且 RunType != INSERT_ORDER_WHATIF，二轮复审 P0-03：
+    ///      INSERT_ORDER_WHATIF 仅组合 CTP / INSERT_IMPACT_ANALYSIS，二者永远不得激活）。
+    /// 采用边界（二轮复审 P0-06）：原子替换——单事务内归档同域既有 ACTIVE（→ARCHIVED + ArchivedAt）
+    ///       再将本 Candidate 置 ACTIVE；UQ_PlanVersion_OneActivePerDomain 红线保留，不删除。
+    /// </summary>
     public async Task ActivateCandidateAsync(int planVersionId, string actor, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(actor))
@@ -155,27 +171,64 @@ public class RunLifecycleService : IRunLifecycleService
 
         EnsureCandidateConfirmable(version);
 
-        // 同域唯一预检（UQ_PlanVersion_OneActivePerDomain 应用层预检；排除自身）
-        await EnsureNoActiveInSameDomainAsync(version, planVersionId, ct);
+        // P0-04：已完成最小人工确认 —— 校验存在 ConfirmCandidate 审计记录
+        await EnsureConfirmedAsync(planVersionId, ct);
 
-        var beforeStatus = version.Status;
+        // P0-03：来源 Run 可激活 —— SourceScheduleRunId 非空 + RunType != INSERT_ORDER_WHATIF
+        await EnsureSourceRunActivatableAsync(version, ct);
+
+        var activatedAt = DateTime.UtcNow;
         version.Status = PlanVersionActiveStatus;
-        version.ActivatedAt = DateTime.UtcNow;
+        version.ActivatedAt = activatedAt;
         version.ActivatedBy = actor;
 
-        await _planVersionRepo.UpdateAsync(version, ct);
+        // P0-06：原子替换（同域既有 ACTIVE 归档 + 本版本置 ACTIVE，单事务）
+        await _planVersionRepo.ReplaceActiveAsync(version, actor, activatedAt, ct);
 
         await _auditLogRepository.AddAsync(new GovernanceAuditLog
         {
             OperationType = "ActivateCandidate",
             EntityType = "PlanVersion",
             EntityId = planVersionId,
-            BeforeStatus = beforeStatus,
+            BeforeStatus = PlanVersionCandidateStatus,
             AfterStatus = PlanVersionActiveStatus,
             OperatedBy = actor,
-            OperatedAt = DateTime.UtcNow,
-            Remarks = $"候选版本正式采用（CANDIDATE → ACTIVE）：{planVersionId}",
+            OperatedAt = activatedAt,
+            Remarks = $"候选版本正式采用（CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）：{planVersionId}",
         }, ct);
+    }
+
+    /// <summary>P0-04：校验该 Candidate 已完成最小人工确认（存在 ConfirmCandidate 审计记录）</summary>
+    private async Task EnsureConfirmedAsync(int planVersionId, CancellationToken ct)
+    {
+        var logs = await _auditLogRepository.GetByEntityAsync("PlanVersion", planVersionId, ct);
+        var confirmed = logs.Any(l => l.OperationType == ConfirmCandidateOperation);
+        if (!confirmed)
+        {
+            throw new InvalidOperationException($"计划版本 {planVersionId} 未完成最小人工确认（缺 ConfirmCandidate 审计），不可激活");
+        }
+    }
+
+    /// <summary>P0-03：来源 Run 可激活校验（SourceScheduleRunId 非空 + RunType != INSERT_ORDER_WHATIF）</summary>
+    private async Task EnsureSourceRunActivatableAsync(PlanVersion version, CancellationToken ct)
+    {
+        if (!version.SourceScheduleRunId.HasValue)
+        {
+            throw new InvalidOperationException($"计划版本 {version.Id} 的 SourceScheduleRunId 为空，无法证明来源 Run 可激活（拒绝激活）");
+        }
+
+        var run = await _scheduleRunRepo.GetByIdAsync(version.SourceScheduleRunId.Value, ct);
+        if (run == null)
+        {
+            throw new InvalidOperationException($"计划版本 {version.Id} 的来源 ScheduleRun {version.SourceScheduleRunId.Value} 不存在，拒绝激活");
+        }
+
+        if (run.RunType == InsertOrderWhatifRunType)
+        {
+            throw new InvalidOperationException(
+                $"计划版本 {version.Id} 的来源 Run（{run.Id}）为 {InsertOrderWhatifRunType}"
+                + "（实施包十九：INSERT_ORDER_WHATIF 仅组合 CTP / INSERT_IMPACT_ANALYSIS，永远不得激活）");
+        }
     }
 
     /// <summary>候选确认/激活前置校验：状态必须 CANDIDATE 且 DomainKey 非空（V1 必填语义）</summary>
@@ -189,16 +242,6 @@ public class RunLifecycleService : IRunLifecycleService
         if (string.IsNullOrWhiteSpace(version.DomainKey))
         {
             throw new InvalidOperationException($"计划版本 {version.Id} 的 DomainKey 为空（V1 必填语义，无法按域确认/激活）");
-        }
-    }
-
-    /// <summary>同域已有 ACTIVE 版本则拒绝（每域单一正式采用版本）</summary>
-    private async Task EnsureNoActiveInSameDomainAsync(PlanVersion version, int planVersionId, CancellationToken ct)
-    {
-        var existing = await _planVersionRepo.GetActiveByDomainKeyAsync(version.DomainKey!, planVersionId, ct);
-        if (existing != null)
-        {
-            throw new InvalidOperationException($"Domain {version.DomainKey} 已存在 ACTIVE 版本 {existing.Id}（UQ_PlanVersion_OneActivePerDomain，每域单一正式采用版本）");
         }
     }
 
