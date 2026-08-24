@@ -159,11 +159,17 @@ public class GovernanceVersionService : IGovernanceVersionService
         var targetVersion = await _ruleSetVersionRepository.GetByIdAsync(targetVersionId, ct)
             ?? throw new InvalidOperationException($"目标规则集版本不存在：{targetVersionId}");
 
+        // P1-02：Diff 基于 ContentSnapshotJson 真实子块（兼容仅传主题 JSON 的装配路径，EnsureNormalized 幂等）
+        EnsureRuleSetNormalized(sourceVersion);
+        EnsureRuleSetNormalized(targetVersion);
+
         var diffs = new List<FieldDiff>
         {
             CompareField("VersionCode", "版本编码", sourceVersion.VersionCode, targetVersion.VersionCode),
             CompareField("Status", "状态", sourceVersion.Status, targetVersion.Status),
-            CompareField("DemandPriorityJson", "需求优先级配置", sourceVersion.DemandPriorityJson, targetVersion.DemandPriorityJson),
+            CompareField("DemandPriority", "需求优先级配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "DemandPriority"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "DemandPriority")),
             CompareField("EffectiveFrom", "生效起始", sourceVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss")),
             CompareField("EffectiveTo", "生效截止", sourceVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss")),
             CompareField("PublishedAt", "发布时间", sourceVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -192,13 +198,29 @@ public class GovernanceVersionService : IGovernanceVersionService
         var targetVersion = await _parameterSetVersionRepository.GetByIdAsync(targetVersionId, ct)
             ?? throw new InvalidOperationException($"目标参数集版本不存在：{targetVersionId}");
 
+        // P1-02：Diff 基于 ContentSnapshotJson 真实子块（兼容仅传主题 JSON 的装配路径，EnsureNormalized 幂等）
+        EnsureParameterSetNormalized(sourceVersion);
+        EnsureParameterSetNormalized(targetVersion);
+
         var diffs = new List<FieldDiff>
         {
             CompareField("VersionCode", "版本编码", sourceVersion.VersionCode, targetVersion.VersionCode),
             CompareField("Status", "状态", sourceVersion.Status, targetVersion.Status),
-            CompareField("LockJson", "锁定配置", sourceVersion.LockJson, targetVersion.LockJson),
-            CompareField("SupplyJson", "供给配置", sourceVersion.SupplyJson, targetVersion.SupplyJson),
-            CompareField("ProcurementJson", "采购配置", sourceVersion.ProcurementJson, targetVersion.ProcurementJson),
+            CompareField("Lock", "锁定配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "Lock"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "Lock")),
+            CompareField("Supply", "供给配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "Supply"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "Supply")),
+            CompareField("Procurement", "采购配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "Procurement"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "Procurement")),
+            CompareField("SolverStrategy", "Solver策略配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "SolverStrategy"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "SolverStrategy")),
+            CompareField("CandidateGuardrail", "Candidate技术Guardrail配置",
+                ExtractBlockJson(sourceVersion.ContentSnapshotJson, "CandidateGuardrail"),
+                ExtractBlockJson(targetVersion.ContentSnapshotJson, "CandidateGuardrail")),
             CompareField("EffectiveFrom", "生效起始", sourceVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss")),
             CompareField("EffectiveTo", "生效截止", sourceVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss")),
             CompareField("PublishedAt", "发布时间", sourceVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss")),
@@ -289,8 +311,11 @@ public class GovernanceVersionService : IGovernanceVersionService
             }
         }
 
-        // 校验 DemandPriorityJson 格式 + 业务约束（P0-05：发布前至少校验 Priority）
-        if (string.IsNullOrWhiteSpace(version.DemandPriorityJson))
+        // 校验 DemandPriority 子块（P0-01/P1-02：基于 ContentSnapshotJson 真实持久化内容——
+        // 不再读临时主题 JSON；兼容仅传主题 JSON 的装配路径，EnsureRuleSetNormalized 自动归一化到快照）
+        EnsureRuleSetNormalized(version);
+        var demandPriorityJson = ExtractBlockJson(version.ContentSnapshotJson, "DemandPriority");
+        if (string.IsNullOrWhiteSpace(demandPriorityJson))
         {
             result.Errors.Add(new ValidationError
             {
@@ -304,8 +329,8 @@ public class GovernanceVersionService : IGovernanceVersionService
             try
             {
                 var block = System.Text.Json.JsonSerializer.Deserialize<DemandPriorityBlock>(
-                    version.DemandPriorityJson,
-                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    demandPriorityJson,
+                    JsonOptions);
 
                 if (block == null)
                 {
@@ -403,14 +428,16 @@ public class GovernanceVersionService : IGovernanceVersionService
             }
         }
 
-        // 校验 JSON 配置字段格式 + 业务约束（P0-05：发布前至少校验参数）
-        ValidateLockJson(version.LockJson, result);
-        ValidateSupplyJson(version.SupplyJson, result);
-        ValidateProcurementJson(version.ProcurementJson, result);
+        // 校验五子块（P0-01/P1-02：基于 ContentSnapshotJson 真实持久化内容，不再读临时主题 JSON；
+        // 兼容仅传主题 JSON 的装配路径，EnsureParameterSetNormalized 自动归一化到快照）
+        EnsureParameterSetNormalized(version);
+        ValidateLockJson(ExtractBlockJson(version.ContentSnapshotJson, "Lock"), result);
+        ValidateSupplyJson(ExtractBlockJson(version.ContentSnapshotJson, "Supply"), result);
+        ValidateProcurementJson(ExtractBlockJson(version.ContentSnapshotJson, "Procurement"), result);
 
         // P0-02b：SolverStrategy / CandidateGuardrail 两 Validator 接入发布链（E-4，契约 §6.10.5 校验器接线）
-        ValidateSolverStrategyJson(version.SolverStrategyJson, result);
-        ValidateCandidateGuardrailJson(version.CandidateGuardrailJson, result);
+        ValidateSolverStrategyJson(ExtractBlockJson(version.ContentSnapshotJson, "SolverStrategy"), result);
+        ValidateCandidateGuardrailJson(ExtractBlockJson(version.ContentSnapshotJson, "CandidateGuardrail"), result);
 
         result.IsValid = result.Errors.Count == 0;
         return result;
@@ -671,49 +698,138 @@ public class GovernanceVersionService : IGovernanceVersionService
     };
 
     /// <summary>
-    /// 发布时聚合 RuleSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：DemandPriority 子块）。
-    /// 调用前 Validate 已保证 DemandPriorityJson 非空合法；此处反序列化失败按防御性错误抛出（发布链不应走到）。
+    /// 发布时取 RuleSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：DemandPriority 子块）。
+    /// P0-01：快照为唯一内容真相；兼容仅传主题 JSON 的装配路径（单测）——先归一化再取快照，幂等；
+    /// 缺失时防御性抛出（发布链 Validate 已保证非空，不应走到）。
     /// </summary>
     private static string BuildRuleSetContentSnapshot(RuleSetVersion version)
     {
-        var blocks = new Dictionary<string, object>
-        {
-            ["DemandPriority"] = System.Text.Json.JsonSerializer.Deserialize<DemandPriorityBlock>(version.DemandPriorityJson!, JsonOptions)
-                ?? throw new InvalidOperationException($"规则集版本 {version.Id} 的 DemandPriorityJson 反序列化失败，无法聚合发布快照")
-        };
-
-        return System.Text.Json.JsonSerializer.Serialize(blocks);
+        EnsureRuleSetNormalized(version);
+        return version.ContentSnapshotJson
+            ?? throw new InvalidOperationException($"规则集版本 {version.Id} 无内容快照，无法聚合发布");
     }
 
     /// <summary>
-    /// 发布时聚合 ParameterSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail 五子块）。
-    /// 调用前 Validate 已保证各主题 JSON 非空合法；此处反序列化失败按防御性错误抛出。
+    /// 发布时取 ParameterSet 侧 ContentSnapshotJson（契约 §6.10.5 内容归属：Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail 五子块）。
+    /// P0-01：快照为唯一内容真相（同 RuleSet 语义，幂等）。
     /// </summary>
     private static string BuildParameterSetContentSnapshot(ParameterSetVersion version)
     {
-        var blocks = new Dictionary<string, object>
-        {
-            ["Lock"] = DeserializeRequired<LockBlock>(version.LockJson, "Lock", version.Id),
-            ["Supply"] = DeserializeRequired<SupplyBlock>(version.SupplyJson, "Supply", version.Id),
-            ["Procurement"] = DeserializeRequired<ProcurementBlock>(version.ProcurementJson, "Procurement", version.Id),
-            ["SolverStrategy"] = DeserializeRequired<SolverStrategyBlock>(version.SolverStrategyJson, "SolverStrategy", version.Id),
-            ["CandidateGuardrail"] = DeserializeRequired<CandidateGuardrailBlock>(version.CandidateGuardrailJson, "CandidateGuardrail", version.Id)
-        };
-
-        return System.Text.Json.JsonSerializer.Serialize(blocks);
+        EnsureParameterSetNormalized(version);
+        return version.ContentSnapshotJson
+            ?? throw new InvalidOperationException($"参数集版本 {version.Id} 无内容快照，无法聚合发布");
     }
 
-    /// <summary>聚合辅助：反序列化主题 JSON → 块对象，缺失/损坏抛防御性错误</summary>
-    private static TBlock DeserializeRequired<TBlock>(string? json, string blockName, long versionId)
-        where TBlock : class
+    // ==================== P0-01：内容持久化链辅助（ContentSnapshotJson 唯一真相，方案 A2） ====================
+
+    /// <summary>
+    /// 归一化：把 RuleSet 主题 JSON（内存/API 字段）→ ContentSnapshotJson 子块（真实持久化载体）。
+    /// 语义：任一主题 JSON 非空即全量重建快照（主题 JSON 为编辑态真相）；全部为空则保持现有快照（真实 DB 重读场景，避免覆盖已落库内容）。
+    /// </summary>
+    private static void EnsureRuleSetNormalized(RuleSetVersion version)
+    {
+        if (string.IsNullOrWhiteSpace(version.DemandPriorityJson))
+        {
+            return;
+        }
+
+        var blocks = new Dictionary<string, object>
+        {
+            ["DemandPriority"] = System.Text.Json.JsonSerializer.Deserialize<DemandPriorityBlock>(version.DemandPriorityJson, JsonOptions)
+                ?? throw new InvalidOperationException($"规则集版本 {version.Id} 的 DemandPriorityJson 反序列化失败，无法归一化内容快照")
+        };
+
+        version.ContentSnapshotJson = System.Text.Json.JsonSerializer.Serialize(blocks);
+    }
+
+    /// <summary>归一化：把 ParameterSet 五主题 JSON（内存/API 字段）→ ContentSnapshotJson 五子块；全部为空则保持现有快照。</summary>
+    private static void EnsureParameterSetNormalized(ParameterSetVersion version)
+    {
+        if (string.IsNullOrWhiteSpace(version.LockJson)
+            && string.IsNullOrWhiteSpace(version.SupplyJson)
+            && string.IsNullOrWhiteSpace(version.ProcurementJson)
+            && string.IsNullOrWhiteSpace(version.SolverStrategyJson)
+            && string.IsNullOrWhiteSpace(version.CandidateGuardrailJson))
+        {
+            return;
+        }
+
+        var blocks = new Dictionary<string, object>();
+        TryAddBlock(blocks, "Lock", version.LockJson, version.Id);
+        TryAddBlock(blocks, "Supply", version.SupplyJson, version.Id);
+        TryAddBlock(blocks, "Procurement", version.ProcurementJson, version.Id);
+        TryAddBlock(blocks, "SolverStrategy", version.SolverStrategyJson, version.Id);
+        TryAddBlock(blocks, "CandidateGuardrail", version.CandidateGuardrailJson, version.Id);
+
+        version.ContentSnapshotJson = System.Text.Json.JsonSerializer.Serialize(blocks);
+    }
+
+    /// <summary>归一化辅助：非空主题 JSON 反序列化为 JsonElement 后加入快照字典；空则跳过（该子块在快照中缺键，发布前校验将报 EMPTY）。</summary>
+    private static void TryAddBlock(Dictionary<string, object> blocks, string blockName, string? json, long versionId)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
-            throw new InvalidOperationException($"参数集版本 {versionId} 的 {blockName}Json 为空，无法聚合发布快照");
+            return;
         }
 
-        return System.Text.Json.JsonSerializer.Deserialize<TBlock>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"参数集版本 {versionId} 的 {blockName}Json 反序列化结果为空，无法聚合发布快照");
+        blocks[blockName] = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json, JsonOptions);
+    }
+
+    /// <summary>
+    /// 从 ContentSnapshotJson 提取指定子块的原始 JSON 字符串；快照为空、子块缺失或为 null 返回 null。
+    /// 损坏快照视为子块缺失（由发布前校验报 EMPTY/INVALID，不静默吞错）。
+    /// </summary>
+    private static string? ExtractBlockJson(string? contentSnapshotJson, string blockName)
+    {
+        if (string.IsNullOrWhiteSpace(contentSnapshotJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(contentSnapshotJson);
+            if (!doc.RootElement.TryGetProperty(blockName, out var block))
+            {
+                return null;
+            }
+
+            return block.ValueKind == System.Text.Json.JsonValueKind.Null ? null : block.GetRawText();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>投影：ContentSnapshotJson 的 DemandPriority 子块 → 主题 JSON 内存字段（GET 详情前端兼容）</summary>
+    private static void ProjectRuleSetContent(RuleSetVersion version)
+    {
+        version.DemandPriorityJson = ExtractBlockJson(version.ContentSnapshotJson, "DemandPriority");
+    }
+
+    /// <summary>投影：ContentSnapshotJson 五子块 → 五主题 JSON 内存字段（GET 详情前端兼容）</summary>
+    private static void ProjectParameterSetContent(ParameterSetVersion version)
+    {
+        version.LockJson = ExtractBlockJson(version.ContentSnapshotJson, "Lock");
+        version.SupplyJson = ExtractBlockJson(version.ContentSnapshotJson, "Supply");
+        version.ProcurementJson = ExtractBlockJson(version.ContentSnapshotJson, "Procurement");
+        version.SolverStrategyJson = ExtractBlockJson(version.ContentSnapshotJson, "SolverStrategy");
+        version.CandidateGuardrailJson = ExtractBlockJson(version.ContentSnapshotJson, "CandidateGuardrail");
+    }
+
+    /// <summary>P0-02：状态机约束——已发布不可原地修改；失效/归档不可改；仅 DRAFT/SUBMITTED/APPROVED 可编辑。</summary>
+    private static void EnsureUpdatable(string status, long versionId)
+    {
+        if (status == GovernanceVersionStatus.Published)
+        {
+            throw new InvalidOperationException($"版本已发布，不可原地修改（历史不可变，须创建新版本）：{versionId}");
+        }
+
+        if (status is GovernanceVersionStatus.Disabled or GovernanceVersionStatus.Archived)
+        {
+            throw new InvalidOperationException($"版本状态不可修改（当前 {status}）：{versionId}");
+        }
     }
 
     // ==================== P0-06：StrategyProfileVersion 治理完整闭环 ====================
@@ -923,5 +1039,152 @@ public class GovernanceVersionService : IGovernanceVersionService
             PublishedAt = version.PublishedAt,
             PublishedBy = version.PublishedBy,
         };
+    }
+
+    // ==================== P0-01/P0-02：CRUD 状态机不可绕过（ContentSnapshotJson 唯一真相） ====================
+
+    /// <summary>
+    /// 创建规则集版本（P0-02：强制 DRAFT——入参 Status 一律忽略覆盖，状态只能经 Submit/Approve/Publish 流转，Create 不可直提 PUBLISHED；
+    /// 治理字段一律置空，由后续流转写入）。
+    /// P0-01：DRAFT 编辑的 DemandPriorityJson（内存/API 字段）归一化写入 ContentSnapshotJson 后持久化。
+    /// </summary>
+    public async Task<RuleSetVersion> CreateRuleSetVersionAsync(RuleSetVersion version, string? createdBy, CancellationToken ct = default)
+    {
+        version.Status = GovernanceVersionStatus.Draft;
+        version.CreatedAt = DateTime.UtcNow;
+        version.CreatedBy = createdBy;
+        version.PublishedAt = null;
+        version.PublishedBy = null;
+        version.ApprovedAt = null;
+        version.ApprovedBy = null;
+
+        EnsureRuleSetNormalized(version);
+
+        return await _ruleSetVersionRepository.AddAsync(version, ct);
+    }
+
+    /// <summary>
+    /// 更新规则集版本（P0-02：已发布不可原地修改、失效/归档不可改；入参 Status/治理字段/主键一律以现有记录为准，禁止越权改状态）。
+    /// P0-01：DRAFT 编辑内容归一化到 ContentSnapshotJson 后持久化（任一主题 JSON 非空则重建，全空保持现有快照）。
+    /// </summary>
+    public async Task UpdateRuleSetVersionAsync(long ruleSetVersionId, RuleSetVersion version, CancellationToken ct = default)
+    {
+        var existing = await _ruleSetVersionRepository.GetByIdAsync(ruleSetVersionId, ct)
+            ?? throw new InvalidOperationException($"规则集版本不存在：{ruleSetVersionId}");
+
+        EnsureUpdatable(existing.Status, ruleSetVersionId);
+
+        version.Id = existing.Id;
+        version.RuleSetId = existing.RuleSetId;
+        version.Status = existing.Status;
+        version.CreatedAt = existing.CreatedAt;
+        version.CreatedBy = existing.CreatedBy;
+        version.PublishedAt = existing.PublishedAt;
+        version.PublishedBy = existing.PublishedBy;
+        version.ApprovedAt = existing.ApprovedAt;
+        version.ApprovedBy = existing.ApprovedBy;
+
+        EnsureRuleSetNormalized(version);
+
+        await _ruleSetVersionRepository.UpdateAsync(version, ct);
+    }
+
+    /// <summary>获取规则集版本详情（P0-01：ContentSnapshotJson → DemandPriorityJson 投影，前端 API 兼容）</summary>
+    public async Task<RuleSetVersion?> GetRuleSetVersionAsync(long ruleSetVersionId, CancellationToken ct = default)
+    {
+        var version = await _ruleSetVersionRepository.GetByIdAsync(ruleSetVersionId, ct);
+        if (version != null)
+        {
+            ProjectRuleSetContent(version);
+        }
+        return version;
+    }
+
+    /// <summary>创建参数集版本（P0-02：强制 DRAFT；治理字段置空；P0-01：五主题 JSON 归一化到 ContentSnapshotJson 持久化）</summary>
+    public async Task<ParameterSetVersion> CreateParameterSetVersionAsync(ParameterSetVersion version, string? createdBy, CancellationToken ct = default)
+    {
+        version.Status = GovernanceVersionStatus.Draft;
+        version.CreatedAt = DateTime.UtcNow;
+        version.CreatedBy = createdBy;
+        version.PublishedAt = null;
+        version.PublishedBy = null;
+        version.ApprovedAt = null;
+        version.ApprovedBy = null;
+
+        EnsureParameterSetNormalized(version);
+
+        return await _parameterSetVersionRepository.AddAsync(version, ct);
+    }
+
+    /// <summary>更新参数集版本（P0-02：已发布/失效/归档不可改；Status/治理字段冻结；P0-01：内容归一化到快照）</summary>
+    public async Task UpdateParameterSetVersionAsync(long parameterSetVersionId, ParameterSetVersion version, CancellationToken ct = default)
+    {
+        var existing = await _parameterSetVersionRepository.GetByIdAsync(parameterSetVersionId, ct)
+            ?? throw new InvalidOperationException($"参数集版本不存在：{parameterSetVersionId}");
+
+        EnsureUpdatable(existing.Status, parameterSetVersionId);
+
+        version.Id = existing.Id;
+        version.ParameterSetId = existing.ParameterSetId;
+        version.Status = existing.Status;
+        version.CreatedAt = existing.CreatedAt;
+        version.CreatedBy = existing.CreatedBy;
+        version.PublishedAt = existing.PublishedAt;
+        version.PublishedBy = existing.PublishedBy;
+        version.ApprovedAt = existing.ApprovedAt;
+        version.ApprovedBy = existing.ApprovedBy;
+
+        EnsureParameterSetNormalized(version);
+
+        await _parameterSetVersionRepository.UpdateAsync(version, ct);
+    }
+
+    /// <summary>获取参数集版本详情（P0-01：ContentSnapshotJson 五子块 → 五主题 JSON 投影，前端 API 兼容）</summary>
+    public async Task<ParameterSetVersion?> GetParameterSetVersionAsync(long parameterSetVersionId, CancellationToken ct = default)
+    {
+        var version = await _parameterSetVersionRepository.GetByIdAsync(parameterSetVersionId, ct);
+        if (version != null)
+        {
+            ProjectParameterSetContent(version);
+        }
+        return version;
+    }
+
+    /// <summary>创建策略包版本（P0-02：强制 DRAFT；治理字段置空）</summary>
+    public async Task<StrategyProfileVersion> CreateStrategyProfileVersionAsync(StrategyProfileVersion version, string? createdBy, CancellationToken ct = default)
+    {
+        version.Status = GovernanceVersionStatus.Draft;
+        version.CreatedAt = DateTime.UtcNow;
+        version.CreatedBy = createdBy;
+        version.PublishedAt = null;
+        version.PublishedBy = null;
+        version.ApprovedAt = null;
+        version.ApprovedBy = null;
+
+        return await _strategyProfileVersionRepository.AddAsync(version, ct);
+    }
+
+    /// <summary>更新策略包版本（P0-02：已发布/失效/归档不可改；Status/治理字段/引用字段冻结）</summary>
+    public async Task UpdateStrategyProfileVersionAsync(long strategyProfileVersionId, StrategyProfileVersion version, CancellationToken ct = default)
+    {
+        var existing = await _strategyProfileVersionRepository.GetByIdAsync(strategyProfileVersionId, ct)
+            ?? throw new InvalidOperationException($"策略包版本不存在：{strategyProfileVersionId}");
+
+        EnsureUpdatable(existing.Status, strategyProfileVersionId);
+
+        version.Id = existing.Id;
+        version.StrategyProfileId = existing.StrategyProfileId;
+        version.RuleSetVersionId = existing.RuleSetVersionId;
+        version.ParameterSetVersionId = existing.ParameterSetVersionId;
+        version.IsDefault = existing.IsDefault;
+        version.Status = existing.Status;
+        version.CreatedAt = existing.CreatedAt;
+        version.CreatedBy = existing.CreatedBy;
+        version.PublishedAt = existing.PublishedAt;
+        version.PublishedBy = existing.PublishedBy;
+        version.ApprovedAt = existing.ApprovedAt;
+        version.ApprovedBy = existing.ApprovedBy;
+
+        await _strategyProfileVersionRepository.UpdateAsync(version, ct);
     }
 }

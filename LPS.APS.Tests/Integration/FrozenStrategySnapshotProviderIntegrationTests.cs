@@ -26,6 +26,7 @@ namespace LPS.APS.Tests.Integration;
 /// - APS_Production 数据库存在
 /// - 测试数据已预置（或通过 Setup 方法创建）
 /// </remarks>
+[Collection("B5Cache")]
 public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
 {
     private readonly DatabaseConnectionManager _connectionManager;
@@ -80,9 +81,11 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
         FrozenStrategySnapshotProvider.ClearCache();
     }
 
-    [Fact]
+    [SkippableFact]
     public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_真实数据库_完整装配成功()
     {
+        Skip.If(!TestEnvironment.HasContentSnapshotJsonColumn(), "测试库缺 ContentSnapshotJson 列（方案 A 未迁移），需 2号位 v5.1.2 迁移后转绿");
+
         await SetupTestDataAsync();
 
         var snapshot = await _provider.GetFrozenStrategySnapshotAsync(_testStrategyProfileVersionId, CancellationToken.None);
@@ -101,9 +104,11 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
         snapshot.CandidateGuardrail.Should().NotBeNull();
     }
 
-    [Fact]
+    [SkippableFact]
     public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_多次调用_命中缓存_返回同一快照()
     {
+        Skip.If(!TestEnvironment.HasContentSnapshotJsonColumn(), "测试库缺 ContentSnapshotJson 列（方案 A 未迁移），需 2号位 v5.1.2 迁移后转绿");
+
         await SetupTestDataAsync();
 
         var snapshot1 = await _provider.GetFrozenStrategySnapshotAsync(_testStrategyProfileVersionId, CancellationToken.None);
@@ -209,11 +214,16 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
             }
         });
 
+        // 方案 A（P0-01 收口）：六主题 JSON 列退出持久化，ContentSnapshotJson 为唯一内容载体——
+        // 装配 DemandPriority 子块 JSON 直接落库（与治理服务 EnsureNormalized 产物同构）
         var ruleSetVersion = new RuleSetVersion
         {
             RuleSetId = ruleSetId,
             VersionCode = $"TEST-R-{now:yyyyMMddHHmmss}",
-            DemandPriorityJson = demandPriorityJson,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["DemandPriority"] = JsonSerializer.Deserialize<JsonElement>(demandPriorityJson)
+            }),
             Status = "PUBLISHED",
             PublishedAt = now,
             PublishedBy = "IntegrationTest",
@@ -294,13 +304,35 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
             }
         });
 
+        // SolverStrategy / CandidateGuardrail 子块（P0-02 收口：六块统一真实来源，缺一装载失败）
+        var solverStrategyJson = JsonSerializer.Serialize(new SolverStrategyBlock
+        {
+            Mode = SolverStrategyMode.Backward,
+            OnTimeTarget = new OnTimeTargetParams { TargetPercent = 85 },
+            Setup = new SetupParams { DefaultSetupMinutes = 45, SetupLookAheadSize = 4 }
+        });
+
+        var candidateGuardrailJson = JsonSerializer.Serialize(new CandidateGuardrailBlock
+        {
+            NormalMs = 70_000,
+            SoftMs = 110_000,
+            LocalHardMs = 200_000,
+            MaxRepairAttempts = 7,
+            MaxPropagationRounds = 12
+        });
+
         var parameterSetVersion = new ParameterSetVersion
         {
             ParameterSetId = parameterSetId,
             VersionCode = $"TEST-P-{now:yyyyMMddHHmmss}",
-            LockJson = lockJson,
-            SupplyJson = supplyJson,
-            ProcurementJson = procurementJson,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["Lock"] = JsonSerializer.Deserialize<JsonElement>(lockJson),
+                ["Supply"] = JsonSerializer.Deserialize<JsonElement>(supplyJson),
+                ["Procurement"] = JsonSerializer.Deserialize<JsonElement>(procurementJson),
+                ["SolverStrategy"] = JsonSerializer.Deserialize<JsonElement>(solverStrategyJson),
+                ["CandidateGuardrail"] = JsonSerializer.Deserialize<JsonElement>(candidateGuardrailJson)
+            }),
             Status = "PUBLISHED",
             PublishedAt = now,
             PublishedBy = "IntegrationTest",

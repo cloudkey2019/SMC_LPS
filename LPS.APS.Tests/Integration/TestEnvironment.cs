@@ -18,6 +18,7 @@ public static class TestEnvironment
     private static DatabaseConnectionManager? _cachedConnectionManager;
     private static bool? _authDbAvailable;
     private static bool? _scheduleRunHasExpectedDomainKeysColumn;
+    private static bool? _hasContentSnapshotJsonColumn;
 
     /// <summary>按 appsettings.Test.json 构造连接管理器（惰性单例，集成测试共用）</summary>
     public static DatabaseConnectionManager GetConnectionManager()
@@ -82,6 +83,36 @@ public static class TestEnvironment
         }
 
         return _scheduleRunHasExpectedDomainKeysColumn.Value;
+    }
+
+    /// <summary>
+    /// 方案 A（0号位裁决，P0-01/P0-02）ContentSnapshotJson 列是否已迁移到测试库。
+    /// 语义：方案 A 下六主题 JSON 列退出持久化、ContentSnapshotJson 为唯一内容载体——
+    /// 该列由 2号位 v5.1.2 迁移（红线 #6 DB schema 变更专属）写入，迁移前相关集成测试动态 Skip，
+    /// 迁移后自动转绿无需改测试代码。
+    /// </summary>
+    public static bool HasContentSnapshotJsonColumn()
+    {
+        if (_hasContentSnapshotJsonColumn.HasValue)
+        {
+            return _hasContentSnapshotJsonColumn.Value;
+        }
+
+        try
+        {
+            var count = GetConnectionManager().QueryFirstOrDefaultAsync<int>(
+                "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RuleSetVersion') AND name = 'ContentSnapshotJson'",
+                null,
+                db: DatabaseId.APS).GetAwaiter().GetResult();
+
+            _hasContentSnapshotJsonColumn = count > 0;
+        }
+        catch
+        {
+            _hasContentSnapshotJsonColumn = false;
+        }
+
+        return _hasContentSnapshotJsonColumn.Value;
     }
 
     /// <summary>清理测试数据（按 FK 依赖倒序 DELETE）</summary>

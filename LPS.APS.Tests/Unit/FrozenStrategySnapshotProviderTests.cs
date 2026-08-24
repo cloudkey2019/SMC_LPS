@@ -16,6 +16,7 @@ namespace LPS.APS.Tests.Unit;
 /// 2. 异常处理（版本不存在场景）
 /// 3. JSON 反序列化容错（空值、格式错误）
 /// </summary>
+[Collection("B5Cache")]
 public class FrozenStrategySnapshotProviderTests
 {
     private readonly Mock<IStrategyProfileVersionRepository> _mockStrategyProfileRepo;
@@ -335,7 +336,8 @@ public class FrozenStrategySnapshotProviderTests
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = ruleSetVersionId,
-            ParameterSetVersionId = 300
+            ParameterSetVersionId = 300,
+            Status = "PUBLISHED"
         };
 
         _mockStrategyProfileRepo
@@ -365,12 +367,14 @@ public class FrozenStrategySnapshotProviderTests
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = ruleSetVersionId,
-            ParameterSetVersionId = parameterSetVersionId
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "PUBLISHED"
         };
 
         var ruleSetVersion = new RuleSetVersion
         {
-            Id = ruleSetVersionId
+            Id = ruleSetVersionId,
+            Status = "PUBLISHED"
         };
 
         _mockStrategyProfileRepo
@@ -402,7 +406,8 @@ public class FrozenStrategySnapshotProviderTests
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = 200,
-            ParameterSetVersionId = 300
+            ParameterSetVersionId = 300,
+            Status = "PUBLISHED"
         };
 
         var ruleSetVersion = new RuleSetVersion
@@ -448,7 +453,8 @@ public class FrozenStrategySnapshotProviderTests
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = 200,
-            ParameterSetVersionId = 300
+            ParameterSetVersionId = 300,
+            Status = "PUBLISHED"
         };
 
         var ruleSetVersion = new RuleSetVersion
@@ -537,9 +543,9 @@ public class FrozenStrategySnapshotProviderTests
         const long strategyProfileVersionId = 104;
         SetupValidVersions(strategyProfileVersionId, 204, 304);
 
-        // Act：连续调用两次（间隔确保 FrozenAt 时间戳变化）
+        // Act：连续调用两次（间隔 50ms 确保 FrozenAt 时间戳变化——Windows 默认时钟 tick 约 15.6ms，10ms 不足产生波动）
         var first = await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
-        await System.Threading.Tasks.Task.Delay(10);
+        await System.Threading.Tasks.Task.Delay(50);
         var second = await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
         // Assert：
@@ -577,7 +583,8 @@ public class FrozenStrategySnapshotProviderTests
         {
             Id = strategyProfileVersionId,
             RuleSetVersionId = 205,
-            ParameterSetVersionId = 305
+            ParameterSetVersionId = 305,
+            Status = "PUBLISHED"
         };
         var badRuleSetVersion = new RuleSetVersion { Id = 205, ContentSnapshotJson = null, Status = "PUBLISHED" };
         var badParameterSetVersion = new ParameterSetVersion { Id = 305, ContentSnapshotJson = "{}", Status = "PUBLISHED" };
@@ -756,9 +763,10 @@ public class FrozenStrategySnapshotProviderTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_参数集版本已失效_装载失败()
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_参数集版本已失效_仍可装载_历史重放不阻断()
     {
-        // Arrange（P1-01：EffectiveTo 已过 → 拒绝装载）
+        // Arrange（P0-03 收口：历史版本按显式 VersionId 重放不受当前时间影响——
+        // EffectiveFrom/EffectiveTo 窗口检查已移除，新 Run 准入归 ResolveDefaultStrategyProfileVersionAsync）
         const long strategyProfileVersionId = 109;
         const long ruleSetVersionId = 209;
         const long parameterSetVersionId = 309;
@@ -790,17 +798,43 @@ public class FrozenStrategySnapshotProviderTests
                 ["CandidateGuardrail"] = new CandidateGuardrailBlock()
             }),
             Status = "PUBLISHED",
-            EffectiveTo = DateTime.UtcNow.AddHours(-1)   // 已失效
+            EffectiveTo = DateTime.UtcNow.AddHours(-1)   // 已失效（历史重放不应阻断）
         };
 
         _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
         _mockRuleSetRepo.Setup(r => r.GetByIdAsync(ruleSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(ruleSetVersion);
         _mockParameterSetRepo.Setup(r => r.GetByIdAsync(parameterSetVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(parameterSetVersion);
 
-        // Act & Assert（P1-01：失效版本 → 装载失败）
+        // Act & Assert（P0-03：已失效版本仍可装载——历史重放成功，不抛异常）
+        var snapshot = await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
+
+        snapshot.Should().NotBeNull();
+        snapshot.ParameterSetVersionId.Should().Be(parameterSetVersionId);
+        snapshot.SolverStrategy.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task GetFrozenStrategySnapshotAsync_父策略包版本非PUBLISHED_装载失败()
+    {
+        // Arrange（P0-03 收口：补父策略包版本装载前置校验——仅 PUBLISHED 可装载，新 Run 首次装载防御）
+        const long strategyProfileVersionId = 110;
+        const long ruleSetVersionId = 210;
+        const long parameterSetVersionId = 310;
+
+        var strategyProfileVersion = new StrategyProfileVersion
+        {
+            Id = strategyProfileVersionId,
+            RuleSetVersionId = ruleSetVersionId,
+            ParameterSetVersionId = parameterSetVersionId,
+            Status = "DRAFT"   // 未发布 → 拒绝装载
+        };
+
+        _mockStrategyProfileRepo.Setup(r => r.GetByIdAsync(strategyProfileVersionId, It.IsAny<CancellationToken>())).ReturnsAsync(strategyProfileVersion);
+
+        // Act & Assert（P0-03：父策略包版本非 PUBLISHED → 装载失败）
         var act = async () => await _provider.GetFrozenStrategySnapshotAsync(strategyProfileVersionId, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*已失效*");
+            .WithMessage("*非 PUBLISHED*");
     }
 }

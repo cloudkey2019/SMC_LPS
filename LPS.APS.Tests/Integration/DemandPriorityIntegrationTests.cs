@@ -43,28 +43,33 @@ public class DemandPriorityIntegrationTests : IDisposable
         _validator = new DemandPriorityValidator();
     }
 
-    [Fact]
+    [SkippableFact]
     public async System.Threading.Tasks.Task 真实数据库_存储并读取DemandPriorityBlock()
     {
+        Skip.If(!TestEnvironment.HasContentSnapshotJsonColumn(), "测试库缺 ContentSnapshotJson 列（方案 A 未迁移），需 2号位 v5.1.2 迁移后转绿");
+
         await SetupTestDataAsync();
 
         var ruleSetVersion = await _ruleSetRepo.GetByIdAsync(_testRuleSetVersionId);
 
         ruleSetVersion.Should().NotBeNull();
-        ruleSetVersion!.DemandPriorityJson.Should().NotBeNullOrWhiteSpace();
+        ruleSetVersion!.ContentSnapshotJson.Should().NotBeNullOrWhiteSpace();
 
-        var priorityBlock = JsonSerializer.Deserialize<DemandPriorityBlock>(ruleSetVersion.DemandPriorityJson);
+        // 方案 A（P0-01 收口）：主题 JSON 列已退出持久化，从 ContentSnapshotJson 提取 DemandPriority 子块
+        var priorityBlock = LoadDemandPriorityBlock(ruleSetVersion.ContentSnapshotJson!);
         priorityBlock.Should().NotBeNull();
         priorityBlock!.Segments.Should().HaveCountGreaterThan(0);
     }
 
-    [Fact]
+    [SkippableFact]
     public async System.Threading.Tasks.Task 完整流程_从数据库读取并执行排序()
     {
+        Skip.If(!TestEnvironment.HasContentSnapshotJsonColumn(), "测试库缺 ContentSnapshotJson 列（方案 A 未迁移），需 2号位 v5.1.2 迁移后转绿");
+
         await SetupTestDataAsync();
 
         var ruleSetVersion = await _ruleSetRepo.GetByIdAsync(_testRuleSetVersionId);
-        var priorityBlock = JsonSerializer.Deserialize<DemandPriorityBlock>(ruleSetVersion!.DemandPriorityJson);
+        var priorityBlock = LoadDemandPriorityBlock(ruleSetVersion!.ContentSnapshotJson!);
 
         var demands = new List<DemandRecord>
         {
@@ -81,13 +86,15 @@ public class DemandPriorityIntegrationTests : IDisposable
         sorted[2].OrderId.Should().Be("O002", "ONTRACK订单排最后");
     }
 
-    [Fact]
+    [SkippableFact]
     public async System.Threading.Tasks.Task 验证器集成_检测合法配置()
     {
+        Skip.If(!TestEnvironment.HasContentSnapshotJsonColumn(), "测试库缺 ContentSnapshotJson 列（方案 A 未迁移），需 2号位 v5.1.2 迁移后转绿");
+
         await SetupTestDataAsync();
 
         var ruleSetVersion = await _ruleSetRepo.GetByIdAsync(_testRuleSetVersionId);
-        var priorityBlock = JsonSerializer.Deserialize<DemandPriorityBlock>(ruleSetVersion!.DemandPriorityJson);
+        var priorityBlock = LoadDemandPriorityBlock(ruleSetVersion!.ContentSnapshotJson!);
 
         var validationResult = _validator.Validate(priorityBlock!);
         validationResult.IsValid.Should().BeTrue();
@@ -106,11 +113,15 @@ public class DemandPriorityIntegrationTests : IDisposable
         var snapshot = DemandPriorityFixture.GetStandardPrioritySnapshot();
         var demandPriorityJson = JsonSerializer.Serialize(snapshot.DemandPriority);
 
+        // 方案 A（P0-01 收口）：ContentSnapshotJson 为唯一持久化载体，DemandPriority 子块落库
         var ruleSetVersion = new Core.Entities.APS.RuleSetVersion
         {
             RuleSetId = _testRuleSetId,
             VersionCode = $"TEST-R-{now:yyyyMMddHHmmss}",
-            DemandPriorityJson = demandPriorityJson,
+            ContentSnapshotJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["DemandPriority"] = JsonSerializer.Deserialize<JsonElement>(demandPriorityJson)
+            }),
             Status = "PUBLISHED",
             PublishedAt = now,
             PublishedBy = "IntegrationTest",
@@ -120,6 +131,17 @@ public class DemandPriorityIntegrationTests : IDisposable
 
         var savedVersion = await _ruleSetRepo.AddAsync(ruleSetVersion);
         _testRuleSetVersionId = savedVersion.Id;
+    }
+
+    /// <summary>从 ContentSnapshotJson 提取 DemandPriority 子块（方案 A 读回路径，契约 §6.10.5）</summary>
+    private static DemandPriorityBlock? LoadDemandPriorityBlock(string contentSnapshotJson)
+    {
+        using var doc = JsonDocument.Parse(contentSnapshotJson);
+        if (!doc.RootElement.TryGetProperty("DemandPriority", out var blockElement))
+        {
+            return null;
+        }
+        return blockElement.Deserialize<DemandPriorityBlock>();
     }
 
     public void Dispose()

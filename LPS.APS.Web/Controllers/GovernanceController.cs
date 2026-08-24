@@ -48,12 +48,12 @@ public class GovernanceController : ControllerBase
         return Ok(new { success = true, data = versions });
     }
 
-    /// <summary>获取规则集版本详情</summary>
+    /// <summary>获取规则集版本详情（P0-01：ContentSnapshotJson 投影回 DemandPriorityJson，前端 API 兼容）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpGet("rule-set/version/{versionId}")]
     public async Task<IActionResult> GetRuleSetVersion(long versionId, CancellationToken ct)
     {
-        var version = await _ruleSetVersionRepo.GetByIdAsync(versionId, ct);
+        var version = await _governanceService.GetRuleSetVersionAsync(versionId, ct);
         if (version == null)
         {
             return NotFound(new { success = false, error = $"规则集版本不存在：{versionId}" });
@@ -61,30 +61,30 @@ public class GovernanceController : ControllerBase
         return Ok(new { success = true, data = version });
     }
 
-    /// <summary>创建规则集版本（初始状态 DRAFT）</summary>
+    /// <summary>创建规则集版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖；内容归一化到 ContentSnapshotJson 持久化）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPost("rule-set/version")]
     public async Task<IActionResult> CreateRuleSetVersion([FromBody] RuleSetVersion version, CancellationToken ct)
     {
-        version.CreatedAt = DateTime.UtcNow;
-        var created = await _ruleSetVersionRepo.AddAsync(version, ct);
+        var created = await _governanceService.CreateRuleSetVersionAsync(version, version.CreatedBy, ct);
         return CreatedAtAction(nameof(GetRuleSetVersion), new { versionId = created.Id }, new { success = true, data = created });
     }
 
-    /// <summary>更新规则集版本（仅限非 PUBLISHED 状态）</summary>
+    /// <summary>更新规则集版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPut("rule-set/version/{versionId}")]
     public async Task<IActionResult> UpdateRuleSetVersion(long versionId, [FromBody] RuleSetVersion version, CancellationToken ct)
     {
-        var existing = await _ruleSetVersionRepo.GetByIdAsync(versionId, ct);
-        if (existing == null)
+        try
         {
-            return NotFound(new { success = false, error = $"规则集版本不存在：{versionId}" });
+            await _governanceService.UpdateRuleSetVersionAsync(versionId, version, ct);
+            return Ok(new { success = true, data = version });
         }
-
-        version.Id = versionId;
-        await _ruleSetVersionRepo.UpdateAsync(version, ct);
-        return Ok(new { success = true, data = version });
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "规则集版本更新失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
     }
 
     #endregion
@@ -100,12 +100,12 @@ public class GovernanceController : ControllerBase
         return Ok(new { success = true, data = versions });
     }
 
-    /// <summary>获取参数集版本详情</summary>
+    /// <summary>获取参数集版本详情（P0-01：ContentSnapshotJson 五子块投影回五主题 JSON，前端 API 兼容）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpGet("parameter-set/version/{versionId}")]
     public async Task<IActionResult> GetParameterSetVersion(long versionId, CancellationToken ct)
     {
-        var version = await _parameterSetVersionRepo.GetByIdAsync(versionId, ct);
+        var version = await _governanceService.GetParameterSetVersionAsync(versionId, ct);
         if (version == null)
         {
             return NotFound(new { success = false, error = $"参数集版本不存在：{versionId}" });
@@ -113,30 +113,30 @@ public class GovernanceController : ControllerBase
         return Ok(new { success = true, data = version });
     }
 
-    /// <summary>创建参数集版本（初始状态 DRAFT）</summary>
+    /// <summary>创建参数集版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖；五主题 JSON 归一化到 ContentSnapshotJson 持久化）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPost("parameter-set/version")]
     public async Task<IActionResult> CreateParameterSetVersion([FromBody] ParameterSetVersion version, CancellationToken ct)
     {
-        version.CreatedAt = DateTime.UtcNow;
-        var created = await _parameterSetVersionRepo.AddAsync(version, ct);
+        var created = await _governanceService.CreateParameterSetVersionAsync(version, version.CreatedBy, ct);
         return CreatedAtAction(nameof(GetParameterSetVersion), new { versionId = created.Id }, new { success = true, data = created });
     }
 
-    /// <summary>更新参数集版本（仅限非 PUBLISHED 状态）</summary>
+    /// <summary>更新参数集版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPut("parameter-set/version/{versionId}")]
     public async Task<IActionResult> UpdateParameterSetVersion(long versionId, [FromBody] ParameterSetVersion version, CancellationToken ct)
     {
-        var existing = await _parameterSetVersionRepo.GetByIdAsync(versionId, ct);
-        if (existing == null)
+        try
         {
-            return NotFound(new { success = false, error = $"参数集版本不存在：{versionId}" });
+            await _governanceService.UpdateParameterSetVersionAsync(versionId, version, ct);
+            return Ok(new { success = true, data = version });
         }
-
-        version.Id = versionId;
-        await _parameterSetVersionRepo.UpdateAsync(version, ct);
-        return Ok(new { success = true, data = version });
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "参数集版本更新失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
     }
 
     #endregion
@@ -271,30 +271,30 @@ public class GovernanceController : ControllerBase
         return Ok(new { success = true, data = version });
     }
 
-    /// <summary>创建策略包版本（初始状态 DRAFT）</summary>
+    /// <summary>创建策略包版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPost("strategy-profile/version")]
     public async Task<IActionResult> CreateStrategyProfileVersion([FromBody] StrategyProfileVersion version, CancellationToken ct)
     {
-        version.CreatedAt = DateTime.UtcNow;
-        var created = await _strategyProfileVersionRepo.AddAsync(version, ct);
+        var created = await _governanceService.CreateStrategyProfileVersionAsync(version, version.CreatedBy, ct);
         return CreatedAtAction(nameof(GetStrategyProfileVersion), new { versionId = created.Id }, new { success = true, data = created });
     }
 
-    /// <summary>更新策略包版本（仅限非 PUBLISHED 状态）</summary>
+    /// <summary>更新策略包版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段/引用字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
     [HttpPut("strategy-profile/version/{versionId}")]
     public async Task<IActionResult> UpdateStrategyProfileVersion(long versionId, [FromBody] StrategyProfileVersion version, CancellationToken ct)
     {
-        var existing = await _strategyProfileVersionRepo.GetByIdAsync(versionId, ct);
-        if (existing == null)
+        try
         {
-            return NotFound(new { success = false, error = $"策略包版本不存在：{versionId}" });
+            await _governanceService.UpdateStrategyProfileVersionAsync(versionId, version, ct);
+            return Ok(new { success = true, data = version });
         }
-
-        version.Id = versionId;
-        await _strategyProfileVersionRepo.UpdateAsync(version, ct);
-        return Ok(new { success = true, data = version });
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "策略包版本更新失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
     }
 
     /// <summary>发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；发布前强制校验）</summary>

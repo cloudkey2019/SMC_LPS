@@ -69,6 +69,13 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
         var strategyProfileVersion = await _strategyProfileVersionRepo.GetByIdAsync(strategyProfileVersionId, ct)
             ?? throw new InvalidOperationException($"策略包版本不存在：{strategyProfileVersionId}");
 
+        // P0-03 收口：补父策略包版本装载前置校验——仅 PUBLISHED 可装载（新 Run 首次装载防御；
+        // 历史重放命中 B-5 缓存路径不校验，进程重启后 miss 路径仅校验 PUBLISHED 不校验时间窗口，可重放历史不可变内容）
+        if (strategyProfileVersion.Status != GovernanceVersionStatus.Published)
+        {
+            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 状态为 {strategyProfileVersion.Status}，非 PUBLISHED，Snapshot 装载失败");
+        }
+
         // 2. 获取规则集版本和参数集版本
         var ruleSetVersion = await _ruleSetVersionRepo.GetByIdAsync(strategyProfileVersion.RuleSetVersionId, ct)
             ?? throw new InvalidOperationException($"规则集版本不存在：{strategyProfileVersion.RuleSetVersionId}");
@@ -114,54 +121,34 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
     }
 
     /// <summary>
-    /// P1-01 防御：规则集版本装载前置校验——仅 PUBLISHED 且处于有效区间内的版本可装载。
-    /// EffectiveFrom/EffectiveTo 为空时忽略该侧边界（冻结 DDL v5.1.2 允许 NULL）。
+    /// 装载前置校验（P0-03 收口）：仅 PUBLISHED 版本可装载。
+    /// 语义：Provider 只读历史不可变内容（契约 §6.10.5）——移除 EffectiveFrom/EffectiveTo 当前时间窗口检查，
+    /// 该职责归新 Run 准入（ResolveDefaultStrategyProfileVersionAsync 已按生效窗口过滤默认版本）；
+    /// 历史版本按显式 VersionId 重放不受当前时间影响。非 PUBLISHED 拒绝（未发布内容不可作为 Run 冻结来源）。
     /// </summary>
     private static void EnsureLoadable(
         LPS.APS.Core.Entities.APS.RuleSetVersion version,
         long strategyProfileVersionId,
         string kind)
     {
-        var now = DateTime.UtcNow;
         if (version.Status != GovernanceVersionStatus.Published)
         {
             throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本状态为 {version.Status}，非 PUBLISHED，Snapshot 装载失败");
         }
-
-        if (version.EffectiveFrom.HasValue && version.EffectiveFrom.Value > now)
-        {
-            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本生效时间未到（EffectiveFrom={version.EffectiveFrom.Value:O}），Snapshot 装载失败");
-        }
-
-        if (version.EffectiveTo.HasValue && version.EffectiveTo.Value < now)
-        {
-            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本已失效（EffectiveTo={version.EffectiveTo.Value:O}），Snapshot 装载失败");
-        }
     }
 
     /// <summary>
-    /// P1-01 防御：参数集版本装载前置校验——仅 PUBLISHED 且处于有效区间内的版本可装载。
-    /// EffectiveFrom/EffectiveTo 为空时忽略该侧边界（冻结 DDL v5.1.2 允许 NULL）。
+    /// 装载前置校验（P0-03 收口）：仅 PUBLISHED 版本可装载（同 RuleSet 语义）。
+    /// 移除 EffectiveFrom/EffectiveTo 当前时间窗口检查——历史版本按显式 VersionId 重放不受当前时间影响。
     /// </summary>
     private static void EnsureLoadable(
         LPS.APS.Core.Entities.APS.ParameterSetVersion version,
         long strategyProfileVersionId,
         string kind)
     {
-        var now = DateTime.UtcNow;
         if (version.Status != GovernanceVersionStatus.Published)
         {
             throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本状态为 {version.Status}，非 PUBLISHED，Snapshot 装载失败");
-        }
-
-        if (version.EffectiveFrom.HasValue && version.EffectiveFrom.Value > now)
-        {
-            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本生效时间未到（EffectiveFrom={version.EffectiveFrom.Value:O}），Snapshot 装载失败");
-        }
-
-        if (version.EffectiveTo.HasValue && version.EffectiveTo.Value < now)
-        {
-            throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的{kind}版本已失效（EffectiveTo={version.EffectiveTo.Value:O}），Snapshot 装载失败");
         }
     }
 

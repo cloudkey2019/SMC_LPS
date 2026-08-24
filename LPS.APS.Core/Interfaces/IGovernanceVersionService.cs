@@ -1,4 +1,6 @@
 using LPS.APS.Core.DTOs.Governance;
+using RuleSetVersion = LPS.APS.Core.Entities.APS.RuleSetVersion;
+using ParameterSetVersion = LPS.APS.Core.Entities.APS.ParameterSetVersion;
 using StrategyProfileVersion = LPS.APS.Core.Entities.APS.StrategyProfileVersion;
 
 namespace LPS.APS.Core.Interfaces;
@@ -58,4 +60,39 @@ public interface IGovernanceVersionService
 
     /// <summary>Run 引用追溯（P0-06：StrategyProfileVersion → 父 Profile + 引用的 RuleSet/ParameterSet 版本）</summary>
     Task<RunStrategyProfileTrace> GetRunStrategyProfileTraceAsync(long strategyProfileVersionId, CancellationToken ct = default);
+
+    // ==================== 第四轮复审 P0-01/P0-02 收口：CRUD 状态机不可绕过（2026-08-24） ====================
+
+    /// <summary>
+    /// 创建规则集版本（P0-02：强制初始状态 DRAFT——入参 Status 一律被忽略覆盖为 DRAFT，
+    /// 状态只能经 Submit/Approve/Publish 流转，Create 不可直提 PUBLISHED）。
+    /// P0-01：DRAFT 阶段编辑的 DemandPriorityJson（内存/API 字段）由服务层归一化写入 ContentSnapshotJson，
+    /// 真实持久化载体唯一为 ContentSnapshotJson；治理字段（Published/Approved）一律置空，由后续流转写入。
+    /// </summary>
+    Task<RuleSetVersion> CreateRuleSetVersionAsync(RuleSetVersion version, string? createdBy, CancellationToken ct = default);
+
+    /// <summary>
+    /// 更新规则集版本（P0-02：状态机约束——已 PUBLISHED 不可原地修改抛异常；DISABLED/ARCHIVED 不可改；
+    /// 入参 Status/治理字段一律被忽略，保持现有记录值，禁止越权改状态）。
+    /// P0-01：DRAFT 编辑内容统一归一化到 ContentSnapshotJson 后持久化。
+    /// </summary>
+    Task UpdateRuleSetVersionAsync(long ruleSetVersionId, RuleSetVersion version, CancellationToken ct = default);
+
+    /// <summary>获取规则集版本详情（P0-01：从 ContentSnapshotJson 投影回 DemandPriorityJson 内存字段，前端 API 兼容）</summary>
+    Task<RuleSetVersion?> GetRuleSetVersionAsync(long ruleSetVersionId, CancellationToken ct = default);
+
+    /// <summary>创建参数集版本（P0-02：强制 DRAFT；P0-01：五主题 JSON 归一化到 ContentSnapshotJson 持久化）</summary>
+    Task<ParameterSetVersion> CreateParameterSetVersionAsync(ParameterSetVersion version, string? createdBy, CancellationToken ct = default);
+
+    /// <summary>更新参数集版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结；P0-01：内容归一化）</summary>
+    Task UpdateParameterSetVersionAsync(long parameterSetVersionId, ParameterSetVersion version, CancellationToken ct = default);
+
+    /// <summary>获取参数集版本详情（P0-01：ContentSnapshotJson 五子块投影回五主题 JSON 内存字段）</summary>
+    Task<ParameterSetVersion?> GetParameterSetVersionAsync(long parameterSetVersionId, CancellationToken ct = default);
+
+    /// <summary>创建策略包版本（P0-02：强制 DRAFT；治理字段置空）</summary>
+    Task<StrategyProfileVersion> CreateStrategyProfileVersionAsync(StrategyProfileVersion version, string? createdBy, CancellationToken ct = default);
+
+    /// <summary>更新策略包版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结）</summary>
+    Task UpdateStrategyProfileVersionAsync(long strategyProfileVersionId, StrategyProfileVersion version, CancellationToken ct = default);
 }
