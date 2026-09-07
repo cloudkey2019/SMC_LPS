@@ -5,22 +5,21 @@ namespace LPS.APS.Core.Interfaces;
 
 /// <summary>
 /// Pegging 编排服务接口（2号位）
-/// 负责接收 5号位返回的 Voucher，执行状态变更和持久化
+/// 负责执行 Pegging 编排（BOM遍历 + 供给扣减 + 结果红线校验）并持久化
 /// 对应文档：步骤2.6-2.8 的编排层职责
 /// </summary>
 public interface IPeggingOrchestrator
 {
     /// <summary>
-    /// 执行完整的 Pegging 流程（步骤2.1-2.9）
+    /// 执行完整的 Pegging 流程（步骤2.1-2.8）
     /// 1. 读 APS_BOM_RAW / APS_BOM_STAGE_PATH_RAW / APS_BOM_CROSS_FACTORY_EDGE_RAW
     /// 2. 读供给池（INVENTORY / WIP / PIPELINE / PRODUCTION_INSTRUCTION / PURCHASE_ORDER）
-    /// 3. 跨厂边 → 调5号位 EvaluateCrossFactoryModeAsync 裁决
-    /// 4. 枚举供给候选 → 调5号位 SelectSupplyCandidatesByRuleAsync 排序
-    /// 5. 遇到 PRODUCTION_INSTRUCTION → 调5号位 ValidateZpBpDocumentMatchAsync 红线校验
-    /// 6. 维护内存 PeggingLedgerEntry，执行扣减
-    /// 7. NEW_REQUIREMENT 触发 TaskDraft 生成，交1号位排程实例化 Task
-    /// 8. 调5号位 ValidateBusinessRuleResultAsync 红线校验
-    /// 9. 写 PeggingSupplyAllocation（非NEW_REQUIREMENT）+ 写物理 Pegging（Task-to-Task）
+    /// 3. 按3号位 DemandPriorityConfig 排序 Demand
+    /// 4. BOM 遍历 + 供给原子扣减（TryAtomicAllocation）
+    /// 5. NEW_REQUIREMENT 触发 LogicalProductionDemand 生成，交1号位排程实例化 Task
+    /// 6. 结果红线校验（Demand闭合 / SupplyBalance非负 / 同物理不重复消费 / Allocation合法）
+    /// 7. 调用1号位 Solver
+    /// 8. 写 PeggingSupplyAllocation（非NEW_REQUIREMENT）+ 写物理 Pegging（Task-to-Task）
     /// </summary>
     Task<PeggingOrchestrationResult> ExecutePeggingWorkflowAsync(
         PeggingExecutionRequest request,
@@ -33,50 +32,6 @@ public interface IPeggingOrchestrator
         PeggingExecutionRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// 步骤2.6：从 Voucher 中提取 TaskDraft 列表（纯内存，按拓扑序排列，不写库）
-    /// </summary>
-    IReadOnlyList<TaskDraft> BuildTaskDraftsFromVoucher(PeggingResultVoucher voucher);
-
-    /// <summary>
-    /// 步骤2.8：持久化供应分配表（非 Task 供应）
-    /// </summary>
-    Task<int> PersistSupplyAllocationAsync(
-        PeggingResultVoucher voucher,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 更新冻结区快照
-    /// </summary>
-    Task<int> UpdateFrozenZoneSnapshotAsync(
-        int planVersionId,
-        DateTime frozenWindowStart,
-        DateTime frozenWindowEnd,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 虚拟库存传播（跨域依赖）
-    /// </summary>
-    Task<int> PropagateVirtualInventoryAsync(
-        int planVersionId,
-        int sourceProductFamilyId,
-        int targetProductFamilyId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 回滚 Pegging 流程（事务失败时）
-    /// </summary>
-    Task RollbackPeggingWorkflowAsync(
-        int planVersionId,
-        long orderId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 验证 Pegging 结果的一致性（事务提交前）
-    /// </summary>
-    Task<(bool IsValid, List<string> ValidationErrors)> ValidateWorkflowConsistencyAsync(
-        PeggingOrchestrationResult result,
-        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -133,6 +88,21 @@ public class PeggingOrchestrationResult
     /// 执行耗时（毫秒）
     /// </summary>
     public long ExecutionTimeMs { get; set; }
+
+    /// <summary>
+    /// Pegging 阶段耗时（毫秒）：供给装载 + BOM 遍历扣减 + Routing 装载 + 请求构建
+    /// </summary>
+    public long PeggingMs { get; set; }
+
+    /// <summary>
+    /// 1号位 Solver 求解耗时（毫秒）
+    /// </summary>
+    public long SolverMs { get; set; }
+
+    /// <summary>
+    /// 落盘耗时（毫秒）：Task + Pegging + SupplyAllocation 统一事务
+    /// </summary>
+    public long PersistMs { get; set; }
 
     /// <summary>
     /// 完成时间

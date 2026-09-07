@@ -14,4 +14,7 @@ public class UserInfoDto
 
     /// <summary>角色列表</summary>
     public List<string> Roles { get; set; } = new();
+
+    /// <summary>功能权限码列表（登录签发时注入 JWT，供前端菜单/按钮渲染）</summary>
+    public List<string> Permissions { get; set; } = new();
 }

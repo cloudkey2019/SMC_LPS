@@ -19,12 +19,14 @@ public class AuthDbContext : DbContext
     public DbSet<UserRole> UserRoles { get; set; } = null!;
     public DbSet<RolePermission> RolePermissions { get; set; } = null!;
     public DbSet<DataScopePolicy> DataScopePolicies { get; set; } = null!;
+    public DbSet<UserDataScope> UserDataScopes { get; set; } = null!;
+    public DbSet<RoleDataScope> RoleDataScopes { get; set; } = null!;
     public DbSet<AuditLog> AuditLogs { get; set; } = null!;
-    public DbSet<GovernanceAuditLog> GovernanceAuditLogs { get; set; } = null!;
     public DbSet<ApprovalFlow> ApprovalFlows { get; set; } = null!;
     public DbSet<ApprovalNode> ApprovalNodes { get; set; } = null!;
     public DbSet<ApprovalRecord> ApprovalRecords { get; set; } = null!;
     public DbSet<ApprovalRule> ApprovalRules { get; set; } = null!;
+    public DbSet<GovernanceAuditLog> GovernanceAuditLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -75,12 +77,28 @@ public class AuthDbContext : DbContext
             entity.HasKey(e => new { e.RoleId, e.PermissionId });
         });
 
-        // ==================== DataScopePolicy ====================
+        // ==================== DataScopePolicy（DDL v1.1 冻结对齐） ====================
         modelBuilder.Entity<DataScopePolicy>(entity =>
         {
             entity.ToTable("DataScopePolicy");
             entity.HasKey(e => e.Id);
-            entity.Property(e => e.PolicyName).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.ScopeType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ScopeValue).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Description).HasMaxLength(500);
+        });
+
+        // ==================== UserDataScope（用户直接范围，复合主键） ====================
+        modelBuilder.Entity<UserDataScope>(entity =>
+        {
+            entity.ToTable("UserDataScope");
+            entity.HasKey(e => new { e.UserId, e.ScopePolicyId });
+        });
+
+        // ==================== RoleDataScope（角色范围，复合主键） ====================
+        modelBuilder.Entity<RoleDataScope>(entity =>
+        {
+            entity.ToTable("RoleDataScope");
+            entity.HasKey(e => new { e.RoleId, e.ScopePolicyId });
         });
 
         // ==================== AuditLog ====================
@@ -91,21 +109,6 @@ public class AuthDbContext : DbContext
             entity.Property(e => e.ActionType).IsRequired().HasMaxLength(50);
             entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => e.CreatedAt);
-        });
-
-        // ==================== GovernanceAuditLog (3号位：A-7 治理审计日志) ====================
-        modelBuilder.Entity<GovernanceAuditLog>(entity =>
-        {
-            entity.ToTable("GovernanceAuditLog");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.OperationType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.EntityType).IsRequired().HasMaxLength(100);
-            entity.Property(e => e.VersionCode).HasMaxLength(50);
-            entity.Property(e => e.BeforeStatus).HasMaxLength(50);
-            entity.Property(e => e.AfterStatus).HasMaxLength(50);
-            entity.Property(e => e.OperatedBy).HasMaxLength(100);
-            entity.HasIndex(e => new { e.EntityType, e.EntityId });
-            entity.HasIndex(e => e.OperatedAt);
         });
 
         // ==================== ApprovalFlow ====================
@@ -141,6 +144,18 @@ public class AuthDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.RuleType).IsRequired().HasMaxLength(50);
             entity.HasIndex(e => e.FlowId);
+        });
+
+        // ==================== GovernanceAuditLog（治理审计，3号位 A-7） ====================
+        modelBuilder.Entity<GovernanceAuditLog>(entity =>
+        {
+            entity.ToTable("GovernanceAuditLog");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.OperationType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.EntityType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.VersionCode).HasMaxLength(100);
+            entity.HasIndex(e => new { e.EntityType, e.EntityId });
+            entity.HasIndex(e => e.OperatedAt);
         });
     }
 

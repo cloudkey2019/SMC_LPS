@@ -136,24 +136,18 @@ public sealed class PiSortParams
 public enum PiSortBy { IssueDateAsc, CreatedAtAsc, StablePiNoAsc }
 
 /// <summary>
-/// 采购排序冻结链（清单 22）：Eligibility → Warehouse Priority → AvailableTime → PO Release Time → PO+Line。
-/// 3号位不重排该冻结链，只治理其中参数。
-/// </summary>
-public sealed class ProcurementSortParams
-{
-    public bool WarehousePriorityEnabled { get; set; }
-    public bool DefaultLtAsTieBreak { get; set; }         // 是否以 DefaultLT 参与排序
-    public bool MarginApplied { get; set; }
-    public bool ArrivalOffsetApplied { get; set; }
-}
-
-/// <summary>
 /// ④ ProcurementBlock（采购/良率参数，含 PlanningYield）（清单 23~27 / 3.3 / C2-5）
 /// C2-5：PlanningYield 必须进入 Snapshot，归属本块；2号位读取算 NetOutputQty → PlannedProcessQty；
 /// 红线：已有 PI Supply 不得按 Yield 再次放大。
+/// 0号位 2026-08-28 最终裁决：采购/Timed Supply 排序链（Eligibility → Warehouse Priority → AvailableTime
+/// → PO Release Time → PO+Line）固定、不可重排、**无 Enable/Disable 开关**；3号位 只治理本块四个参数值：
+/// WarehousePriority / DefaultPurchaseLt / OverdueMargin / ArrivalToUsableOffsets
+/// （原 ProcurementSortParams 四开关类型已按裁决删除）。
 /// </summary>
 public sealed class ProcurementBlock
 {
+    /// <summary>采购排序链"Warehouse Priority"步的仓库优先级（有序列表，隐含优先级；0号位 2026-08-28 裁决补齐）</summary>
+    public IReadOnlyList<string> WarehousePriority { get; set; } = [];
     /// <summary>Default Purchase LT（按 Receiving Warehouse + 必要 Material 维度，清单 23；不增加 ProductFamily 维度）</summary>
     public IReadOnlyList<PurchaseLtRule> DefaultPurchaseLt { get; set; } = [];
     /// <summary>逾期 Margin（保守修正，清单 25）</summary>
@@ -197,11 +191,14 @@ public sealed class PlanningYieldRule
 public sealed class SolverStrategyBlock
 {
     public SolverStrategyMode Mode { get; set; }          // FORWARD / BACKWARD / MIXED（冻结 E1）
+    public bool AllowMerge { get; set; } = false;         // 是否允许合批（1号位 PhaseTwoInitialScheduler.cs:158 消费；3号位 2026-09-04 补源）
+    public int MaxIterations { get; set; } = 1000;        // 求解迭代上限（3号位 2026-09-04 补源）
     public DynamicBottleneckMode BottleneckMode { get; set; }
     public OnTimeTargetParams OnTimeTarget { get; set; } = new();
     public SplitParams Split { get; set; } = new();
     public SetupParams Setup { get; set; } = new();
     public StageOverlapParams StageOverlap { get; set; } = new();
+
 }
 
 public enum SolverStrategyMode { Forward, Backward, Mixed }

@@ -137,6 +137,21 @@ public class SolverStrategyValidatorTests
         result.IsValid.Should().BeFalse();
         result.Errors.Should().Contain(e => e.Contains("SolverStrategyMode"));
     }
+
+    [Fact]
+    public void E4_MaxIterations_非正_拒绝()
+    {
+        // Arrange —— 求解迭代上限必须为正（默认 1000）
+        var block = new SolverStrategyBlock();
+        block.MaxIterations = 0;
+
+        // Act
+        var result = _validator.Validate(block);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("MaxIterations"));
+    }
 }
 
 /// <summary>

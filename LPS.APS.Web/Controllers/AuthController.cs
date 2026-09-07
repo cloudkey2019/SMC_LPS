@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Shared.Models;
 using LPS.APS.Web.Dto.Auth;
@@ -105,13 +106,15 @@ public class AuthController : ControllerBase
         var userCode = User.FindFirst(ClaimTypes.Name)?.Value;
         var userName = User.FindFirst("userName")?.Value;
         var roles = User.FindAll(ClaimTypes.Role).Select(c => c.Value).ToList();
+        var permissions = User.FindAll(PermissionCodes.PermissionClaimType).Select(c => c.Value).ToList();
 
         return ApiResponse<UserInfoDto>.Success(new UserInfoDto
         {
             UserId = int.Parse(userId ?? "0"),
             UserCode = userCode ?? "",
             UserName = userName ?? "",
-            Roles = roles
+            Roles = roles,
+            Permissions = permissions
         });
     }
 }

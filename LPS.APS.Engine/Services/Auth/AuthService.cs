@@ -2,9 +2,11 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Dto;
 using LPS.APS.Core.Entities.Auth;
 using LPS.APS.Core.Interfaces;
+using LPS.APS.Core.Security;
 using LPS.APS.Engine.Data;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -17,13 +19,14 @@ namespace LPS.APS.Engine.Services.Auth;
 /// 职责：用户登录验证、JWT 签发与刷新、账户锁定管理
 /// 
 /// 访问数据库：APS_Auth（User/UserRole/Role 表）
-/// 密码哈希：BCrypt（前期可使用 SHA256 过渡）
+/// 密码哈希：PBKDF2-SHA256（见 <see cref="PasswordHasher"/>，兼容旧 SHA256 哈希渐进重哈希）
 /// Token：JWT AccessToken + 随机 RefreshToken
 /// </summary>
 public class AuthService : IAuthService
 {
     private readonly DatabaseConnectionManager _connectionManager;
     private readonly IConfiguration _configuration;
+    private readonly IPermissionCodeRepository _permissionCodeRepository;
     private readonly ILogger<AuthService> _logger;
 
     private const int MaxFailedAttempts = 5;
@@ -32,10 +35,12 @@ public class AuthService : IAuthService
     public AuthService(
         DatabaseConnectionManager connectionManager,
         IConfiguration configuration,
+        IPermissionCodeRepository permissionCodeRepository,
         ILogger<AuthService> logger)
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _permissionCodeRepository = permissionCodeRepository ?? throw new ArgumentNullException(nameof(permissionCodeRepository));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -60,7 +65,7 @@ public class AuthService : IAuthService
         if (user.Status != "Active")
         {
             _logger.LogWarning("登录失败: 账户已禁用 UserCode={UserCode}", userCode);
-            return LoginResult("账户已禁用，请联系管理员");
+            return LoginResult("用户名或密码错误");
         }
 
         // 3. 锁定检查
@@ -68,17 +73,22 @@ public class AuthService : IAuthService
         {
             var remaining = (user.LockoutEnd.Value - DateTime.Now).TotalMinutes;
             _logger.LogWarning("登录失败: 账户锁定中 UserCode={UserCode}, 剩余{Minutes:F0}分钟", userCode, remaining);
-            return LoginResult($"账户已锁定，请{remaining:F0}分钟后重试");
+            return LoginResult("用户名或密码错误");
         }
 
-        // 4. 密码验证
-        if (!VerifyPassword(password, user.PasswordHash))
+        // 4. 密码验证（PBKDF2 优先，兼容旧无盐 SHA256 哈希）
+        if (!PasswordHasher.Verify(password, user.PasswordHash))
         {
             await HandleFailedLoginAsync(user);
             _logger.LogWarning("登录失败: 密码错误 UserCode={UserCode}, 失败次数={Attempts}",
                 userCode, user.FailedLoginAttempts + 1);
             return LoginResult("用户名或密码错误");
         }
+
+        // 4.1 旧哈希渐进重哈希（旧 SHA256 用户在本次成功登录时升级为 PBKDF2）
+        var rehashed = PasswordHasher.NeedsRehash(user.PasswordHash)
+            ? PasswordHasher.Hash(password)
+            : null;
 
         // 5. 查询角色
         var roles = await _connectionManager.QueryAsync<string>(
@@ -91,17 +101,21 @@ public class AuthService : IAuthService
 
         var roleList = roles.ToList();
 
+        // 5.1 查询功能权限码（F-G3：登录签发时注入 PermissionCode 声明）
+        var permissionList = (await _permissionCodeRepository.GetPermissionCodesByUserIdAsync(user.Id)).ToList();
+
         // 6. 生成 Token
-        var accessToken = GenerateAccessToken(user, roleList);
+        var accessToken = GenerateAccessToken(user, roleList, permissionList);
         var refreshToken = GenerateRefreshToken();
         var expiresAt = DateTime.Now.AddMinutes(GetAccessTokenExpiration());
 
         // 7. 更新用户登录信息
         await _connectionManager.ExecuteAsync(
-            @"UPDATE [User] SET 
+            @"UPDATE [User] SET
                 LastLoginTime = GETDATE(),
                 FailedLoginAttempts = 0,
                 LockoutEnd = NULL,
+                PasswordHash = CASE WHEN @Rehashed IS NULL THEN PasswordHash ELSE @Rehashed END,
                 RefreshToken = @RefreshToken,
                 RefreshTokenExpiry = @RefreshTokenExpiry,
                 UpdatedAt = GETDATE()
@@ -109,7 +123,8 @@ public class AuthService : IAuthService
             new
             {
                 Id = user.Id,
-                RefreshToken = refreshToken,
+                Rehashed = rehashed,
+                RefreshToken = HashRefreshToken(refreshToken),
                 RefreshTokenExpiry = DateTime.Now.AddDays(GetRefreshTokenExpiration())
             },
             db: DatabaseId.Auth);
@@ -147,7 +162,7 @@ public class AuthService : IAuthService
             new { Id = userId },
             db: DatabaseId.Auth);
 
-        if (user == null || user.RefreshToken != refreshToken)
+        if (user == null || !VerifyRefreshToken(refreshToken, user.RefreshToken))
             return LoginResult("RefreshToken 无效");
 
         if (user.RefreshTokenExpiry < DateTime.Now)
@@ -164,8 +179,11 @@ public class AuthService : IAuthService
 
         var roleList = roles.ToList();
 
+        // 3.1 查询功能权限码（刷新时重新注入，避免权限变更后仍持旧声明）
+        var permissionList = (await _permissionCodeRepository.GetPermissionCodesByUserIdAsync(user.Id)).ToList();
+
         // 4. 生成新 Token 对
-        var newAccessToken = GenerateAccessToken(user, roleList);
+        var newAccessToken = GenerateAccessToken(user, roleList, permissionList);
         var newRefreshToken = GenerateRefreshToken();
         var expiresAt = DateTime.Now.AddMinutes(GetAccessTokenExpiration());
 
@@ -179,7 +197,7 @@ public class AuthService : IAuthService
             new
             {
                 Id = user.Id,
-                RefreshToken = newRefreshToken,
+                RefreshToken = HashRefreshToken(newRefreshToken),
                 RefreshTokenExpiry = DateTime.Now.AddDays(GetRefreshTokenExpiration())
             },
             db: DatabaseId.Auth);
@@ -216,7 +234,7 @@ public class AuthService : IAuthService
 
     #region Private Methods
 
-    private string GenerateAccessToken(User user, List<string> roles)
+    private string GenerateAccessToken(User user, List<string> roles, List<string> permissionCodes)
     {
         var secretKey = _configuration["Jwt:SecretKey"]
             ?? throw new InvalidOperationException("JWT SecretKey 未配置");
@@ -238,6 +256,12 @@ public class AuthService : IAuthService
             claims.Add(new Claim(ClaimTypes.Role, role));
         }
 
+        // 添加功能权限码声明（F-G3：供 4号位/5号位 后端鉴权与前端菜单渲染）
+        foreach (var permission in permissionCodes)
+        {
+            claims.Add(new Claim(PermissionCodes.PermissionClaimType, permission));
+        }
+
         var token = new JwtSecurityToken(
             issuer: _configuration["Jwt:Issuer"],
             audience: _configuration["Jwt:Audience"],
@@ -254,6 +278,31 @@ public class AuthService : IAuthService
         using var rng = RandomNumberGenerator.Create();
         rng.GetBytes(randomBytes);
         return Convert.ToBase64String(randomBytes);
+    }
+
+    /// <summary>RefreshToken 哈希存储前缀（SHA256 无盐，token 为 64 字节高熵随机值，无需盐）。</summary>
+    private const string RefreshTokenHashPrefix = "SHA256$";
+
+    /// <summary>RefreshToken 落库哈希：SHA256（无盐——token 本身高熵不可猜测，盐无必要）。</summary>
+    private static string HashRefreshToken(string refreshToken)
+        => RefreshTokenHashPrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken)));
+
+    /// <summary>
+    /// 校验 RefreshToken（恒定时间比较）。
+    /// 新格式为 SHA256 哈希；兼容历史明文（v1.0 前落库的 Base64 明文），首次刷新成功后即升级为哈希。
+    /// </summary>
+    private static bool VerifyRefreshToken(string refreshToken, string? stored)
+    {
+        if (string.IsNullOrEmpty(stored) || string.IsNullOrEmpty(refreshToken))
+            return false;
+
+        var expected = stored.StartsWith(RefreshTokenHashPrefix, StringComparison.Ordinal)
+            ? HashRefreshToken(refreshToken)
+            : refreshToken;
+
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(stored));
     }
 
     private ClaimsPrincipal? GetPrincipalFromExpiredToken(string token)
@@ -288,16 +337,6 @@ public class AuthService : IAuthService
         {
             return null;
         }
-    }
-
-    private static bool VerifyPassword(string password, string passwordHash)
-    {
-        // TODO: 后续升级为 BCrypt.Net-Next
-        // 当前使用 SHA256 + Base64 过渡方案
-        using var sha256 = SHA256.Create();
-        var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
-        var hash = Convert.ToBase64String(hashBytes);
-        return hash == passwordHash;
     }
 
     private async Task HandleFailedLoginAsync(User user)

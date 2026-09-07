@@ -147,10 +147,15 @@ public class DatabaseConnectionManager : IDisposable
         var (_, connOptions) = GetDbResources(db);
         var timeout = commandTimeout ?? connOptions.CommandTimeout;
 
-        using var connection = new SqlConnection(connOptions.BuildConnectionString());
-        await connection.OpenAsync();
-
-        return await connection.QueryAsync<T>(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        var connection = await GetConnectionAsync(db);
+        try
+        {
+            return await connection.QueryAsync<T>(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        }
+        finally
+        {
+            ReleaseConnection(db);
+        }
     }
 
     /// <summary>
@@ -162,10 +167,15 @@ public class DatabaseConnectionManager : IDisposable
         var (_, connOptions) = GetDbResources(db);
         var timeout = commandTimeout ?? connOptions.CommandTimeout;
 
-        using var connection = new SqlConnection(connOptions.BuildConnectionString());
-        await connection.OpenAsync();
-
-        return await connection.QueryFirstOrDefaultAsync<T>(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        var connection = await GetConnectionAsync(db);
+        try
+        {
+            return await connection.QueryFirstOrDefaultAsync<T>(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        }
+        finally
+        {
+            ReleaseConnection(db);
+        }
     }
 
     /// <summary>
@@ -177,10 +187,15 @@ public class DatabaseConnectionManager : IDisposable
         var (_, connOptions) = GetDbResources(db);
         var timeout = commandTimeout ?? connOptions.CommandTimeout;
 
-        using var connection = new SqlConnection(connOptions.BuildConnectionString());
-        await connection.OpenAsync();
-
-        return await connection.ExecuteAsync(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        var connection = await GetConnectionAsync(db);
+        try
+        {
+            return await connection.ExecuteAsync(sql, parameters, commandType: commandType, commandTimeout: timeout);
+        }
+        finally
+        {
+            ReleaseConnection(db);
+        }
     }
 
     /// <summary>
@@ -198,24 +213,28 @@ public class DatabaseConnectionManager : IDisposable
     public async Task BulkInsertAsync(DataTable dataTable, string tableName, DatabaseId db = DatabaseId.APS)
     {
         var (_, connOptions) = GetDbResources(db);
-
-        using var connection = new SqlConnection(connOptions.BuildConnectionString());
-        await connection.OpenAsync();
-
-        using var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, null)
+        var connection = await GetConnectionAsync(db);
+        try
         {
-            DestinationTableName = tableName,
-            BulkCopyTimeout = connOptions.CommandTimeout,
-            BatchSize = 50000
-        };
+            using var bulkCopy = new SqlBulkCopy((SqlConnection)connection, SqlBulkCopyOptions.TableLock, null)
+            {
+                DestinationTableName = tableName,
+                BulkCopyTimeout = connOptions.CommandTimeout,
+                BatchSize = 50000
+            };
 
-        // 映射列
-        foreach (DataColumn column in dataTable.Columns)
-        {
-            bulkCopy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+            // 映射列
+            foreach (DataColumn column in dataTable.Columns)
+            {
+                bulkCopy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+            }
+
+            await bulkCopy.WriteToServerAsync(dataTable);
         }
-
-        await bulkCopy.WriteToServerAsync(dataTable);
+        finally
+        {
+            ReleaseConnection(db);
+        }
     }
 
     /// <summary>
@@ -223,22 +242,43 @@ public class DatabaseConnectionManager : IDisposable
     /// </summary>
     public async Task<T> ExecuteInTransactionAsync<T>(Func<IDbConnection, IDbTransaction, Task<T>> operation, DatabaseId db = DatabaseId.APS)
     {
-        var (_, connOptions) = GetDbResources(db);
-
-        using var connection = new SqlConnection(connOptions.BuildConnectionString());
-        await connection.OpenAsync();
-
-        using var transaction = await connection.BeginTransactionAsync();
+        var connection = await GetConnectionAsync(db);
         try
         {
-            var result = await operation(connection, transaction);
-            await transaction.CommitAsync();
-            return result;
+            if (connection is SqlConnection sqlConnection)
+            {
+                using var transaction = await sqlConnection.BeginTransactionAsync();
+                try
+                {
+                    var result = await operation(connection, transaction);
+                    await transaction.CommitAsync();
+                    return result;
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+            }
+            else
+            {
+                using var transaction = connection.BeginTransaction();
+                try
+                {
+                    var result = await operation(connection, transaction);
+                    transaction.Commit();
+                    return result;
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
         }
-        catch
+        finally
         {
-            await transaction.RollbackAsync();
-            throw;
+            ReleaseConnection(db);
         }
     }
 
@@ -257,52 +297,56 @@ public class DatabaseConnectionManager : IDisposable
         int batchSize = 10000,
         int timeoutSeconds = 600)
     {
-        var (_, sourceConnOptions) = GetDbResources(sourceDb);
-        var (_, destConnOptions) = GetDbResources(destinationDb);
-
-        using var sourceConnection = new SqlConnection(sourceConnOptions.BuildConnectionString());
-        using var destConnection = new SqlConnection(destConnOptions.BuildConnectionString());
-
-        await sourceConnection.OpenAsync();
-        await destConnection.OpenAsync();
-
-        using var command = new SqlCommand(sourceSql, sourceConnection);
-        command.CommandTimeout = timeoutSeconds;
-
-        if (sourceParameters != null)
+        var sourceConnection = await GetConnectionAsync(sourceDb);
+        var destConnection = await GetConnectionAsync(destinationDb);
+        try
         {
-            foreach (var prop in sourceParameters.GetType().GetProperties())
+            var sqlSourceConn = (SqlConnection)sourceConnection;
+            var sqlDestConn = (SqlConnection)destConnection;
+
+            using var command = new SqlCommand(sourceSql, sqlSourceConn);
+            command.CommandTimeout = timeoutSeconds;
+
+            if (sourceParameters != null)
             {
-                command.Parameters.AddWithValue($"@{prop.Name}", prop.GetValue(sourceParameters) ?? DBNull.Value);
+                foreach (var prop in sourceParameters.GetType().GetProperties())
+                {
+                    command.Parameters.AddWithValue($"@{prop.Name}", prop.GetValue(sourceParameters) ?? DBNull.Value);
+                }
             }
-        }
 
-        using var reader = await command.ExecuteReaderAsync();
-        using var bulkCopy = new SqlBulkCopy(destConnection)
-        {
-            DestinationTableName = destinationTable,
-            BatchSize = batchSize,
-            BulkCopyTimeout = timeoutSeconds
-        };
-
-        if (columnMappings != null)
-        {
-            foreach (var mapping in columnMappings)
+            using var reader = await command.ExecuteReaderAsync();
+            using var bulkCopy = new SqlBulkCopy(sqlDestConn)
             {
-                bulkCopy.ColumnMappings.Add(mapping.Key, mapping.Value);
-            }
-        }
-        else
-        {
-            // 自动映射同名列
-            for (int i = 0; i < reader.FieldCount; i++)
-            {
-                var name = reader.GetName(i);
-                bulkCopy.ColumnMappings.Add(name, name);
-            }
-        }
+                DestinationTableName = destinationTable,
+                BatchSize = batchSize,
+                BulkCopyTimeout = timeoutSeconds
+            };
 
-        await bulkCopy.WriteToServerAsync(reader);
+            if (columnMappings != null)
+            {
+                foreach (var mapping in columnMappings)
+                {
+                    bulkCopy.ColumnMappings.Add(mapping.Key, mapping.Value);
+                }
+            }
+            else
+            {
+                // 自动映射同名列
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    var name = reader.GetName(i);
+                    bulkCopy.ColumnMappings.Add(name, name);
+                }
+            }
+
+            await bulkCopy.WriteToServerAsync(reader);
+        }
+        finally
+        {
+            ReleaseConnection(sourceDb);
+            ReleaseConnection(destinationDb);
+        }
     }
 
     /// <summary>
@@ -312,13 +356,16 @@ public class DatabaseConnectionManager : IDisposable
     {
         try
         {
-            var (_, connOptions) = GetDbResources(db);
-
-            using var connection = new SqlConnection(connOptions.BuildConnectionString());
-            await connection.OpenAsync();
-
-            await connection.ExecuteScalarAsync<int>("SELECT 1");
-            return true;
+            var connection = await GetConnectionAsync(db);
+            try
+            {
+                await connection.ExecuteScalarAsync<int>("SELECT 1");
+                return true;
+            }
+            finally
+            {
+                ReleaseConnection(db);
+            }
         }
         catch
         {

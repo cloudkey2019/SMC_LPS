@@ -51,6 +51,12 @@ public class RoutingOperation
     /// </summary>
     public decimal SetupTime { get; set; }
 
+    /// <summary>
+    /// 转移批量（工序间流转单位，用于阈值启动）
+    /// 来源：RoutingPlanningParam.TransferBatchSize，由2号位加载
+    /// </summary>
+    public decimal? TransferBatchSize { get; set; }
+
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

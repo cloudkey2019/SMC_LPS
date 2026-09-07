@@ -38,8 +38,7 @@ public static class HangfireServiceExtensions
 
         services.AddHangfireServer(options =>
         {
-            options.WorkerCount = Environment.ProcessorCount * 7;
-            //options.WorkerCount = Environment.ProcessorCount * 2;
+            options.WorkerCount = Environment.ProcessorCount * 2;
             options.Queues = new[] { "critical", "default", "low" };
             options.ServerName = $"APS-{Environment.MachineName}";
         });
@@ -180,19 +179,22 @@ public static class HangfireServiceExtensions
             isDev ? NeverFireCron : "50 1 * * *",
             new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
-        // 串行全局排程（备用，始终设为永不自动触发，仅手动触发）
+        // 物料×阶段→默认生产部门 上下文重建（生产：每日01:55）— §4.3c MaterialStageDeptContext
+        // ⚠️ 排在 domain-dependency-scan（01:50）之后、scheduling-trigger（02:00）之前
+        // 全量重建 MaterialStageDeptContext（SCD Type 2），供 1号位排程按 (MaterialId,StageCode) 锁定 Routing 三件套
+        // sp_RebuildMaterialStageDeptContext（@TriggerMode='FULL'；Database/Scripts/APS/ 独立脚本）
+        RecurringJob.AddOrUpdate<IMaterialStageDeptContextRebuildService>(
+            "material-stage-dept-context-rebuild",
+            service => service.RebuildAsync(CancellationToken.None),
+            isDev ? NeverFireCron : "55 1 * * *",
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
+
+        // 排程推演（生产：每日02:00）— §2.5.1 排程发令枪
+        // 所有数据管道完成后，自动查找待排PlanVersion → 装载沙盘 → 求解 → 落盘
         RecurringJob.AddOrUpdate<ISchedulingOrchestrator>(
             "scheduling-trigger",
             service => service.RunSchedulingAutoAsync(CancellationToken.None),
-            NeverFireCron,
-            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
-
-        // 分域并行排程 B2 方案（生产：每日02:00）— §2.5.1 排程发令枪
-        // 所有数据管道完成后，自动查找待排PlanVersion → 分域并行调度 → 落盘
-        RecurringJob.AddOrUpdate<ISchedulingOrchestrator>(
-            "scheduling-domain-trigger",
-            service => service.RunDomainSchedulingAutoAsync(CancellationToken.None),
-            NeverFireCron,
+            isDev ? NeverFireCron : "0 2 * * *",
             new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         return app;

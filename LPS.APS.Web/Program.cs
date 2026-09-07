@@ -3,12 +3,14 @@ using System.Text;
 using Hangfire;
 using LPS.APS.Application.Extensions;
 using LPS.APS.BusinessRules.Extensions;
+using LPS.APS.Core.Interfaces;
 using LPS.APS.Engine.Extensions;
 using LPS.APS.Scheduling.Extensions;
 using LPS.APS.Shared.Extensions;
 using LPS.APS.Web.Extensions;
 using LPS.APS.Web.Filters;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
@@ -61,10 +63,6 @@ builder.Services.AddApplicationServices();
 
 // 注册Hangfire定时服务（使用APS库存储Job数据）
 builder.Services.AddHangfireServices(builder.Configuration);
-
-// 注册 IMonitoringApi（供 DomainLayerCoordinatorJob 轮询域 Job 状态）
-builder.Services.AddSingleton<Hangfire.Storage.IMonitoringApi>(
-    _ => JobStorage.Current.GetMonitoringApi());
 
 // 配置JSON序列化 + 全局异常过滤器
 builder.Services.AddControllers(options =>
@@ -142,6 +140,14 @@ builder.Services.AddHealthChecks()
 var jwtSecretKey = builder.Configuration["Jwt:SecretKey"]
     ?? throw new InvalidOperationException("缺少 Jwt:SecretKey 配置");
 
+// 安全加固：占位符或长度不足的签名密钥会使 JWT 可被伪造，生产环境拒绝启动
+if (jwtSecretKey.Length < 32 || jwtSecretKey.StartsWith("REPLACE_WITH_YOUR_", StringComparison.OrdinalIgnoreCase))
+{
+    if (builder.Environment.IsProduction())
+        throw new InvalidOperationException("生产环境禁止使用占位符或长度不足的 Jwt:SecretKey，请通过环境变量/User Secrets 配置真实密钥");
+    Log.Warning("Jwt:SecretKey 为占位符或长度不足，开发环境已放行；生产环境将拒绝启动");
+}
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -160,6 +166,20 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecretKey)),
         ClockSkew = TimeSpan.FromMinutes(1)
     };
+});
+
+// 授权：全局默认要求已认证（安全默认），公共端点以 [AllowAnonymous] 显式放行
+// F-G1/F-G2（3号位）：关闭业务端点"全裸奔"缺口；角色级策略待 0号位 裁决 RoleCode 后补充
+builder.Services.AddPermissionAuthorization();
+
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+
+    // F-G3：注册 V1 全部功能权限点策略（策略名 = PermissionCode）
+    options.AddPermissionPolicies();
 });
 
 // 跨域（从 appsettings.json 读取配置）
@@ -254,12 +274,27 @@ app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks
         };
         await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(response));
     }
-});
+}).AllowAnonymous();
 
 app.UseAuthorization();
 app.MapControllers();
 
-app.MapGet("/", () => Results.Redirect("/swagger"));
+// ==================== 启动种子（F-G5 收尾，3号位） ====================
+// 确保代码侧 13 个 V1 功能权限码已落库（幂等；APS_Auth 不可用时仅告警不阻断启动）
+using (var scope = app.Services.CreateScope())
+{
+    var seeder = scope.ServiceProvider.GetRequiredService<IPermissionSeedService>();
+    try
+    {
+        await seeder.EnsureSeededAsync();
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "权限码播种失败（APS_Auth 可能不可用），不影响启动");
+    }
+}
+
+app.MapGet("/", () => Results.Redirect("/swagger")).AllowAnonymous();
 
 Log.Information("LPS.APS 应用程序启动完成");
 app.Run();

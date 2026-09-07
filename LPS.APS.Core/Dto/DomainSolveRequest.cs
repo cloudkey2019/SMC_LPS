@@ -31,6 +31,14 @@ public sealed class DomainSolveRequest
     public IReadOnlyList<OperationResourceEligibility> OperationResourceEligibility { get; init; }
         = Array.Empty<OperationResourceEligibility>();
 
+    /// <summary>
+    /// 物料×阶段→默认生产部门 上下文（PM 裁定：最小 B）。
+    /// 2号位裁剪当前 Domain 涉及的 (MaterialId, StageCode) 传入；1号位按 (MaterialId, StageCode)
+    /// 锁 ProductionDepartmentId 后过滤 Routing 三件套，不得重新推导部门。
+    /// </summary>
+    public IReadOnlyList<MaterialStageDepartmentContextDto> MaterialStageDepartmentContexts { get; init; }
+        = Array.Empty<MaterialStageDepartmentContextDto>();
+
     public IReadOnlyList<MaterialAvailabilitySlice> MaterialConstraints { get; init; }
         = Array.Empty<MaterialAvailabilitySlice>();
 
@@ -49,6 +57,14 @@ public sealed class DomainSolveRequest
     public SolverStrategySnapshot StrategySnapshot { get; init; } = new();
 
     public CandidateContext? CandidateContext { get; init; }
+
+    /// <summary>
+    /// 前序 Domain 成功后的共享 Resource 占用块（FULL §9）。
+    /// 1号位将其作为不可用时间窗阻挡后续 Domain 在真实共享 Resource 上重叠占用。
+    /// Candidate 的对应物是 CandidateContext.ExternalDomainResourceBlocks（§11）；本字段 FULL 专用、Candidate 时为 null。
+    /// </summary>
+    public IReadOnlyList<ResourceBlock> UpstreamDomainResourceBlocks { get; init; }
+        = Array.Empty<ResourceBlock>();
 }
 
 /// <summary>
@@ -156,6 +172,16 @@ public sealed class ExecutionConstraint
     public DateTime LockedStart { get; init; }
     public DateTime LockedEnd { get; init; }
     public string ConstraintType { get; init; } = string.Empty;
+
+    // 第4轮Anchor补充：Stage/Operation信息，用于原地继承锁定Task
+    public string? StageCode { get; init; }
+    public string? OperationCode { get; init; }
+
+    // 第4轮Anchor补充：锁定数量，原地继承该份额，只排剩余可移动份额
+    public decimal? LockedQuantity { get; init; }
+
+    // 第4轮Anchor补充：稳定TaskKey，用于跨轮次识别同一Task
+    public string? TaskKey { get; init; }
 }
 
 public sealed class FiniteCapacityParameters

@@ -25,16 +25,17 @@ internal class PhaseThreeDiagnostics
     {
         var result = new DiagnosticsResult();
 
-        // 构建已排程任务的索引：SourceDraftId → FinalTaskDraft
-        var scheduledTasksMap = scheduleResult.ScheduledTasks
-            .ToDictionary(t => t.SourceDraftId, t => t);
+        // P0-12修复：构建已排程任务的索引，使用ToLookup支持多工序（一个Demand生成多个Task）
+        var scheduledTasksLookup = scheduleResult.ScheduledTasks
+            .ToLookup(t => t.SourceDraftId);
 
         // ═══════════════════════════════════════════════
         // 1. 延期识别：PlannedEndTime > RequiredAvailableTime
         // ═══════════════════════════════════════════════
         foreach (var demand in request.LogicalProductionDemands)
         {
-            if (!scheduledTasksMap.ContainsKey(demand.LogicalDemandKey))
+            // P0-12修复：使用Lookup支持多工序
+            if (!scheduledTasksLookup.Contains(demand.LogicalDemandKey))
             {
                 // 未排程需求
                 result.UnscheduledDemandKeys.Add(demand.LogicalDemandKey);
@@ -42,8 +43,7 @@ internal class PhaseThreeDiagnostics
             }
 
             // 找到该需求的最后一道工序
-            var demandTasks = scheduleResult.ScheduledTasks
-                .Where(t => t.SourceDraftId == demand.LogicalDemandKey)
+            var demandTasks = scheduledTasksLookup[demand.LogicalDemandKey]
                 .OrderBy(t => t.PlannedEndTime)
                 .ToList();
 

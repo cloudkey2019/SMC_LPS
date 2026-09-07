@@ -27,8 +27,14 @@ public sealed class ScheduleRunGov
     /// <summary>绑定的策略包版本（冻结基线；可为 null：无绑定）</summary>
     public long? StrategyProfileVersionId { get; set; }
 
+    /// <summary>白天 Candidate 所基于的当前 ACTIVE 计划版本（逻辑引用；创建服务校验版本存在/状态/Domain 一致性）</summary>
+    public int? BasePlanVersionId { get; set; }
+
     /// <summary>运行启动时冻结的预期 Domain 集合（JSON 数组；创建后不可修改）</summary>
     public string? ExpectedDomainKeysJson { get; set; }
+
+    /// <summary>局部重排范围 JSON（v5.1.4 起不再承载 ExpectedDomainKeys，仅保留只读）</summary>
+    public string? ScopeJson { get; set; }
 
     /// <summary>运行启动时间</summary>
     public DateTime StartedAt { get; set; }

@@ -21,6 +21,7 @@ public static class ApplicationServiceExtensions
                 .AddClasses(classes => classes.Where(t =>
                     t.Namespace != null &&
                     t.Namespace.StartsWith("LPS.APS.Application.Services") &&
+                    !t.Namespace.StartsWith("LPS.APS.Application.Services.Fixtures") &&
                     t.DeclaringType == null))
                 .AsImplementedInterfaces()
                 .WithScopedLifetime()

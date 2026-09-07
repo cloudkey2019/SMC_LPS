@@ -32,4 +32,10 @@ public interface IPlanVersionRepository
 
     /// <summary>按 SourceScheduleRunId 取最新 PlanVersion（Run 引用追溯；无则 null）</summary>
     System.Threading.Tasks.Task<PlanVersion?> GetLatestByScheduleRunIdAsync(int scheduleRunId, CancellationToken ct = default);
+
+    /// <summary>按 DomainKey 取当前 ACTIVE 计划版本（B-1：白天 Candidate 解析 Base；无则 null）</summary>
+    System.Threading.Tasks.Task<PlanVersion?> GetActiveByDomainKeyAsync(string domainKey, CancellationToken ct = default);
+
+    /// <summary>按 SourceScheduleRunId 取全部 PlanVersion（G8：Run 域级状态汇总；按 DomainKey 分组倒序）</summary>
+    System.Threading.Tasks.Task<IReadOnlyList<PlanVersion>> GetByScheduleRunIdAsync(int scheduleRunId, CancellationToken ct = default);
 }

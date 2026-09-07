@@ -182,23 +182,17 @@ public sealed class PiSortParams
 }
 
 public enum PiSortBy { IssueDateAsc, CreatedAtAsc, StablePiNoAsc }
-
-/// 采购排序冻结链（清单 22）：Eligibility → Warehouse Priority → AvailableTime → PO Release Time → PO+Line。
-/// 3号位不重排该冻结链，只治理其中参数。
-public sealed class ProcurementSortParams
-{
-    public bool WarehousePriorityEnabled { get; set; }
-    public bool DefaultLtAsTieBreak { get; set; }         // 是否以 DefaultLT 参与排序
-    public bool MarginApplied { get; set; }
-    public bool ArrivalOffsetApplied { get; set; }
-}
 ```
 
 ## ④ ProcurementBlock（采购/良率参数，含 PlanningYield）— 清单 23~27 / 3.3 / C2-5
 
+> **0号位 2026-08-28 最终裁决**：采购/Timed Supply 排序链固定（Eligibility → Warehouse Priority → AvailableTime → PO Release Time → PO+Line），不可重排、**无 Enable/Disable 开关**；原 `ProcurementSortParams`（四开关）已按裁决删除。3号位 只治理本块四个参数值：`WarehousePriority` / `DefaultPurchaseLt` / `OverdueMargin` / `ArrivalToUsableOffsets`；2号位 按参数形成 AvailableTime 并执行固定链。
+
 ```csharp
 public sealed class ProcurementBlock
 {
+    /// 采购排序链"Warehouse Priority"步的仓库优先级（有序列表，隐含优先级）——0号位 2026-08-28 裁决补齐
+    public IReadOnlyList<string> WarehousePriority { get; set; } = [];
     /// Default Purchase LT（按 Receiving Warehouse + 必要 Material 维度，清单 23；不增加 ProductFamily 维度）
     public IReadOnlyList<PurchaseLtRule> DefaultPurchaseLt { get; set; } = [];
     /// 逾期 Margin（保守修正，清单 25）
@@ -250,6 +244,8 @@ public sealed class SolverStrategyBlock
     public SplitParams Split { get; set; } = new();
     public SetupParams Setup { get; set; } = new();
     public StageOverlapParams StageOverlap { get; set; } = new();
+    public bool AllowMerge { get; set; } = false;         // 是否允许合批（1号位消费；V1 默认 false）
+    public int MaxIterations { get; set; } = 1000;        // 求解迭代上限（V1 默认 1000）
 }
 
 public enum SolverStrategyMode { Forward, Backward, Mixed }
@@ -398,3 +394,12 @@ public sealed class FrozenFactParameters
 ---
 
 *本契约 v0.2 为 0号位统一确认后的定稿版；v0.1 作废。作为阶段 B（FrozenStrategySnapshot）与阶段 D（Supply/Procurement 参数）的实现依据，并作为 5号位开发的输入。*
+
+---
+
+# 八、修订记录
+
+| 日期 | 版本 | 变更 | 依据 | 影响 |
+|---|---|---|---|---|
+| 2026-08-27 | v0.2 增补 | §③ SupplyBlock 新增 `SupplyTieBreakParams`（Stable Tie-break 白名单：`UsePhysicalSourceKey` / `UseSourceDocumentNoLineNo` / `UseStablePiNo`） | 3号位 初判"第 4 条缺 PhysicalSourceKey / SourceDocumentNo+LineNo 冻结" | 3号位 DTO `SupplyBlock` 同步增补字段（默认全 false） |
+| 2026-08-28 | v0.2 回退 | **回退 08-27 增补**：`SupplyBlock.TieBreak` 与 `SupplyTieBreakParams` 整体移除，§③ 恢复原状 | 0号位《APS_V1_0号位对3号位规则齐全度核查汇报答复_20260828.md》：PhysicalSourceKey / SourceDocumentNo / LineNo 系每条 Supply 的**事实字段**（5号位/供应契约提供），非规则参数，**不得写入 FrozenStrategySnapshot**；Tie-break 规则已由现有冻结链覆盖（采购 `PO+Line Stable Sort`、PI `Stable PI No`） | 规则快照与运行事实解耦；2号位 从 SupplyFact 读取事实键，按现有 Frozen 规则执行稳定 Tie-break；DTO/测试已同步回退 |

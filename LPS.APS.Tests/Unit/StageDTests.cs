@@ -219,6 +219,25 @@ public class StageDTests
         restored.ArrivalToUsableOffsets.Single(o => o.WarehouseCode == "WH-02").OffsetHours.Should().Be(8);
     }
 
+    [Fact]
+    public void R09_Procurement仓库优先级_可读取()
+    {
+        // 验收（0号位 2026-08-28 最终裁决）：采购/Timed Supply 排序链固定、**无 Enable/Disable 开关**；
+        // 3号位 只治理参数值——"Warehouse Priority"为采购链第 2 步的参数值（有序列表，隐含优先级），
+        // 随 Procurement 子块 JSON 往返，2号位可读取。
+        // Arrange
+        var block = new ProcurementBlock
+        {
+            WarehousePriority = new[] { "WH-A", "WH-B", "WH-C" }
+        };
+
+        // Act
+        var restored = RoundTrip(block);
+
+        // Assert：优先级顺序保持（顺序即履约顺序）
+        restored.WarehousePriority.Should().Equal("WH-A", "WH-B", "WH-C");
+    }
+
     // ============ R13：Planning Yield（2号位可取正确版本值） ============
 
     [Fact]

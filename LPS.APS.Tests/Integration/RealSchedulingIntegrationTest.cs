@@ -6,12 +6,14 @@ using System.Threading.Tasks;
 using Dapper;
 using Xunit;
 using LPS.APS.Application.Services;
+using LPS.APS.Application.Services.Fixtures;
 using LPS.APS.Application.Extensions;
 using LPS.APS.BusinessRules.Extensions;
 using LPS.APS.Engine.Data;
 using LPS.APS.Engine.Extensions;
 using LPS.APS.Scheduling.Extensions;
 using LPS.APS.Core.Dto;
+using LPS.APS.Core.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 
@@ -38,9 +40,9 @@ public class RealSchedulingIntegrationTest
     private readonly PeggingOrchestrator _peggingOrchestrator;
 
     private const string TEST_ORDER_NO = "TEST-SO-001";
-    private const int TEST_MATERIAL_ID = 6211028; // S3_A_20260803_010 (有BOM结构的测试物料)
-    private const string TEST_MATERIAL_CODE = "S3_A_20260803_010";
-    private const string TEST_BATCH_NO = "BATCH_S3_20260803_010"; // 关联APS_BOM_RAW的BatchNo
+    private const int TEST_MATERIAL_ID = 6210859; // TEST_A_20260713_390 (BOM+routing+eligibility 全链齐备的真实测试物料)
+    private const string TEST_MATERIAL_CODE = "TEST_A_20260713_390";
+    private const string TEST_BATCH_NO = "TEST_BATCH_20260713_390"; // 关联APS_BOM_RAW的BatchNo
     private const int TEST_FACTORY_ID = 2; // 中国工厂 (CM)
 
     private int _actualPlanVersionId; // 运行时动态获取
@@ -53,6 +55,7 @@ public class RealSchedulingIntegrationTest
         // 加载测试配置
         var configuration = new ConfigurationBuilder()
             .AddJsonFile("appsettings.Test.json", optional: false)
+            .AddJsonFile("appsettings.Test.Local.json", optional: true)
             .Build();
 
         services.AddSingleton<IConfiguration>(configuration);
@@ -62,6 +65,10 @@ public class RealSchedulingIntegrationTest
         services.AddSchedulingServices();
         services.AddBusinessRuleServices();
         services.AddApplicationServices();
+        // 联调专用：DemandPriority 策略源使用 Fixture（3号位真实 FrozenStrategySnapshot 尚未接通，Fixture 仅用于测试，不得进入生产 DI）
+        services.AddScoped<IDemandPriorityConfigProvider, DemandPriorityFixtureProvider>();
+        // 联调专用：Supply 排序依赖的 FrozenStrategySnapshot 同样使用 Fixture（测试库无真实 PUBLISHED 策略包版本，不得进入生产 DI）
+        services.AddScoped<IFrozenStrategySnapshotProvider, FrozenStrategySnapshotFixtureProvider>();
         services.AddLogging();
 
         // 集成测试需要直接访问具体类
@@ -304,7 +311,7 @@ public class RealSchedulingIntegrationTest
             {
                 PlanVersionId = _actualPlanVersionId,
                 OrderNo = TEST_ORDER_NO,
-                OrderType = "SO",
+                OrderType = "SALES_ORDER",
                 MaterialId = TEST_MATERIAL_ID,
                 MaterialCode = TEST_MATERIAL_CODE,
                 ProductFamilyId = 1,  // 关键：必须设置ProductFamilyId
@@ -471,6 +478,7 @@ public class RealSchedulingIntegrationTest
         // 执行排程
         var result = await _schedulingOrchestrator.RunSchedulingAsync(
             _actualPlanVersionId,
+            251L, // B 项种子后真实策略包 SP-DEMO-V2.0（FULL_SCHEDULE PUBLISHED IsDefault=1）；旧 1L 占位不存在导致 LoadStrategyConfigAsync 静默返回→空策略上下文→Pegging 全失败
             CancellationToken.None);
 
         var duration = DateTime.Now - startTime;
@@ -480,6 +488,11 @@ public class RealSchedulingIntegrationTest
         if (!string.IsNullOrEmpty(result.ErrorMessage))
         {
             Console.WriteLine($"  错误信息: {result.ErrorMessage}");
+        }
+
+        if (!result.IsSuccess)
+        {
+            throw new Exception($"排程流程失败: {result.ErrorMessage}");
         }
 
         // 调试：检查BOM数据
@@ -707,6 +720,7 @@ public class RealSchedulingIntegrationTest
         Console.WriteLine("  重新执行排程流程...");
         await _schedulingOrchestrator.RunSchedulingAsync(
             _actualPlanVersionId,
+            1L, // 联调：Fixture 忽略该版本号，仅需非空以通过策略上下文完整性校验
             CancellationToken.None);
 
         // 第二次运行后的记录数

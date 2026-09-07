@@ -48,7 +48,7 @@ public sealed class LogicalProductionDemand
     public int FactoryId { get; init; }
 
     /// <summary>
-    /// 从哪里开始继续生产（工序代码）
+    /// 从哪里开始继续生产（大工艺阶段码，机加工/氧化级，对应 RoutingOperation.StageCode）
     /// </summary>
     public string StartStageCode { get; init; } = string.Empty;
 

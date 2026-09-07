@@ -55,5 +55,13 @@ public enum SupplySourceType
     /// 无任何正式供给时的缺口占位，仅内存，不生成采购单/Task
     /// 标记 ESTIMATED + NOT_COMMITTED，不可作为 CTP 承诺
     /// </summary>
-    PLANNING_PURCHASE_PLACEHOLDER = 8
+    PLANNING_PURCHASE_PLACEHOLDER = 8,
+
+    /// <summary>
+    /// 上游 Domain 生产输出（跨 Domain Quantity-Time，§8/D12）
+    /// 下游域启动前从上游域已落盘 Task 读取（ChildMaterialCode + 完工时间 + DefaultLeadTimeDays），
+    /// 作为分段虚拟供给注入供给池（保持 40@15日 + 60@17日 多段，禁止压平）。
+    /// 仅存在于当前 ScheduleRun 内存上下文，不建设 VirtualInventoryBalance 持久化真相。
+    /// </summary>
+    UPSTREAM_DOMAIN_PRODUCTION = 9
 }

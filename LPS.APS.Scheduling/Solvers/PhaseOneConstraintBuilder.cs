@@ -1,4 +1,5 @@
 using LPS.APS.Core.Dto;
+using LPS.APS.Core.Entities.APS;
 using LPS.APS.Shared.Models;
 
 namespace LPS.APS.Scheduling.Solvers;
@@ -27,14 +28,23 @@ internal class PhaseOneConstraintBuilder
         var context = new ConstraintContext();
 
         // ═══════════════════════════════════════════════
-        // 1. 解析工序依赖图（按 MaterialId + RouteCode 分组）
+        // 0. 部门锁定（最小 B）：按 (MaterialId, StageCode) → ProductionDepartmentId
+        //    过滤 Routing 三件套；缺失 Context 的 Material 记入 context.MissingDepartmentContextMaterialIds
         // ═══════════════════════════════════════════════
-        BuildRoutingGraphs(request, context);
+        ApplyDepartmentLock(request, context,
+            out var lockedOperations,
+            out var lockedDependencies,
+            out var lockedEligibilities);
 
         // ═══════════════════════════════════════════════
-        // 2. 解析工序资源资格（Operation → 合法 Resource 列表）
+        // 1. 解析工序依赖图（使用部门锁定后的 Routing）
         // ═══════════════════════════════════════════════
-        BuildOperationResourceEligibility(request, context);
+        BuildRoutingGraphs(lockedOperations, lockedDependencies, context);
+
+        // ═══════════════════════════════════════════════
+        // 2. 解析工序资源资格（使用部门锁定后的 Eligibility）
+        // ═══════════════════════════════════════════════
+        BuildOperationResourceEligibility(lockedEligibilities, context);
 
         // ═══════════════════════════════════════════════
         // 3. 解析资源日历（Resource → 可用时间窗列表）
@@ -60,12 +70,78 @@ internal class PhaseOneConstraintBuilder
     }
 
     /// <summary>
-    /// 构建工序依赖图
+    /// 部门锁定（最小 B）：按 (MaterialId, StageCode) → ProductionDepartmentId 过滤 Routing 三件套。
+    /// 文档：PM 裁定《ProductionDepartment回复.md》最小 B
+    /// 1号位只消费 2号位传入的 MaterialStageDepartmentContexts，不得重新推导部门、不得跨部门优化选择。
     /// </summary>
-    private void BuildRoutingGraphs(DomainSolveRequest request, ConstraintContext context)
+    private void ApplyDepartmentLock(
+        DomainSolveRequest request,
+        ConstraintContext context,
+        out List<RoutingOperation> lockedOperations,
+        out List<RoutingDependency> lockedDependencies,
+        out List<OperationResourceEligibility> lockedEligibilities)
+    {
+        // (MaterialId, StageCode) → ProductionDepartmentId（2号位保证 (MaterialId, StageCode) 唯一）
+        var deptContext = request.MaterialStageDepartmentContexts
+            .GroupBy(c => (c.MaterialId, c.StageCode))
+            .ToDictionary(g => g.Key, g => g.First().ProductionDepartmentId);
+
+        // 1. 识别缺失 Context 的 Material：任一工序 Stage 查不到 Context → 整条 Routing 无法锁定
+        foreach (var op in request.RoutingOperations)
+        {
+            var stageCode = op.StageCode ?? string.Empty;
+            if (!deptContext.ContainsKey((op.MaterialId, stageCode)))
+            {
+                context.MissingDepartmentContextMaterialIds.Add(op.MaterialId);
+            }
+        }
+
+        // 2. 过滤 RoutingOperation：缺失 Material 整条剔除 + 部门不符剔除
+        lockedOperations = new List<RoutingOperation>();
+        var validOperationKeys = new HashSet<(int MaterialId, string RouteCode, string OperationCode)>();
+
+        foreach (var op in request.RoutingOperations)
+        {
+            if (context.MissingDepartmentContextMaterialIds.Contains(op.MaterialId))
+            {
+                continue; // 缺失 Context 的 Material 整条剔除，Phase2 无路由 → Unscheduled
+            }
+
+            var stageCode = op.StageCode ?? string.Empty;
+            var expectedDeptId = deptContext[(op.MaterialId, stageCode)];
+
+            if (op.ProductionDepartmentId != expectedDeptId)
+            {
+                continue; // 部门不符，剔除
+            }
+
+            lockedOperations.Add(op);
+            validOperationKeys.Add((op.MaterialId, op.RouteCode, op.OperationCode));
+        }
+
+        // 3. 过滤 RoutingDependency：两端 Operation 都必须合法
+        lockedDependencies = request.RoutingDependencies
+            .Where(dep =>
+                validOperationKeys.Contains((dep.MaterialId, dep.RouteCode, dep.FromOperationCode)) &&
+                validOperationKeys.Contains((dep.MaterialId, dep.RouteCode, dep.ToOperationCode)))
+            .ToList();
+
+        // 4. 过滤 OperationResourceEligibility：Operation 必须合法
+        lockedEligibilities = request.OperationResourceEligibility
+            .Where(e => validOperationKeys.Contains((e.MaterialId, e.RouteCode, e.OperationCode)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// 构建工序依赖图（使用部门锁定后的 Routing）
+    /// </summary>
+    private void BuildRoutingGraphs(
+        List<RoutingOperation> routingOperations,
+        List<RoutingDependency> routingDependencies,
+        ConstraintContext context)
     {
         // 按 MaterialId 分组
-        var operationsByMaterial = request.RoutingOperations
+        var operationsByMaterial = routingOperations
             .GroupBy(op => op.MaterialId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
@@ -92,12 +168,13 @@ internal class PhaseOneConstraintBuilder
                         ProcessType = op.ProcessType,
                         StageCode = op.StageCode,
                         StandardDuration = op.StandardDuration,
-                        SetupTime = op.SetupTime
+                        SetupTime = op.SetupTime,
+                        TransferBatchSize = op.TransferBatchSize
                     };
                 }
 
                 // 构建依赖边
-                var dependencies = request.RoutingDependencies
+                var dependencies = routingDependencies
                     .Where(dep => dep.MaterialId == materialId && dep.RouteCode == routeCode)
                     .ToList();
 
@@ -131,13 +208,17 @@ internal class PhaseOneConstraintBuilder
     }
 
     /// <summary>
-    /// 构建工序资源资格映射
+    /// 构建工序资源资格映射（使用部门锁定后的 Eligibility）
     /// </summary>
-    private void BuildOperationResourceEligibility(DomainSolveRequest request, ConstraintContext context)
+    private void BuildOperationResourceEligibility(
+        List<OperationResourceEligibility> eligibilities,
+        ConstraintContext context)
     {
         // 按 (MaterialId, RouteCode, OperationCode) → ResourceId 列表（按 Priority 排序）
-        var eligibilityGroups = request.ResourceEligibility
-            .GroupBy(e => $"{e.RouteKey}::{e.OperationCode}")
+        // P0-01修复：使用冻结接口 OperationResourceEligibility，不再使用旧的 ResourceEligibility
+        // 第4轮C1修复：索引加入MaterialId，避免不同物料共享资源资格
+        var eligibilityGroups = eligibilities
+            .GroupBy(e => $"{e.MaterialId}::{e.RouteCode}::{e.OperationCode}")
             .ToDictionary(
                 g => g.Key,
                 g => g.OrderBy(e => e.Priority)
@@ -146,6 +227,21 @@ internal class PhaseOneConstraintBuilder
             );
 
         context.OperationResourceEligibility = eligibilityGroups;
+
+        // P0-04修复：同时构建 ResourceCapacityFactors 映射
+        // 第4轮C1修复：索引加入MaterialId
+        // (MaterialId::RouteCode::OperationCode, ResourceId) → CapacityFactor
+        var capacityFactors = eligibilities
+            .GroupBy(e => $"{e.MaterialId}::{e.RouteCode}::{e.OperationCode}")
+            .ToDictionary(
+                g => g.Key,
+                g => g.ToDictionary(
+                    e => e.ResourceId,
+                    e => e.CapacityFactor
+                )
+            );
+
+        context.ResourceCapacityFactors = capacityFactors;
     }
 
     /// <summary>
@@ -191,6 +287,7 @@ internal class PhaseOneConstraintBuilder
 
     /// <summary>
     /// 构建锁定任务约束
+    /// 第8轮P0-01修复：完整传递ExecutionConstraint的StageCode/OperationCode/LockedQuantity/TaskKey
     /// </summary>
     private void BuildLockedTasks(DomainSolveRequest request, ConstraintContext context)
     {
@@ -203,7 +300,11 @@ internal class PhaseOneConstraintBuilder
                     ResourceId = ec.ResourceId,
                     LockedStart = ec.LockedStart,
                     LockedEnd = ec.LockedEnd,
-                    ConstraintType = ec.ConstraintType
+                    ConstraintType = ec.ConstraintType,
+                    StageCode = ec.StageCode,
+                    OperationCode = ec.OperationCode,
+                    LockedQuantity = ec.LockedQuantity,
+                    TaskKey = ec.TaskKey
                 }
             );
 
@@ -215,12 +316,21 @@ internal class PhaseOneConstraintBuilder
     /// </summary>
     private void BuildResourceBlocks(DomainSolveRequest request, ConstraintContext context)
     {
-        if (request.CandidateContext?.ExternalDomainResourceBlocks == null)
+        // Candidate §11：其它 Domain 当前 ACTIVE 共享资源占用（外部不可移动阻挡块）
+        var blocks = new List<ResourceBlock>();
+        if (request.CandidateContext?.ExternalDomainResourceBlocks != null)
+            blocks.AddRange(request.CandidateContext.ExternalDomainResourceBlocks);
+
+        // FULL §9：前序 Domain 成功后的共享 Resource 占用块（与 Candidate 外部块同语义：不可用时间窗）
+        if (request.UpstreamDomainResourceBlocks != null)
+            blocks.AddRange(request.UpstreamDomainResourceBlocks);
+
+        if (blocks.Count == 0)
         {
             return;
         }
 
-        var blocksByResource = request.CandidateContext.ExternalDomainResourceBlocks
+        var blocksByResource = blocks
             .GroupBy(block => block.ResourceId)
             .ToDictionary(
                 g => g.Key,
@@ -254,6 +364,12 @@ internal class ConstraintContext
     public Dictionary<string, List<int>> OperationResourceEligibility { get; set; } = new();
 
     /// <summary>
+    /// P0-04修复：工序资源产能系数映射：(RouteCode::OperationCode, ResourceId) → CapacityFactor
+    /// 用于Duration计算：StandardDuration × PlannedProcessQty ÷ CapacityFactor
+    /// </summary>
+    public Dictionary<string, Dictionary<int, decimal>> ResourceCapacityFactors { get; set; } = new();
+
+    /// <summary>
     /// 资源日历：ResourceId → 可用时间窗列表（已排序）
     /// </summary>
     public Dictionary<int, List<TimeWindow>> ResourceCalendars { get; set; } = new();
@@ -272,6 +388,14 @@ internal class ConstraintContext
     /// 共享资源占用块：ResourceId → 占用时间块列表
     /// </summary>
     public Dictionary<int, List<ResourceBlockInfo>> ResourceBlocks { get; set; } = new();
+
+    /// <summary>
+    /// 缺失生产部门 Context 的 MaterialId 集合。
+    /// 部门锁定（最小 B）：按 (MaterialId, StageCode) 查 MaterialStageDepartmentContexts，
+    /// 若某 Material 的任一工序 Stage 查不到 Context，则该 Material 整条 Routing 无法锁定部门，
+    /// 对应的 Demand 应标记 Unscheduled，Reason = MISSING_PRODUCTION_DEPARTMENT_CONTEXT。
+    /// </summary>
+    public HashSet<int> MissingDepartmentContextMaterialIds { get; set; } = new();
 }
 
 /// <summary>
@@ -306,6 +430,7 @@ internal class OperationNode
     public string? StageCode { get; set; }
     public decimal StandardDuration { get; set; }
     public decimal SetupTime { get; set; }
+    public decimal? TransferBatchSize { get; set; }
 }
 
 /// <summary>
@@ -340,6 +465,12 @@ internal class LockedTaskConstraint
     public DateTime LockedStart { get; set; }
     public DateTime LockedEnd { get; set; }
     public string ConstraintType { get; set; } = string.Empty;
+
+    // 第8轮P0-01修复：Anchor部分数量和工序信息闭环
+    public string? StageCode { get; set; }
+    public string? OperationCode { get; set; }
+    public decimal? LockedQuantity { get; set; }
+    public string? TaskKey { get; set; }
 }
 
 /// <summary>

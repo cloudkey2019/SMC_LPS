@@ -7,7 +7,6 @@ using LPS.APS.Core.Interfaces;
 using LPS.APS.Core.Models.Scheduling;
 using LPS.APS.Engine.Data;
 using LPS.APS.Scheduling.Algorithms;
-using LPS.APS.Scheduling.Solvers;
 using LPS.APS.Shared.Models;
 using Microsoft.Extensions.Logging;
 
@@ -29,26 +28,20 @@ namespace LPS.APS.Application.Services;
 public class SchedulingOrchestrator : ISchedulingOrchestrator
 {
     private readonly DatabaseConnectionManager _connectionManager;
-    private readonly FiniteCapacitySolver _solver;
     private readonly ISnapshotService _snapshotService;
-    private readonly IBatchSplitter _batchSplitter;
     private readonly IPeggingOrchestrator _peggingOrchestrator;
     private readonly IScheduleRunService _scheduleRunService;
     private readonly ILogger<SchedulingOrchestrator> _logger;
 
     public SchedulingOrchestrator(
         DatabaseConnectionManager connectionManager,
-        FiniteCapacitySolver solver,
         ISnapshotService snapshotService,
-        IBatchSplitter batchSplitter,
         IPeggingOrchestrator peggingOrchestrator,
         IScheduleRunService scheduleRunService,
         ILogger<SchedulingOrchestrator> logger)
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
-        _solver = solver ?? throw new ArgumentNullException(nameof(solver));
         _snapshotService = snapshotService ?? throw new ArgumentNullException(nameof(snapshotService));
-        _batchSplitter = batchSplitter ?? throw new ArgumentNullException(nameof(batchSplitter));
         _peggingOrchestrator = peggingOrchestrator ?? throw new ArgumentNullException(nameof(peggingOrchestrator));
         _scheduleRunService = scheduleRunService ?? throw new ArgumentNullException(nameof(scheduleRunService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -57,77 +50,228 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
     /// <inheritdoc />
     public async Task<SchedulingRunResult> RunSchedulingAutoAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("排程发令枪：自动查找待排计划版本");
+        _logger.LogInformation("排程发令枪：自动查找待排 FULL_SCHEDULE ScheduleRun（RUNNING + 有 Created PlanVersion）");
 
-        // 原子领取：用CTE + UPDLOCK + READPAST + OUTPUT 确保一个PlanVersion只被一个Worker领取
-        var claimedResult = await _connectionManager.ExecuteInTransactionAsync<(int? PlanVersionId, string? VersionCode, int? ScheduleRunId)>(
-            async (conn, tx) =>
-            {
-                // 原子操作：SELECT + UPDATE 在一个语句内完成
-                var result = await conn.QueryFirstOrDefaultAsync<dynamic>(
-                    @";WITH Target AS (
-                        SELECT TOP 1
-                            Id,
-                            VersionCode,
-                            SourceScheduleRunId,
-                            Status
-                        FROM PlanVersion WITH (UPDLOCK, READPAST, ROWLOCK)
-                        WHERE Status = 'Created' AND SourceScheduleRunId > 0
-                        ORDER BY CreatedAt DESC
-                    )
-                    UPDATE Target
-                    SET Status = 'Computing'
-                    OUTPUT
-                        inserted.Id AS PlanVersionId,
-                        inserted.VersionCode,
-                        inserted.SourceScheduleRunId AS ScheduleRunId",
-                    transaction: tx);
-
-                if (result == null)
-                {
-                    _logger.LogInformation("未找到待排计划版本（Status='Created'），跳过本次触发");
-                    return ((int?)null, (string?)null, (int?)null);
-                }
-
-                return ((int?)result.PlanVersionId, (string?)result.VersionCode, (int?)result.ScheduleRunId);
-            },
-            db: DatabaseId.APS);
-
-        // 如果没有领取到PlanVersion，直接返回
-        if (claimedResult.PlanVersionId == null || claimedResult.ScheduleRunId == null)
-        {
-            return new SchedulingRunResult { IsSuccess = true, ErrorMessage = "无待排计划版本" };
-        }
-
-        // 读取ScheduleRun完整信息
+        // 原子领取：领取粒度从「单个 PlanVersion」上移为「ScheduleRun」。
+        // 分域后一个 ScheduleRun 对应多个 PlanVersion（每 Domain 一个，由 NightlyBatch Step3 创建），
+        // 此处锁定 RUNNING 且仍有 Created PlanVersion 的 ScheduleRun，避免多 Worker 重复领取同一 Run。
+        // RunType='FULL_SCHEDULE' 过滤：仅领夜间正式排程；白天候选（MANUAL_RESCHEDULE 等）由 3号位 显式触发，不得被发令枪误领。
         var scheduleRun = await _connectionManager.QueryFirstOrDefaultAsync<ScheduleRunQueryDto>(
-            "SELECT Id, DataCutoffTime, StrategyProfileVersionId FROM ScheduleRun WHERE Id = @Id",
-            new { Id = claimedResult.ScheduleRunId.Value },
+            @"SELECT TOP 1 sr.Id, sr.DataCutoffTime, sr.StrategyProfileVersionId
+              FROM ScheduleRun sr WITH (UPDLOCK, READPAST, ROWLOCK)
+              WHERE sr.Status = 'RUNNING'
+                AND sr.RunType = 'FULL_SCHEDULE'
+                AND EXISTS (
+                    SELECT 1 FROM PlanVersion pv
+                    WHERE pv.SourceScheduleRunId = sr.Id AND pv.Status = 'Created'
+                )
+              ORDER BY sr.CreatedAt DESC",
             db: DatabaseId.APS);
 
         if (scheduleRun == null)
         {
-            _logger.LogWarning("未找到 ScheduleRun: Id={Id}", claimedResult.ScheduleRunId);
-            return new SchedulingRunResult { IsSuccess = false, ErrorMessage = $"ScheduleRun {claimedResult.ScheduleRunId} 不存在" };
+            _logger.LogInformation("未找到待排 FULL_SCHEDULE ScheduleRun（RUNNING + 有 Created PlanVersion），跳过本次触发");
+            return new SchedulingRunResult { IsSuccess = true, ErrorMessage = "无待排 ScheduleRun" };
+        }
+
+        _logger.LogInformation("成功领取 ScheduleRun: ScheduleRunId={RunId}", scheduleRun.Id);
+
+        // 读冻结预期 Domain 集合（运行启动唯一权威来源；FULL_SCHEDULE 须 ≥1 Domain）
+        IReadOnlyList<string> domainKeys;
+        try
+        {
+            domainKeys = await _scheduleRunService.GetExpectedDomainKeysAsync(scheduleRun.Id, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "读取 ExpectedDomainKeysJson 失败: ScheduleRunId={RunId}", scheduleRun.Id);
+            await _scheduleRunService.FailAsync(scheduleRun.Id, 0, $"读取 ExpectedDomainKeysJson 失败: {ex.Message}", cancellationToken);
+            return new SchedulingRunResult { IsSuccess = false, ErrorMessage = ex.Message };
+        }
+
+        if (domainKeys.Count == 0)
+        {
+            _logger.LogError("ScheduleRun {RunId} 的 ExpectedDomainKeysJson 解析结果为空 Domain 集合", scheduleRun.Id);
+            await _scheduleRunService.FailAsync(scheduleRun.Id, 0, "ExpectedDomainKeysJson 解析结果为空 Domain 集合", cancellationToken);
+            return new SchedulingRunResult { IsSuccess = false, ErrorMessage = "ExpectedDomainKeysJson 为空 Domain 集合" };
+        }
+
+        var runStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var domainResults = new List<SchedulingRunResult>(domainKeys.Count);
+        var succeededCount = 0;
+        var failedDomainKeys = new List<string>();
+
+        // 域间依赖（真实 DomainKey 口径，§5/§7/§15/§23）：依赖边 → 拓扑执行序 + 传递上游闭包。
+        // Domain_Dependency 空（V1 现状）时两者均退化：执行序=冻结顺序、闭包为空（不阻断）。
+        var dependencyEdges = await LoadDomainDependencyEdgesAsync(domainKeys, cancellationToken);
+        var orderedDomainKeys = OrderDomainsTopologically(domainKeys, dependencyEdges);
+        var upstreamClosure = BuildUpstreamClosure(dependencyEdges, domainKeys);
+
+        // FULL §9：前序 Domain 成功后的共享 Resource 占用块（逐 Domain 累积，传给后续 Domain 作不可用时间窗）
+        var sharedResourceOccupancy = new List<ResourceBlock>();
+
+        // 逐 Domain 串行执行（依赖顺序 = Domain_Dependency 拓扑序；无依赖边时降级为 ExpectedDomainKeysJson 冻结顺序）
+        foreach (var domainKey in orderedDomainKeys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var planVersion = await _connectionManager.QueryFirstOrDefaultAsync<PlanVersionInfoDto>(
+                @"SELECT TOP 1 Id, VersionCode, DomainKey, PlanHorizonStart, PlanHorizonEnd
+                  FROM PlanVersion
+                  WHERE SourceScheduleRunId = @RunId AND DomainKey = @DomainKey
+                  ORDER BY Id DESC",
+                new { RunId = scheduleRun.Id, DomainKey = domainKey },
+                db: DatabaseId.APS);
+
+            if (planVersion == null)
+            {
+                // 归域/装载缺口：预期 Domain 无对应 PlanVersion（装载阶段未创建，属运行一致性错误）
+                _logger.LogError("[{RunId}] Domain {DomainKey} 无对应 PlanVersion（装载缺口），计入失败", scheduleRun.Id, domainKey);
+                failedDomainKeys.Add(domainKey);
+                continue;
+            }
+
+            // 依赖感知阻断：仅当本 Domain 直接/间接依赖某个已失败上游时才阻断（§5/§7/§15/§23），
+            // 而非一刀切阻断所有后续 Domain。
+            if (failedDomainKeys.Count > 0
+                && upstreamClosure.TryGetValue(domainKey, out var upstreams)
+                && upstreams.Overlaps(failedDomainKeys))
+            {
+                await BlockDomainAsync(planVersion.Id);
+                _logger.LogWarning(
+                    "[{RunId}] Domain {DomainKey} 因上游失败被阻断: PlanVersionId={PlanVersionId}，失败上游={Upstream}",
+                    scheduleRun.Id, domainKey, planVersion.Id, string.Join(",", failedDomainKeys));
+                domainResults.Add(new SchedulingRunResult
+                {
+                    PlanVersionId = planVersion.Id,
+                    VersionCode   = planVersion.VersionCode,
+                    IsSuccess     = false,
+                    ErrorMessage  = $"上游 Domain 失败被阻断（失败上游={string.Join(",", failedDomainKeys)}）"
+                });
+                failedDomainKeys.Add(domainKey);
+                continue;
+            }
+
+            var result = await ExecuteDomainAsync(
+                planVersion.Id, scheduleRun.Id, scheduleRun.DataCutoffTime, scheduleRun.StrategyProfileVersionId,
+                sharedResourceOccupancy, sourcePlanVersionId: null, cancellationToken);
+            domainResults.Add(result);
+
+            if (result.IsSuccess)
+            {
+                succeededCount++;
+                // FULL §9：成功 Domain 的 FinalTask 共享 Resource 占用区间，累积进 Run 级上下文
+                if (result.EmittedResourceBlocks.Count > 0)
+                    sharedResourceOccupancy.AddRange(result.EmittedResourceBlocks);
+            }
+            else
+            {
+                failedDomainKeys.Add(domainKey);
+            }
+        }
+
+        runStopwatch.Stop();
+        var durationSeconds = (int)(runStopwatch.ElapsedMilliseconds / 1000);
+
+        // ScheduleRun 终态：全成功 COMPLETED / 部分成功 PARTIAL_SUCCESS / 全失败 FAILED
+        if (succeededCount == domainKeys.Count)
+        {
+            await _scheduleRunService.CompleteAsync(scheduleRun.Id, durationSeconds, cancellationToken);
+        }
+        else if (succeededCount > 0)
+        {
+            await _scheduleRunService.PartialSuccessAsync(
+                scheduleRun.Id, durationSeconds,
+                $"部分 Domain 失败/被阻断：成功 {succeededCount}/{domainKeys.Count}，失败/阻断 Domain={string.Join(",", failedDomainKeys)}",
+                cancellationToken);
+        }
+        else
+        {
+            await _scheduleRunService.FailAsync(
+                scheduleRun.Id, durationSeconds,
+                $"全部 Domain 失败/被阻断（{domainKeys.Count} 个），失败/阻断 Domain={string.Join(",", failedDomainKeys)}",
+                cancellationToken);
         }
 
         _logger.LogInformation(
-            "成功领取计划版本: PlanVersionId={PlanVersionId}, VersionCode={VersionCode}, ScheduleRunId={RunId}",
-            claimedResult.PlanVersionId, claimedResult.VersionCode, scheduleRun.Id);
+            "排程发令枪完成: ScheduleRunId={RunId}, Domain={DomainCount}, 成功={Succeeded}/{Total}, 耗时={Elapsed}ms",
+            scheduleRun.Id, domainKeys.Count, succeededCount, domainKeys.Count, runStopwatch.ElapsedMilliseconds);
 
-        return await RunSchedulingAsync(claimedResult.PlanVersionId.Value, scheduleRun.Id, scheduleRun.DataCutoffTime, scheduleRun.StrategyProfileVersionId, cancellationToken);
+        return new SchedulingRunResult
+        {
+            IsSuccess        = succeededCount == domainKeys.Count,
+            ScheduledCount   = domainResults.Where(r => r.IsSuccess).Sum(r => r.ScheduledCount),
+            UnscheduledCount = domainResults.Count(r => !r.IsSuccess),
+            ElapsedMs        = runStopwatch.ElapsedMilliseconds,
+            ErrorMessage     = succeededCount == domainKeys.Count ? null : $"部分 Domain 失败：成功 {succeededCount}/{domainKeys.Count}"
+        };
     }
 
     /// <inheritdoc />
     public async Task<SchedulingRunResult> RunSchedulingAsync(int planVersionId, CancellationToken cancellationToken = default)
-        => await RunSchedulingAsync(planVersionId, scheduleRunId: 0, dataCutoffTime: null, strategyProfileVersionId: null, cancellationToken);
+        => await ExecuteDomainAsync(planVersionId, scheduleRunId: 0, dataCutoffTime: null, strategyProfileVersionId: null, upstreamResourceBlocks: null, sourcePlanVersionId: null, cancellationToken);
 
-    private async Task<SchedulingRunResult> RunSchedulingAsync(
+    /// <summary>
+    /// 手动/联调入口：显式指定策略包版本（测试/联调场景，绕过 RunSchedulingAutoAsync 的自动领取与版本绑定）。
+    /// </summary>
+    public Task<SchedulingRunResult> RunSchedulingAsync(int planVersionId, long strategyProfileVersionId, CancellationToken cancellationToken = default)
+        => ExecuteDomainAsync(planVersionId, scheduleRunId: 0, dataCutoffTime: null, strategyProfileVersionId, upstreamResourceBlocks: null, sourcePlanVersionId: null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<SchedulingRunResult> RunSchedulingAndFinalizeAsync(
+        int planVersionId,
+        int scheduleRunId,
+        long strategyProfileVersionId,
+        CancellationToken cancellationToken = default)
+    {
+        // 反查 Run 冻结基线（§5.3.1）：候选需求侧订单数据源钉 BasePlanVersionId，不随执行时刻 ACTIVE 漂移。
+        // StrategyProfileVersionId 以 Run 冻结值优先，入参 strategyProfileVersionId 作回退。
+        var run = await _connectionManager.QueryFirstOrDefaultAsync<ScheduleRunQueryDto>(
+            @"SELECT Id, DataCutoffTime, StrategyProfileVersionId, BasePlanVersionId
+              FROM ScheduleRun WHERE Id = @Id",
+            new { Id = scheduleRunId },
+            db: DatabaseId.APS);
+
+        if (run == null)
+            throw new InvalidOperationException($"ScheduleRun 不存在: ScheduleRunId={scheduleRunId}");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await ExecuteDomainAsync(
+            planVersionId, scheduleRunId, run.DataCutoffTime, run.StrategyProfileVersionId ?? strategyProfileVersionId,
+            upstreamResourceBlocks: null, sourcePlanVersionId: run.BasePlanVersionId, cancellationToken);
+        stopwatch.Stop();
+        var durationSeconds = (int)(stopwatch.ElapsedMilliseconds / 1000);
+
+        if (result.IsSuccess)
+        {
+            await _scheduleRunService.CompleteAsync(scheduleRunId, durationSeconds, cancellationToken);
+        }
+        else
+        {
+            await _scheduleRunService.FailAsync(scheduleRunId, durationSeconds, result.ErrorMessage ?? "排程失败", cancellationToken);
+        }
+
+        _logger.LogInformation(
+            "白天候选执行收口: ScheduleRunId={RunId}, PlanVersionId={PlanVersionId}, IsSuccess={Success}, 耗时={Elapsed}ms",
+            scheduleRunId, planVersionId, result.IsSuccess, stopwatch.ElapsedMilliseconds);
+
+        return result;
+    }
+
+    /// <summary>
+    /// 单 Domain 执行单元（分域求解边界）。
+    /// 职责：装载本 Domain PlanVersion 的沙盘 → Pegging → 1号位求解 → 结果落盘 → PlanVersion 终态（Computed/ComputeFailed）。
+    /// 边界：不处理 ScheduleRun 终态（COMPLETED/PARTIAL_SUCCESS/FAILED），终态由 RunSchedulingAutoAsync 逐 Domain 循环后统一收口；
+    ///       失败时返回 IsSuccess=false（不向上抛），供上层做「上游失败阻断」传播。
+    /// </summary>
+    private async Task<SchedulingRunResult> ExecuteDomainAsync(
         int planVersionId,
         int scheduleRunId,
         DateTime? dataCutoffTime,
         long? strategyProfileVersionId,
-        CancellationToken cancellationToken)
+        IReadOnlyList<ResourceBlock>? upstreamResourceBlocks,
+        int? sourcePlanVersionId = null,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("排程开始: PlanVersionId={PlanVersionId}, ScheduleRunId={RunId}",
             planVersionId, scheduleRunId);
@@ -137,7 +281,7 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         {
             // 获取计划版本信息
             var planVersion = await _connectionManager.QueryFirstOrDefaultAsync<PlanVersionInfoDto>(
-                "SELECT Id, VersionCode, PlanHorizonStart, PlanHorizonEnd FROM PlanVersion WHERE Id = @Id",
+                "SELECT Id, VersionCode, DomainKey, PlanHorizonStart, PlanHorizonEnd FROM PlanVersion WHERE Id = @Id",
                 new { Id = planVersionId },
                 db: DatabaseId.APS);
 
@@ -162,25 +306,28 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
             // 阶段1: 装载排程沙盘
             // ═══════════════════════════════════════════
             _logger.LogInformation("[{PlanVersionId}] 阶段1: 装载排程沙盘", planVersionId);
+            var contextStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var context = await LoadSchedulingContextAsync(planVersion, scheduleRunId, cancellationToken);
             context.StrategyProfileVersionId = strategyProfileVersionId;
             if (strategyProfileVersionId.HasValue)
                 await LoadStrategyConfigAsync(context, strategyProfileVersionId.Value, cancellationToken);
+            contextStopwatch.Stop();
             _logger.LogInformation(
-                "[{PlanVersionId}] 沙盘装载完成: Tasks={TaskCount}, Resources={ResourceCount}, MESKeys={MESCount}",
-                planVersionId, context.Tasks.Count, context.Resources.Count, context.MESRemainingQty.Count);
+                "[{PlanVersionId}] 沙盘装载完成: Tasks={TaskCount}, Resources={ResourceCount}, MESKeys={MESCount}, 耗时={ContextMs}ms",
+                planVersionId, context.Tasks.Count, context.Resources.Count, context.MESRemainingQty.Count, contextStopwatch.ElapsedMilliseconds);
 
             // ═══════════════════════════════════════════
             // 阶段2: Pegging — 供需挂钩 + 冻结区保护
             // ═══════════════════════════════════════════
             _logger.LogInformation("[{PlanVersionId}] 阶段2: Pegging 供需挂钩", planVersionId);
-            var topoOrder = await LoadTopologicalOrderAsync(context, cancellationToken);
-            _logger.LogInformation("[{PlanVersionId}] 拓扑排序完成: {Count} 个产品族域", planVersionId, topoOrder.Count);
+            // 事项四（§5.3.1 基线快照）：候选需求侧订单数据源钉 BasePlanVersionId（sourcePlanVersionId），
+            // 不随执行时刻 ACTIVE 漂移；FULL 场景 sourcePlanVersionId=null，回退为自身 planVersionId。
+            var demandSourcePlanVersionId = sourcePlanVersionId ?? planVersionId;
             var allOrderIds = (await _connectionManager.QueryAsync<long>(
                 "SELECT Id FROM [Order] WHERE PlanVersionId = @PlanVersionId",
-                new { PlanVersionId = planVersionId },
+                new { PlanVersionId = demandSourcePlanVersionId },
                 db: DatabaseId.APS)).ToList();
-            var peggingRequest = BuildPeggingRequest(planVersionId, allOrderIds, context, topoOrder);
+            var peggingRequest = BuildPeggingRequest(planVersionId, planVersion.DomainKey, allOrderIds, context, upstreamResourceBlocks);
             var peggingResults = (await _peggingOrchestrator.ExecuteBatchPeggingWorkflowAsync(
                 peggingRequest, cancellationToken)).ToList();
 
@@ -197,6 +344,10 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
 
             var totalTasks   = peggingResults.Sum(r => r.GeneratedTasks.Count);
             var totalAlloc   = peggingResults.Sum(r => r.SupplyAllocationCount);
+            var logicalProductionDemandCount = peggingResults.Sum(r => r.Voucher?.LogicalProductionDemands?.Count ?? 0);
+            var peggingMs    = peggingResults.Sum(r => r.PeggingMs);
+            var solverMs     = peggingResults.Sum(r => r.SolverMs);
+            var persistMs    = peggingResults.Sum(r => r.PersistMs);
             _logger.LogInformation(
                 "[{PlanVersionId}] Pegging 完成: 生成Task={Tasks}, 分配={Alloc}",
                 planVersionId, totalTasks, totalAlloc);
@@ -215,13 +366,6 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
                 "UPDATE PlanVersion SET Status = @Status, ComputedAt = GETDATE() WHERE Id = @Id",
                 new { Id = planVersionId, Status = finalStatus },
                 db: DatabaseId.APS);
-
-            if (scheduleRunId > 0)
-            {
-                stopwatch.Stop();
-                await _scheduleRunService.CompleteAsync(scheduleRunId, (int)(stopwatch.ElapsedMilliseconds / 1000), cancellationToken);
-                stopwatch.Start();
-            }
 
             // ═══════════════════════════════════════════
             // 阶段6: 快照封存（§2.6）
@@ -252,8 +396,28 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
                 IsSuccess        = isSuccess,
                 ScheduledCount   = totalTasks,
                 UnscheduledCount = peggingFailed.Count,
-                ElapsedMs        = stopwatch.ElapsedMilliseconds
+                ElapsedMs        = stopwatch.ElapsedMilliseconds,
+                // FULL §9：成功 Domain 的 FinalTask 共享 Resource 占用区间，供后续 Domain 作不可用时间窗
+                EmittedResourceBlocks = isSuccess ? ExtractResourceOccupancyBlocks(peggingResults) : new List<ResourceBlock>(),
+                // §16/§21.6/D18：Domain 级性能埋点
+                Metrics = new DomainPerformanceMetrics
+                {
+                    DomainKey                    = planVersion.DomainKey,
+                    DemandCount                  = allOrderIds.Count,
+                    LogicalProductionDemandCount = logicalProductionDemandCount,
+                    FinalTaskCount               = totalTasks,
+                    ContextBuildMs               = contextStopwatch.ElapsedMilliseconds,
+                    PeggingMs                    = peggingMs,
+                    SolverMs                     = solverMs,
+                    PersistMs                    = persistMs,
+                    TotalMs                      = stopwatch.ElapsedMilliseconds
+                }
             };
+
+            _logger.LogInformation(
+                "[{PlanVersionId}] Domain 性能指标: DomainKey={DomainKey}, Demand={Demand}, LPD={Lpd}, FinalTask={FinalTask}, ContextBuild={ContextBuildMs}ms, Pegging={PeggingMs}ms, Solver={SolverMs}ms, Persist={PersistMs}ms, Total={TotalMs}ms",
+                planVersionId, planVersion.DomainKey, allOrderIds.Count, logicalProductionDemandCount, totalTasks,
+                contextStopwatch.ElapsedMilliseconds, peggingMs, solverMs, persistMs, stopwatch.ElapsedMilliseconds);
 
             _logger.LogInformation(
                 "排程完成: PlanVersionId={PlanVersionId}, 已排={Scheduled}, 未排={Unscheduled}, 耗时={Elapsed}ms",
@@ -273,15 +437,6 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
                     new { Id = planVersionId },
                     db: DatabaseId.APS);
 
-                if (scheduleRunId > 0)
-                {
-                    await _scheduleRunService.FailAsync(
-                        scheduleRunId,
-                        (int)(stopwatch.ElapsedMilliseconds / 1000),
-                        ex.Message,
-                        cancellationToken);
-                }
-
                 await LogETLAsync($"PV-{planVersionId}", "Scheduling",
                     $"排程失败: {ex.Message}", "FAILED");
             }
@@ -290,8 +445,26 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
                 _logger.LogWarning(logEx, "排程失败后回写状态异常（非致命）");
             }
 
-            throw;
+            // 单 Domain 失败不向上抛：返回失败结果，交由 RunSchedulingAutoAsync 做「上游失败阻断」+ ScheduleRun 终态收口
+            return new SchedulingRunResult
+            {
+                PlanVersionId = planVersionId,
+                IsSuccess     = false,
+                ErrorMessage  = ex.Message,
+                ElapsedMs     = stopwatch.ElapsedMilliseconds
+            };
         }
+    }
+
+    /// <summary>
+    /// 将本 Domain 的 PlanVersion 标记为「因上游失败被阻断」（ComputeFailed，与真实计算失败同终态；阻断原因记录在日志与 ScheduleRun.ErrorMessage）。
+    /// </summary>
+    private async Task BlockDomainAsync(int planVersionId)
+    {
+        await _connectionManager.ExecuteAsync(
+            "UPDATE PlanVersion SET Status = 'ComputeFailed' WHERE Id = @Id",
+            new { Id = planVersionId },
+            db: DatabaseId.APS);
     }
 
     /// <summary>
@@ -325,10 +498,6 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
             PlanHorizonEnd   = planVersion.PlanHorizonEnd
         };
 
-        // 1.1 + 1.3：订单 + 物料属性（一次 JOIN 取全）
-        var orders = await LoadOrdersAsync(planVersion.Id, cancellationToken);
-        _logger.LogInformation("[{PlanVersionId}] 1.1 订单加载: {Count}", planVersion.Id, orders.Count);
-
         // 1.4 资源 + 日历
         await LoadResourcesAndCalendarAsync(context, cancellationToken);
         _logger.LogInformation("[{PlanVersionId}] 1.4 资源加载: {Count}", planVersion.Id, context.Resources.Count);
@@ -339,8 +508,7 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
             planVersion.Id, context.InventorySupplies.Count);
 
         // 1.6 Task 拆批 → V1.2 已废弃：Task由2号位Pegging在供需挂钩后生成，不再预拆批
-        // v5.1.2冻结设计（§3.1）：DefaultBatchSplitter调用次数=0，批次拆分由1号位IFiniteCapacityScheduler执行
-        // await GenerateAndPersistTasksAsync(planVersion.Id, orders, context, cancellationToken);
+        // v5.1.2冻结设计（§3.1）：批次拆分由1号位IFiniteCapacityScheduler执行
         _logger.LogInformation("[{PlanVersionId}] 1.6 跳过预拆批（Task将由Pegging生成）", planVersion.Id);
 
         // 1.7 MES 进度快照装载（按 ScheduleRunId 从 StageProgressSnapshot 读 RemainingQty）
@@ -379,34 +547,6 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         }
     }
 
-
-    private async Task<List<OrderLoadDto>> LoadOrdersAsync(int planVersionId, CancellationToken ct)
-    {
-        var rows = await _connectionManager.QueryAsync<OrderLoadDto>(
-            @"SELECT
-                o.Id                AS OrderId,
-                o.OrderNo,
-                o.MaterialId,
-                o.MaterialCode,
-                o.ProductFamilyId,
-                o.FactoryId,
-                o.Quantity,
-                o.UOM,
-                o.CustomerDueDate,
-                o.Priority,
-                o.PriorityScore,
-                o.CustomerTier,
-                m.LowLevelCode      AS LLC
-              FROM [Order] o
-              INNER JOIN Material m ON m.Id = o.MaterialId
-              WHERE o.PlanVersionId = @PlanVersionId
-                AND o.Status IN ('Open', 'Released')
-              ORDER BY o.Priority DESC, o.CustomerDueDate ASC",
-            new { PlanVersionId = planVersionId },
-            db: DatabaseId.APS);
-
-        return rows.ToList();
-    }
 
     /// <summary>
     /// 1.4 加载资源 + 日历
@@ -458,11 +598,11 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
     }
 
     /// <summary>
-    /// 1.5 从 InventoryBalance + InTransitInventoryFact 全量装载库存到 SchedulingContext.InventorySupplies
+    /// 1.5 从 InventoryBalance + SupplyFact_Pipeline 全量装载库存到 SchedulingContext.InventorySupplies
     ///
     /// 装载内容（2号位职责）：
     ///   1. INVENTORY：从 InventoryBalance 读取现有库存（ERP + MES 合并后的可用量）
-    ///   2. PIPELINE：从 InTransitInventoryFact 读取在途库存（同域跨厂 IN_TRANSIT 状态）
+    ///   2. PIPELINE：从 SupplyFact_Pipeline 读取在途/管道供给（v5.1.3 统一供给事实层）
     ///
     /// ⚠️ 【待对齐 5号位 — B 项越界】
     ///   当前 sp_SyncInventorySnapshot 里硬编码了"双源互斥判定 + InventoryAvailabilityRule 筛选"，
@@ -487,19 +627,19 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         }
 
         // ── 2. 装载管道供给（PIPELINE）——来源：SupplyFact_Pipeline ──
-        // AvailableTime = ETA + LeadTimeOffset（sp_SyncPipelineSupply 装载时落库）
-        // 只取 AvailableTime 在计划期结束前的记录，超期在途不计入排程供给池
+        // AvailableTime 已改由 2号位运行时 EtaInvariant 三级链计算（sp_SyncPipelineSupply 不再落库 AvailableTime）。
+        // V1 排程装载侧暂以原始 ETA 事实做计划期过滤（Manual ETA / Arrival-to-Usable Offset 精算待与 Pegging 对齐后接入）。
         var inTransits = await _connectionManager.QueryAsync<InTransitLoadDto>(
             @"SELECT
                   sfp.MaterialCode,
                   sfp.ProductFamilyId,
                   sfp.FactoryId,
                   sfp.Quantity       AS AvailableQty,
-                  sfp.AvailableTime  AS EstimatedArrivalTime
+                  sfp.ETA            AS EstimatedArrivalTime
               FROM SupplyFact_Pipeline sfp
               WHERE sfp.IsActive = 1
                 AND sfp.Quantity > 0
-                AND (sfp.AvailableTime IS NULL OR sfp.AvailableTime <= @PlanHorizonEnd)",
+                AND (sfp.ETA IS NULL OR sfp.ETA <= @PlanHorizonEnd)",
             new { PlanHorizonEnd = context.PlanHorizonEnd },
             db: DatabaseId.APS);
 
@@ -527,55 +667,8 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
     // ═══════════════════════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 阶段4 结果落盘
+    // 阶段4 结果落盘 — 已废弃：Task 落盘已移入 Pegging 阶段（PersistDomainAndPeggingInTransactionAsync）
     // ═══════════════════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 阶段4: 将 SchedulingContext.Tasks 中 1号位填充好的 PlannedStartTime/EndTime/ResourceId
-    /// 批量 UPDATE 回 [Task] 表
-    /// 策略：临时表 + MERGE（Dapper 对 SqlServer 的 TVP 支持较弱，用 #Temp）
-    /// </summary>
-    private async System.Threading.Tasks.Task PersistSchedulingResultAsync(
-        int planVersionId,
-        SchedulingContext context,
-        CancellationToken cancellationToken)
-    {
-        var scheduledTasks = context.Tasks
-            .Where(t => t.PlannedStartTime.HasValue && t.PlannedEndTime.HasValue)
-            .Select(t => new
-            {
-                Id               = long.Parse(t.TaskId),
-                PlannedStartTime = t.PlannedStartTime!.Value,
-                PlannedEndTime   = t.PlannedEndTime!.Value,
-                ResourceId       = string.IsNullOrEmpty(t.ResourceId) ? (int?)null : int.Parse(t.ResourceId),
-                IsLocked         = t.IsLocked
-            })
-            .ToList();
-
-        if (scheduledTasks.Count == 0)
-        {
-            _logger.LogWarning("[{PlanVersionId}] 无已排程任务需要落盘", planVersionId);
-            return;
-        }
-
-        // 批量 UPDATE（Dapper 对 List 参数展开，SqlServer 对单条 UPDATE 逐行执行）
-        // 规模超 1 万时建议改 SqlBulkCopy → #Temp → MERGE；V1 先走朴素版
-        var updateSql = $@"
-            UPDATE [Task]
-            SET PlannedStartTime = @PlannedStartTime,
-                PlannedEndTime   = @PlannedEndTime,
-                ResourceId       = @ResourceId,
-                IsLocked         = @IsLocked,
-                Status           = 'Scheduled',
-                UpdatedAt        = GETDATE()
-            WHERE Id = @Id AND PlanVersionId = {planVersionId}";
-
-        var affected = await _connectionManager.ExecuteAsync(updateSql, scheduledTasks, db: DatabaseId.APS);
-
-        _logger.LogInformation(
-            "[{PlanVersionId}] 落盘完成: 已排 {Scheduled}/{Total}, 影响行数={Affected}",
-            planVersionId, scheduledTasks.Count, context.Tasks.Count, affected);
-    }
 
     private async Task LoadStrategyConfigAsync(SchedulingContext context, long strategyProfileVersionId, CancellationToken ct)
     {
@@ -641,15 +734,13 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
     ///
     /// 虚拟库存：
     ///   从 context.InventorySupplies 里提取（当前 V1 不含跨域供给，由后续3号位扫描补充）
-    ///
-    /// 拓扑序：
-    ///   由 3号位（01:50 静态扫描）提供；V1 默认空字典，Pegging 内部降级为 FIFO
     /// </summary>
     private static PeggingExecutionRequest BuildPeggingRequest(
         int planVersionId,
+        string domainKey,
         List<long> allOrderIds,
         SchedulingContext context,
-        Dictionary<int, int> topologicalOrder)
+        IReadOnlyList<ResourceBlock>? upstreamResourceBlocks)
     {
         var now = DateTime.Now;
         var orderIds = allOrderIds;
@@ -657,6 +748,7 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         return new PeggingExecutionRequest
         {
             PlanVersionId     = planVersionId,
+            DomainKey         = domainKey,
             OrderIds          = orderIds,
             SnapshotAt        = now,
             FrozenWindowStart = now,
@@ -668,8 +760,7 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
                 .Where(id => id > 0)
                 .Distinct()
                 .ToList(),
-            TopologicalOrder  = topologicalOrder,
-            VirtualInventory  = new List<Core.Dto.VirtualInventoryItem>(),  // INTEGRATION TODO: V1验收前需接入3号位跨域传递
+            UpstreamResourceBlocks = upstreamResourceBlocks,
             MaxBomDepth       = 10,
             TimeoutSeconds    = 300,
             ExecutionMode     = "FULL_RUN",
@@ -677,95 +768,160 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         };
     }
 
+    /// <summary>
+    /// FULL §9：从已排 Task 提取共享 Resource 占用区间（ResourceId + 起止时间）。
+    /// 只收 ResourceId 与 PlannedStart/End 均齐全的 FinalTask；占用块累积后作为后续 Domain 的不可用时间窗。
+    /// 不在此区分「共享 vs 本域独享」——把全部占用区间传给后续 Domain，后续 Domain 只用其中自己真正使用的 Resource，
+    /// 语义上与 Candidate 的 ExternalDomainResourceBlocks 一致（§11）。
+    /// </summary>
+    private static List<ResourceBlock> ExtractResourceOccupancyBlocks(IEnumerable<PeggingOrchestrationResult> peggingResults)
+    {
+        var blocks = new List<ResourceBlock>();
+        foreach (var r in peggingResults)
+        {
+            foreach (var t in r.GeneratedTasks)
+            {
+                if (t.ResourceId.HasValue && t.PlannedStartTime.HasValue && t.PlannedEndTime.HasValue)
+                {
+                    blocks.Add(new ResourceBlock
+                    {
+                        ResourceId = t.ResourceId.Value,
+                        StartTime  = t.PlannedStartTime.Value,
+                        EndTime    = t.PlannedEndTime.Value,
+                        Reason     = "UPSTREAM_DOMAIN_FULL"
+                    });
+                }
+            }
+        }
+        return blocks;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // 拓扑排序（0.5.3 — 读 Domain_Dependency 表，Kahn 算法）
+    // 域间依赖拓扑（§5/§7/§15/§23 — 读 Domain_Dependency 表，真实 DomainKey 口径）
     // ═══════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// 从 Domain_Dependency 表读取跨域血缘，执行 Kahn 拓扑排序。
-    /// 返回 ProductFamilyId → 层级序号（0=最上游，数字越大越靠下游）。
-    /// 若 Domain_Dependency 为空（V1 无跨族依赖），返回空字典，Pegging 降级为 FIFO。
+    /// 从 Domain_Dependency 读取跨域血缘边（真实 DomainKey 口径，不再 JOIN ProductFamily.Code 冒充）。
+    /// 只保留两端均落在本次 Run 的 DomainKey 集合内的边；表空（V1 现状）返回空集合。
     /// </summary>
-    private async Task<Dictionary<int, int>> LoadTopologicalOrderAsync(
-        SchedulingContext context,
+    private async Task<List<(string Upstream, string Downstream)>> LoadDomainDependencyEdgesAsync(
+        IReadOnlyList<string> domainKeys,
         CancellationToken cancellationToken)
     {
-        var edges = (await _connectionManager.QueryAsync<DomainDependencyRow>(
-            @"SELECT dd.UpstreamDomainCode, dd.DownstreamDomainCode,
-                     pf_up.Id AS UpstreamProductFamilyId,
-                     pf_dn.Id AS DownstreamProductFamilyId
-              FROM Domain_Dependency dd
-              INNER JOIN ProductFamily pf_up ON pf_up.Code = dd.UpstreamDomainCode
-              INNER JOIN ProductFamily pf_dn ON pf_dn.Code = dd.DownstreamDomainCode",
+        var rows = (await _connectionManager.QueryAsync<DomainDependencyRow>(
+            @"SELECT UpstreamDomainCode, DownstreamDomainCode
+              FROM Domain_Dependency
+              WHERE UpstreamDomainCode <> DownstreamDomainCode",
             db: DatabaseId.APS)).ToList();
 
-        if (edges.Count == 0)
-            return new Dictionary<int, int>();
+        if (rows.Count == 0)
+            return new List<(string, string)>();
 
-        // 取 context 中出现的所有 ProductFamilyId 作为节点集
-        var nodes = context.Tasks
-            .Select(t => int.TryParse(t.MaterialId, out var mid) ? mid : 0)
-            .Where(id => id > 0)
-            .Distinct()
+        var keySet = domainKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return rows
+            .Where(r => keySet.Contains(r.UpstreamDomainCode) && keySet.Contains(r.DownstreamDomainCode))
+            .Select(r => (r.UpstreamDomainCode, r.DownstreamDomainCode))
             .ToList();
+    }
 
-        // 补入边里出现但 context 里没有的节点（纯上游域，当前计划无其订单但依赖结构存在）
-        foreach (var e in edges)
+    /// <summary>
+    /// 对本次 Run 的 DomainKey 集合做 Kahn 拓扑排序（依赖边 = Domain_Dependency，真实 DomainKey 口径）。
+    /// 无有效依赖边（V1 现状）或检测到环时，降级为 ExpectedDomainKeysJson 冻结顺序（数组序）并记日志。
+    /// </summary>
+    private List<string> OrderDomainsTopologically(
+        IReadOnlyList<string> domainKeys,
+        List<(string Upstream, string Downstream)> edges)
+    {
+        if (edges.Count == 0)
         {
-            if (!nodes.Contains(e.UpstreamProductFamilyId))   nodes.Add(e.UpstreamProductFamilyId);
-            if (!nodes.Contains(e.DownstreamProductFamilyId)) nodes.Add(e.DownstreamProductFamilyId);
+            _logger.LogInformation(
+                "Domain_Dependency 无本次 Run 内有效依赖边，按 ExpectedDomainKeysJson 冻结顺序执行（{Count} 域）",
+                domainKeys.Count);
+            return domainKeys.ToList();
         }
 
-        var edgePairs = edges
-            .Select(e => (e.UpstreamProductFamilyId, e.DownstreamProductFamilyId))
-            .ToList();
+        var nodes = domainKeys.ToList();
+        var edgePairs = edges.Select(e => (From: e.Upstream, To: e.Downstream)).ToList();
 
-        // Kahn 分层排序
-        List<List<int>> layers;
+        List<List<string>> layers;
         try
         {
-            layers = TopologicalSort.SortByLayers<int>(nodes, edgePairs);
+            layers = TopologicalSort.SortByLayers<string>(nodes, edgePairs);
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogError(ex, "Domain_Dependency 存在循环依赖，拓扑排序失败，降级为 FIFO");
-            return new Dictionary<int, int>();
+            _logger.LogError(ex, "Domain_Dependency 存在循环依赖，拓扑排序失败，降级为 ExpectedDomainKeysJson 冻结顺序");
+            return domainKeys.ToList();
         }
 
-        // 展平为 ProductFamilyId → layerIndex
-        var result = new Dictionary<int, int>();
-        for (int layer = 0; layer < layers.Count; layer++)
-            foreach (var pfId in layers[layer])
-                result[pfId] = layer;
+        // 冻结顺序索引（DomainKey → 数组下标），分层内稳定排序用
+        var frozenIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < domainKeys.Count; i++)
+            frozenIndex[domainKeys[i]] = i;
 
-        return result;
+        var ordered = new List<string>(domainKeys.Count);
+        foreach (var layer in layers)
+        {
+            ordered.AddRange(layer.OrderBy(d => frozenIndex[d]));
+        }
+
+        // 防御：Kahn 未覆盖的孤立节点（nodes 已含全部 domainKeys，理论上不会发生）补到末尾
+        foreach (var dk in domainKeys)
+        {
+            if (!ordered.Contains(dk))
+                ordered.Add(dk);
+        }
+
+        return ordered;
     }
 
-    public Task<SchedulingRunResult> RunDomainSchedulingAutoAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 构建每个 Domain 的传递上游闭包（直接 + 间接上游），用于失败阻断按依赖边传播。
+    /// 无依赖边时返回空字典（不阻断，全部按冻结顺序执行）。
+    /// </summary>
+    private static Dictionary<string, HashSet<string>> BuildUpstreamClosure(
+        List<(string Upstream, string Downstream)> edges,
+        IReadOnlyList<string> domainKeys)
     {
-        throw new NotImplementedException();
+        var closure = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        if (edges.Count == 0)
+            return closure;
+
+        foreach (var dk in domainKeys)
+            closure[dk] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var adjacency = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dk in domainKeys)
+            adjacency[dk] = new List<string>();
+        foreach (var (up, dn) in edges)
+            adjacency[up].Add(dn);
+
+        // 对每个源节点 BFS，把源标记为其所有可达下游的传递上游
+        foreach (var dk in domainKeys)
+        {
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var queue = new Queue<string>();
+            queue.Enqueue(dk);
+            while (queue.Count > 0)
+            {
+                var cur = queue.Dequeue();
+                foreach (var next in adjacency[cur])
+                {
+                    if (visited.Add(next))
+                    {
+                        closure[next].Add(dk);
+                        queue.Enqueue(next);
+                    }
+                }
+            }
+        }
+
+        return closure;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 内部 DTO（仅本类 Dapper 投影使用，不对外暴露）
     // ═══════════════════════════════════════════════════════════════════════════
-
-    private class OrderLoadDto
-    {
-        public long OrderId { get; set; }
-        public string OrderNo { get; set; } = string.Empty;
-        public int MaterialId { get; set; }
-        public string MaterialCode { get; set; } = string.Empty;
-        public int ProductFamilyId { get; set; }
-        public int FactoryId { get; set; }
-        public decimal Quantity { get; set; }
-        public string UOM { get; set; } = string.Empty;
-        public DateTime CustomerDueDate { get; set; }
-        public int Priority { get; set; }
-        public decimal? PriorityScore { get; set; }
-        public string? CustomerTier { get; set; }
-        public int? LLC { get; set; }
-    }
 
     private class ResourceLoadDto
     {
@@ -837,12 +993,13 @@ public class SchedulingOrchestrator : ISchedulingOrchestrator
         public int Id { get; set; }
         public DateTime DataCutoffTime { get; set; }
         public long? StrategyProfileVersionId { get; set; }
+        public int? BasePlanVersionId { get; set; }
     }
 
     private class DomainDependencyRow
     {
-        public int UpstreamProductFamilyId { get; set; }
-        public int DownstreamProductFamilyId { get; set; }
+        public string UpstreamDomainCode { get; set; } = string.Empty;
+        public string DownstreamDomainCode { get; set; } = string.Empty;
     }
 
     private class MESProgressLoadDto

@@ -24,9 +24,20 @@ public interface IScheduleRunService
     Task<ScheduleRunDto?> GetCurrentRunAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 获取指定 ScheduleRun 的预期 DomainKey 集合（ExpectedDomainKeysJson 解析结果，保持冻结顺序）。
+    /// 供 NightlyBatchOrchestrator 按冻结集合逐 Domain 创建 PlanVersion + 装载订单。
+    /// </summary>
+    Task<IReadOnlyList<string>> GetExpectedDomainKeysAsync(int scheduleRunId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 将 ScheduleRun 标记为完成（COMPLETED）。
     /// </summary>
     Task CompleteAsync(int scheduleRunId, int durationSeconds, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 将 ScheduleRun 标记为部分成功（PARTIAL_SUCCESS）——逐 Domain 串行求解中，部分 Domain 成功、部分失败/被阻断。
+    /// </summary>
+    Task PartialSuccessAsync(int scheduleRunId, int durationSeconds, string errorMessage, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 将 ScheduleRun 标记为失败（FAILED），记录错误信息。

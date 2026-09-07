@@ -17,4 +17,13 @@ public interface IGovernanceAuditLogRepository
 
     /// <summary>查询指定时间范围内的审计日志</summary>
     Task<IReadOnlyList<GovernanceAuditLog>> GetByTimeRangeAsync(DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>组合条件查询审计日志（G6：实体类型/实体ID/时间范围 可空组合，按操作时间倒序，可限条数）</summary>
+    Task<IReadOnlyList<GovernanceAuditLog>> QueryAsync(
+        string? entityType = null,
+        long? entityId = null,
+        DateTime? from = null,
+        DateTime? to = null,
+        int? take = null,
+        CancellationToken ct = default);
 }

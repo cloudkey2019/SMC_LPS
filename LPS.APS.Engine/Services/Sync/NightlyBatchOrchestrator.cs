@@ -12,8 +12,8 @@ namespace LPS.APS.Engine.Services.Sync;
 /// 时序：
 ///   00:30  Step 1 — 全量订单同步（ERP → Staging → Order_Canonical）
 ///   00:30  Step 2 — 创建 ScheduleRun（DataCutoffTime 在此锁定，供 00:40~50 MES快照使用）
-///   00:31  Step 3 — 创建 PlanVersion（SourceScheduleRunId = ScheduleRun.Id）
-///   00:32  Step 4 — 订单装载到分区表（Order_Canonical → Order）
+///   00:31  Step 3 — 创建 PlanVersion（每 Domain 一个：SourceScheduleRunId + DomainKey）
+///   00:32  Step 4 — 订单装载到分区表（每 Domain 一次：Order_Canonical → Order，SP 按 DomainKey 筛选）
 ///   00:33  Step 5 — BOM展开结果接货（ODS.MES_APS_BOM_Workset → APS.APS_BOM_RAW）
 ///
 /// 异常策略：任一步骤失败则中断，记录 APS_ETL_Log，不继续后续步骤
@@ -66,21 +66,50 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
             _logger.LogInformation("[{BatchNo}] ScheduleRun 已创建: ScheduleRunId={ScheduleRunId}", batchNo, scheduleRunId);
 
             // ═══════════════════════════════════════════
-            // Step 3: 创建计划版本（写入 SourceScheduleRunId）
+            // Step 3: 创建计划版本（每 Domain 一个，写入 SourceScheduleRunId + DomainKey）
+            // 依据：PM 终裁 2026-09-02 —— 每 Domain 独立 PlanVersion，按冻结 ExpectedDomainKeysJson 逐个创建
             // ═══════════════════════════════════════════
-            _logger.LogInformation("[{BatchNo}] Step 3: 创建计划版本", batchNo);
-            var planVersionId = await CreatePlanVersionAsync(batchNo, scheduleRunId, cancellationToken);
-            _logger.LogInformation("[{BatchNo}] 计划版本已创建: PlanVersionId={PlanVersionId}", batchNo, planVersionId);
+            _logger.LogInformation("[{BatchNo}] Step 3: 创建计划版本（每 Domain 一个）", batchNo);
+            var domainKeys = await _scheduleRunService.GetExpectedDomainKeysAsync(scheduleRunId, cancellationToken);
+            var planVersions = new List<(string DomainKey, int PlanVersionId)>(domainKeys.Count);
+
+            foreach (var domainKey in domainKeys)
+            {
+                var planVersionId = await CreatePlanVersionAsync(batchNo, scheduleRunId, domainKey, cancellationToken);
+                planVersions.Add((domainKey, planVersionId));
+                _logger.LogInformation("[{BatchNo}] 计划版本已创建: DomainKey={DomainKey}, PlanVersionId={PlanVersionId}",
+                    batchNo, domainKey, planVersionId);
+            }
 
             // ═══════════════════════════════════════════
-            // Step 4: 订单装载到分区表
+            // Step 4: 订单装载到分区表（每 Domain 一次；SP 内部按 DomainKey 定位 DomainDefinition 筛选）
             // ═══════════════════════════════════════════
-            _logger.LogInformation("[{BatchNo}] Step 4: 订单装载到分区表", batchNo);
-            var loadedCount = await _orderLoadingService.LoadOrdersToPartitionTableAsync(planVersionId, cancellationToken);
-            _logger.LogInformation("[{BatchNo}] 订单装载完成: {LoadedCount}条", batchNo, loadedCount);
+            _logger.LogInformation("[{BatchNo}] Step 4: 订单装载到分区表（每 Domain 一次）", batchNo);
+            var loadedCount = 0;
+
+            foreach (var (domainKey, planVersionId) in planVersions)
+            {
+                var loaded = await _orderLoadingService.LoadOrdersToPartitionTableAsync(planVersionId, cancellationToken);
+                loadedCount += loaded;
+                _logger.LogInformation("[{BatchNo}] Domain {DomainKey} 订单装载完成: {LoadedCount}条",
+                    batchNo, domainKey, loaded);
+            }
+
+            _logger.LogInformation("[{BatchNo}] 订单装载合计: {LoadedCount}条（{DomainCount}个 Domain）",
+                batchNo, loadedCount, planVersions.Count);
+
+            // ═══════════════════════════════════════════
+            // Step 4.5: 归域失败捡漏（非阻塞）——检测未归入任何 Domain 的活跃订单，登记 WARN 日志标记数据问题
+            // ═══════════════════════════════════════════
+            _logger.LogInformation("[{BatchNo}] Step 4.5: 归域失败捡漏", batchNo);
+            var unassignedCount = await _orderLoadingService.DetectUnassignedOrdersAsync(
+                planVersions.Select(p => p.PlanVersionId).ToList(), cancellationToken);
+            _logger.LogInformation("[{BatchNo}] 归域失败捡漏完成: {UnassignedCount}条未归域订单（已登记 WARN 日志）",
+                batchNo, unassignedCount);
 
             // ═══════════════════════════════════════════
             // Step 5: BOM展开结果接货（ODS → APS）
+            // BOM 是物料级事实、按批次接货一次；OrderBomRequestLink 跨本批全部 Domain PlanVersion 映射
             // ═══════════════════════════════════════════
             _logger.LogInformation("[{BatchNo}] Step 5: BOM展开结果接货", batchNo);
             var bomBatchNo = await _bomResultPullService.FindReadyBatchAsync(cancellationToken);
@@ -88,7 +117,8 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
 
             if (bomBatchNo != null)
             {
-                bomPulledCount = await _bomResultPullService.PullBOMResultFromODSAsync(bomBatchNo, planVersionId, cancellationToken);
+                var planVersionIds = planVersions.Select(p => p.PlanVersionId).ToList();
+                bomPulledCount = await _bomResultPullService.PullBOMResultFromODSAsync(bomBatchNo, planVersionIds, cancellationToken);
                 _logger.LogInformation("[{BatchNo}] BOM接货完成: BOMBatchNo={BOMBatchNo}, 行数={PulledCount}",
                     batchNo, bomBatchNo, bomPulledCount);
             }
@@ -102,7 +132,7 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
             // ═══════════════════════════════════════════
             stopwatch.Stop();
             await LogETLAsync(batchNo, "NightlyBatch",
-                $"夜间批次完成 | ScheduleRunId:{scheduleRunId} | PlanVersionId:{planVersionId} | 装载订单:{loadedCount} | BOM接货:{bomPulledCount}行 | 耗时:{stopwatch.ElapsedMilliseconds}ms",
+                $"夜间批次完成 | ScheduleRunId:{scheduleRunId} | Domain数:{planVersions.Count} | 装载订单:{loadedCount} | 未归域:{unassignedCount} | BOM接货:{bomPulledCount}行 | 耗时:{stopwatch.ElapsedMilliseconds}ms",
                 "SUCCESS");
 
             _logger.LogInformation("夜间批次完成: {BatchNo}, 耗时={Elapsed}ms", batchNo, stopwatch.ElapsedMilliseconds);
@@ -121,13 +151,13 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
     }
 
     /// <summary>
-    /// 创建计划版本，同时写入 SourceScheduleRunId
-    /// VersionCode 格式: NIGHTLY_yyyyMMdd，PlanHorizon: 今天起 90 天
+    /// 创建计划版本，同时写入 SourceScheduleRunId + DomainKey（每 Domain 一个）
+    /// VersionCode 格式: NIGHTLY_yyyyMMdd_{DomainKey}，PlanHorizon: 今天起 90 天
     /// </summary>
-    private async Task<int> CreatePlanVersionAsync(string batchNo, int scheduleRunId, CancellationToken cancellationToken)
+    private async Task<int> CreatePlanVersionAsync(string batchNo, int scheduleRunId, string domainKey, CancellationToken cancellationToken)
     {
         var now = DateTime.Now;
-        var versionCode = $"NIGHTLY_{now:yyyyMMdd}";
+        var versionCode = $"NIGHTLY_{now:yyyyMMdd}_{domainKey}";
 
         var sql = @"
             -- 如果今天已有同名版本，先标记为已归档
@@ -137,11 +167,11 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
 
             INSERT INTO PlanVersion (
                 VersionCode, VersionCategory, PlanHorizonStart, PlanHorizonEnd,
-                ComputeMode, Status, BatchNo, SourceScheduleRunId, CreatedBy, CreatedAt
+                ComputeMode, Status, BatchNo, SourceScheduleRunId, DomainKey, CreatedBy, CreatedAt
             )
             VALUES (
                 @VersionCode, 'DAILY_BASELINE', @PlanHorizonStart, @PlanHorizonEnd,
-                'FULL', 'Created', @BatchNo, @SourceScheduleRunId, 'SYSTEM', GETDATE()
+                'FULL', 'Created', @BatchNo, @SourceScheduleRunId, @DomainKey, 'SYSTEM', GETDATE()
             );
 
             SELECT CAST(SCOPE_IDENTITY() AS INT);";
@@ -152,6 +182,7 @@ public class NightlyBatchOrchestrator : INightlyBatchOrchestrator
         parameters.Add("@PlanHorizonEnd", now.Date.AddDays(90));
         parameters.Add("@BatchNo", batchNo);
         parameters.Add("@SourceScheduleRunId", scheduleRunId);
+        parameters.Add("@DomainKey", domainKey);
 
         var planVersionId = await _connectionManager.QueryFirstOrDefaultAsync<int>(
             sql, parameters, db: DatabaseId.APS);

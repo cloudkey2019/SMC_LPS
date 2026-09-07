@@ -118,6 +118,18 @@ public class PlanVersionRepository : IPlanVersionRepository
             candidate.Id, candidate.DomainKey, archivedCount);
     }
 
+    public async Task<PlanVersion?> GetActiveByDomainKeyAsync(string domainKey, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT TOP 1 * FROM [dbo].[PlanVersion]
+            WHERE [DomainKey] = @DomainKey
+              AND [Status] = @ActiveStatus
+            ORDER BY [CreatedAt] DESC, [Id] DESC";
+
+        return await _connectionManager.QueryFirstOrDefaultAsync<PlanVersion>(
+            sql, new { DomainKey = domainKey, ActiveStatus = PlanVersionActiveStatus }, db: DatabaseId.APS);
+    }
+
     public async Task<PlanVersion?> GetLatestByScheduleRunIdAsync(int scheduleRunId, CancellationToken ct = default)
     {
         const string sql = @"
@@ -127,5 +139,18 @@ public class PlanVersionRepository : IPlanVersionRepository
 
         return await _connectionManager.QueryFirstOrDefaultAsync<PlanVersion>(
             sql, new { ScheduleRunId = scheduleRunId }, db: DatabaseId.APS);
+    }
+
+    public async Task<IReadOnlyList<PlanVersion>> GetByScheduleRunIdAsync(int scheduleRunId, CancellationToken ct = default)
+    {
+        const string sql = @"
+            SELECT * FROM [dbo].[PlanVersion]
+            WHERE [SourceScheduleRunId] = @ScheduleRunId
+            ORDER BY [DomainKey], [CreatedAt] DESC, [Id] DESC";
+
+        var results = await _connectionManager.QueryAsync<PlanVersion>(
+            sql, new { ScheduleRunId = scheduleRunId }, db: DatabaseId.APS);
+
+        return results.ToList();
     }
 }

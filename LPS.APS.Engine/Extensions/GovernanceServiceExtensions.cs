@@ -27,6 +27,13 @@ public static class GovernanceServiceExtensions
         services.AddScoped<IGovernanceAuditLogRepository, GovernanceAuditLogRepository>();
         services.AddScoped<IScheduleRunRepository, ScheduleRunRepository>();
         services.AddScoped<IPlanVersionRepository, PlanVersionRepository>();
+        // G1：三张主表列表查询（3-4联调）
+        services.AddScoped<IRuleSetRepository, RuleSetRepository>();
+        services.AddScoped<IParameterSetRepository, ParameterSetRepository>();
+        // G7：域依赖关系查询（3-4联调）
+        services.AddScoped<IDomainDependencyRepository, DomainDependencyRepository>();
+        // E-1：域定义治理写侧（3号位 CRUD + 启用/停用 + 审计）
+        services.AddScoped<IDomainDefinitionRepository, DomainDefinitionRepository>();
 
         return services;
     }

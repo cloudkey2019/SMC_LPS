@@ -18,4 +18,15 @@ public interface IStrategyProfileRepository
     /// 返回列表而非单对象（红线 #4：禁止盲目 First()），由 Application 层结合版本状态判定。
     /// </summary>
     System.Threading.Tasks.Task<IReadOnlyList<StrategyProfile>> GetByRunTypeAsync(string runType, CancellationToken ct = default);
+
+    /// <summary>
+    /// 策略包列表查询（3-4联调接口 G1/A12：4号位策略包列表页）
+    /// 支持 启停过滤 + 编码/名称关键字 + 分页。
+    /// </summary>
+    System.Threading.Tasks.Task<IReadOnlyList<StrategyProfile>> GetListAsync(
+        bool? activeOnly = null,
+        string? keyword = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken ct = default);
 }

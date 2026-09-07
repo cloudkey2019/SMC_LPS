@@ -5,6 +5,7 @@ using LPS.APS.Core.Enum;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Core.Dto;
 using LPS.APS.Core.DTOs.Governance;
+using LPS.APS.Engine.Data;
 
 namespace LPS.APS.Application.Services;
 
@@ -26,6 +27,8 @@ public class GovernanceVersionService : IGovernanceVersionService
     private readonly IStrategyProfileRepository _strategyProfileRepository;
     private readonly IStrategyProfileVersionRepository _strategyProfileVersionRepository;
     private readonly IGovernanceAuditLogRepository _auditLogRepository;
+    /// <summary>权威仓库事实源只读访问（0号位 裁决5：INVALID_WAREHOUSE_REF 校验；可空——未接入事实源时跳过校验，见清单三 2号位/5号位 确认项）</summary>
+    private readonly DatabaseConnectionManager? _connectionManager;
     /// <summary>Demand Priority 业务校验器（无状态纯校验，P0-05 强制接入发布前校验）</summary>
     private readonly DemandPriorityValidator _demandPriorityValidator = new();
 
@@ -40,19 +43,21 @@ public class GovernanceVersionService : IGovernanceVersionService
         IParameterSetVersionRepository parameterSetVersionRepository,
         IStrategyProfileRepository strategyProfileRepository,
         IStrategyProfileVersionRepository strategyProfileVersionRepository,
-        IGovernanceAuditLogRepository auditLogRepository)
+        IGovernanceAuditLogRepository auditLogRepository,
+        DatabaseConnectionManager? connectionManager = null)
     {
         _ruleSetVersionRepository = ruleSetVersionRepository;
         _parameterSetVersionRepository = parameterSetVersionRepository;
         _strategyProfileRepository = strategyProfileRepository;
         _strategyProfileVersionRepository = strategyProfileVersionRepository;
         _auditLogRepository = auditLogRepository;
+        _connectionManager = connectionManager;
     }
 
     /// <summary>合法发布前驱状态（其余状态发布一律拒绝）</summary>
     private static readonly string[] PublishableStatuses = [GovernanceVersionStatus.Draft, GovernanceVersionStatus.Submitted, GovernanceVersionStatus.Approved];
 
-    public async Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, CancellationToken ct = default)
+    public async Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null)
     {
         var version = await _ruleSetVersionRepository.GetByIdAsync(ruleSetVersionId, ct)
             ?? throw new InvalidOperationException($"规则集版本不存在：{ruleSetVersionId}");
@@ -88,11 +93,11 @@ public class GovernanceVersionService : IGovernanceVersionService
             AfterStatus = GovernanceVersionStatus.Published,
             OperatedBy = publishedBy,
             OperatedAt = DateTime.UtcNow,
-            Remarks = "规则集版本发布"
+            Remarks = string.IsNullOrWhiteSpace(changeReason) ? "规则集版本发布" : changeReason
         }, ct);
     }
 
-    public async Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, CancellationToken ct = default)
+    public async Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null)
     {
         var version = await _parameterSetVersionRepository.GetByIdAsync(parameterSetVersionId, ct)
             ?? throw new InvalidOperationException($"参数集版本不存在：{parameterSetVersionId}");
@@ -128,7 +133,7 @@ public class GovernanceVersionService : IGovernanceVersionService
             AfterStatus = GovernanceVersionStatus.Published,
             OperatedBy = publishedBy,
             OperatedAt = DateTime.UtcNow,
-            Remarks = "参数集版本发布"
+            Remarks = string.IsNullOrWhiteSpace(changeReason) ? "参数集版本发布" : changeReason
         }, ct);
     }
 
@@ -148,6 +153,117 @@ public class GovernanceVersionService : IGovernanceVersionService
             GovernanceVersionStatus.Published => new InvalidOperationException($"版本已发布，历史不可覆盖：{versionId}"),
             _ => new InvalidOperationException($"版本状态不可发布（当前 {status}）：{versionId}"),
         };
+    }
+
+    /// <summary>
+    /// 校验状态是否可停用（G2：Retired↔DISABLED 语义映射 §8.4）：
+    /// SUBMITTED/APPROVED/PUBLISHED → DISABLED 合法（下线，新 Run 不再引用）；
+    /// DRAFT 拒绝（草稿不产生引用，请直接编辑或删除）；
+    /// DISABLED 拒绝（已停用，幂等保护）；ARCHIVED 拒绝（已归档）。
+    /// </summary>
+    private static void EnsureDisableable(string status, long versionId)
+    {
+        if (status is GovernanceVersionStatus.Submitted
+            or GovernanceVersionStatus.Approved
+            or GovernanceVersionStatus.Published)
+        {
+            return;
+        }
+
+        throw status switch
+        {
+            GovernanceVersionStatus.Draft => new InvalidOperationException($"草稿不可停用（请直接编辑或删除）：{versionId}"),
+            GovernanceVersionStatus.Disabled => new InvalidOperationException($"版本已停用：{versionId}"),
+            GovernanceVersionStatus.Archived => new InvalidOperationException($"版本已归档，不可停用：{versionId}"),
+            _ => new InvalidOperationException($"版本状态不可停用（当前 {status}）：{versionId}"),
+        };
+    }
+
+    public async Task DisableRuleSetVersionAsync(long ruleSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default)
+    {
+        var version = await _ruleSetVersionRepository.GetByIdAsync(ruleSetVersionId, ct)
+            ?? throw new InvalidOperationException($"规则集版本不存在：{ruleSetVersionId}");
+
+        EnsureDisableable(version.Status, ruleSetVersionId);
+
+        var beforeStatus = version.Status;
+        version.Status = GovernanceVersionStatus.Disabled;
+
+        await _ruleSetVersionRepository.UpdateAsync(version, ct);
+
+        // A-7 审计日志：记录停用操作
+        await _auditLogRepository.AddAsync(new Core.Entities.Auth.GovernanceAuditLog
+        {
+            OperationType = "Disable",
+            EntityType = "RuleSetVersion",
+            EntityId = ruleSetVersionId,
+            VersionCode = version.VersionCode,
+            BeforeStatus = beforeStatus,
+            AfterStatus = GovernanceVersionStatus.Disabled,
+            OperatedBy = operatedBy,
+            OperatedAt = DateTime.UtcNow,
+            Remarks = reason
+        }, ct);
+    }
+
+    public async Task DisableParameterSetVersionAsync(long parameterSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default)
+    {
+        var version = await _parameterSetVersionRepository.GetByIdAsync(parameterSetVersionId, ct)
+            ?? throw new InvalidOperationException($"参数集版本不存在：{parameterSetVersionId}");
+
+        EnsureDisableable(version.Status, parameterSetVersionId);
+
+        var beforeStatus = version.Status;
+        version.Status = GovernanceVersionStatus.Disabled;
+
+        await _parameterSetVersionRepository.UpdateAsync(version, ct);
+
+        // A-7 审计日志：记录停用操作
+        await _auditLogRepository.AddAsync(new Core.Entities.Auth.GovernanceAuditLog
+        {
+            OperationType = "Disable",
+            EntityType = "ParameterSetVersion",
+            EntityId = parameterSetVersionId,
+            VersionCode = version.VersionCode,
+            BeforeStatus = beforeStatus,
+            AfterStatus = GovernanceVersionStatus.Disabled,
+            OperatedBy = operatedBy,
+            OperatedAt = DateTime.UtcNow,
+            Remarks = reason
+        }, ct);
+    }
+
+    public async Task DisableStrategyProfileVersionAsync(long strategyProfileVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default)
+    {
+        var version = await _strategyProfileVersionRepository.GetByIdAsync(strategyProfileVersionId, ct)
+            ?? throw new InvalidOperationException($"策略包版本不存在：{strategyProfileVersionId}");
+
+        EnsureDisableable(version.Status, strategyProfileVersionId);
+
+        // IsDefault=1 停用：需清默认标志（避免 DISABLED 默认版本残留于 ResolveDefault 查询范围）
+        if (version.IsDefault)
+        {
+            await _strategyProfileVersionRepository.ClearDefaultFlagAsync(version.StrategyProfileId, strategyProfileVersionId, ct);
+        }
+
+        var beforeStatus = version.Status;
+        version.Status = GovernanceVersionStatus.Disabled;
+
+        await _strategyProfileVersionRepository.UpdateAsync(version, ct);
+
+        // A-7 审计日志：记录停用操作
+        await _auditLogRepository.AddAsync(new Core.Entities.Auth.GovernanceAuditLog
+        {
+            OperationType = "Disable",
+            EntityType = "StrategyProfileVersion",
+            EntityId = strategyProfileVersionId,
+            VersionCode = version.VersionCode,
+            BeforeStatus = beforeStatus,
+            AfterStatus = GovernanceVersionStatus.Disabled,
+            OperatedBy = operatedBy,
+            OperatedAt = DateTime.UtcNow,
+            Remarks = reason
+        }, ct);
     }
 
     /// <summary>开发者：3号位</summary>
@@ -235,6 +351,46 @@ public class GovernanceVersionService : IGovernanceVersionService
             SourceVersionCode = sourceVersion.VersionCode,
             TargetVersionCode = targetVersion.VersionCode,
             EntityType = "ParameterSetVersion",
+            FieldDiffs = diffs,
+            ComparedAt = DateTime.UtcNow
+        };
+    }
+
+    /// <summary>
+    /// 对比两个策略包版本的差异（G5/D3：3-4联调，4号位策略包对比页；V1 可后置）
+    /// 策略包无 ContentSnapshotJson（不含 JSON 内容，仅引用 RuleSet/ParameterSet 版本），
+    /// 对比治理字段 + 引用字段（RuleSetVersionId/ParameterSetVersionId/IsDefault）。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    public async Task<VersionDiffResult> CompareStrategyProfileVersionsAsync(long sourceVersionId, long targetVersionId, CancellationToken ct = default)
+    {
+        var sourceVersion = await _strategyProfileVersionRepository.GetByIdAsync(sourceVersionId, ct)
+            ?? throw new InvalidOperationException($"源策略包版本不存在：{sourceVersionId}");
+
+        var targetVersion = await _strategyProfileVersionRepository.GetByIdAsync(targetVersionId, ct)
+            ?? throw new InvalidOperationException($"目标策略包版本不存在：{targetVersionId}");
+
+        var diffs = new List<FieldDiff>
+        {
+            CompareField("VersionCode", "版本编码", sourceVersion.VersionCode, targetVersion.VersionCode),
+            CompareField("Status", "状态", sourceVersion.Status, targetVersion.Status),
+            CompareField("RuleSetVersionId", "引用的规则集版本", sourceVersion.RuleSetVersionId.ToString(), targetVersion.RuleSetVersionId.ToString()),
+            CompareField("ParameterSetVersionId", "引用的参数集版本", sourceVersion.ParameterSetVersionId.ToString(), targetVersion.ParameterSetVersionId.ToString()),
+            CompareField("IsDefault", "默认版本", sourceVersion.IsDefault.ToString(), targetVersion.IsDefault.ToString()),
+            CompareField("EffectiveFrom", "生效起始", sourceVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveFrom?.ToString("yyyy-MM-dd HH:mm:ss")),
+            CompareField("EffectiveTo", "生效截止", sourceVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.EffectiveTo?.ToString("yyyy-MM-dd HH:mm:ss")),
+            CompareField("PublishedAt", "发布时间", sourceVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss"), targetVersion.PublishedAt?.ToString("yyyy-MM-dd HH:mm:ss")),
+            CompareField("PublishedBy", "发布人", sourceVersion.PublishedBy, targetVersion.PublishedBy)
+        };
+
+        // 注：策略包版本表无 Remarks 列（与 RuleSet/ParameterSet 同），故不含 Remarks 对比字段。
+        return new VersionDiffResult
+        {
+            SourceVersionId = sourceVersionId,
+            TargetVersionId = targetVersionId,
+            SourceVersionCode = sourceVersion.VersionCode,
+            TargetVersionCode = targetVersion.VersionCode,
+            EntityType = "StrategyProfileVersion",
             FieldDiffs = diffs,
             ComparedAt = DateTime.UtcNow
         };
@@ -439,8 +595,92 @@ public class GovernanceVersionService : IGovernanceVersionService
         ValidateSolverStrategyJson(ExtractBlockJson(version.ContentSnapshotJson, "SolverStrategy"), result);
         ValidateCandidateGuardrailJson(ExtractBlockJson(version.ContentSnapshotJson, "CandidateGuardrail"), result);
 
+        // 0号位 裁决5：无效仓库引用校验（INVALID_WAREHOUSE_REF）——使用现有 APS 权威仓库事实源只读校验
+        await ValidateWarehouseReferencesAsync(version.ContentSnapshotJson, result);
+
         result.IsValid = result.Errors.Count == 0;
         return result;
+    }
+
+    /// <summary>
+    /// 无效仓库引用校验（0号位 裁决5，INVALID_WAREHOUSE_REF）
+    /// 校验参数集配置中的仓库编码（Supply.Inventory.WarehousePriority、Procurement.WarehousePriority、
+    /// DefaultPurchaseLt[].WarehouseCode、ArrivalToUsableOffsets[].WarehouseCode）是否存在于现有
+    /// APS 权威仓库事实源（仓库字典跨库包装视图 ext_MES_ProcessCode_View 的 DISTINCT ProcessCode）。
+    /// 约定：事实源为空（系统尚未同步任何仓库事实）时跳过校验，避免对未就绪数据源误判；
+    /// 权威读模型已确认为 ext_MES_ProcessCode_View（2026-09-07 用户确认）。
+    /// </summary>
+    private async Task ValidateWarehouseReferencesAsync(string? contentSnapshotJson, PublishValidationResult result)
+    {
+        if (_connectionManager is null || string.IsNullOrWhiteSpace(contentSnapshotJson))
+        {
+            return;
+        }
+
+        // 1. 采集配置中引用的仓库编码（去重，忽略空串）
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var supplyJson = ExtractBlockJson(contentSnapshotJson, "Supply");
+            var procurementJson = ExtractBlockJson(contentSnapshotJson, "Procurement");
+            var supply = string.IsNullOrWhiteSpace(supplyJson)
+                ? null
+                : System.Text.Json.JsonSerializer.Deserialize<SupplyBlock>(supplyJson, JsonOptions);
+            var procurement = string.IsNullOrWhiteSpace(procurementJson)
+                ? null
+                : System.Text.Json.JsonSerializer.Deserialize<ProcurementBlock>(procurementJson, JsonOptions);
+
+            if (supply?.Inventory?.WarehousePriority is { } supplyWh)
+            {
+                foreach (var code in supplyWh) { if (!string.IsNullOrWhiteSpace(code)) referenced.Add(code); }
+            }
+            if (procurement?.WarehousePriority is { } procWh)
+            {
+                foreach (var code in procWh) { if (!string.IsNullOrWhiteSpace(code)) referenced.Add(code); }
+            }
+            if (procurement?.DefaultPurchaseLt is { } lt)
+            {
+                foreach (var rule in lt) { if (!string.IsNullOrWhiteSpace(rule.WarehouseCode)) referenced.Add(rule.WarehouseCode); }
+            }
+            if (procurement?.ArrivalToUsableOffsets is { } offsets)
+            {
+                foreach (var rule in offsets) { if (!string.IsNullOrWhiteSpace(rule.WarehouseCode)) referenced.Add(rule.WarehouseCode); }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // 内容损坏已由五子块校验报错，此处不重复
+            return;
+        }
+
+        if (referenced.Count == 0)
+        {
+            return;
+        }
+
+        // 2. 读取权威仓库事实源（仓库字典跨库包装视图 ext_MES_ProcessCode_View，APS；IsActive=1 已由视图内置）
+        var existing = await _connectionManager.QueryAsync<string>(
+            @"SELECT DISTINCT ProcessCode FROM [ext_MES_ProcessCode_View]",
+            null,
+            db: DatabaseId.APS);
+
+        var existingSet = new HashSet<string>(existing ?? [], StringComparer.OrdinalIgnoreCase);
+        if (existingSet.Count == 0)
+        {
+            // 事实源未就绪（系统尚未同步任何仓库事实）：跳过校验，避免对未就绪数据源误判
+            return;
+        }
+
+        // 3. 引用不存在 → INVALID_WAREHOUSE_REF
+        foreach (var code in referenced.Where(c => !existingSet.Contains(c)).OrderBy(c => c, StringComparer.Ordinal))
+        {
+            result.Errors.Add(new ValidationError
+            {
+                Code = "INVALID_WAREHOUSE_REF",
+                Message = $"参数配置引用了不存在的仓库编码：{code}（权威仓库事实源：ext_MES_ProcessCode_View 仓库字典）",
+                FieldName = "Procurement/Warehouse"
+            });
+        }
     }
 
     /// <summary>校验 SolverStrategyJson：缺失/损坏/业务约束（E-4 SolverStrategyValidator 接线，P0-02b）</summary>
@@ -944,7 +1184,7 @@ public class GovernanceVersionService : IGovernanceVersionService
         }
     }
 
-    public async Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default)
+    public async Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null)
     {
         var version = await _strategyProfileVersionRepository.GetByIdAsync(strategyProfileVersionId, ct)
             ?? throw new InvalidOperationException($"策略包版本不存在：{strategyProfileVersionId}");
@@ -982,7 +1222,7 @@ public class GovernanceVersionService : IGovernanceVersionService
             AfterStatus = GovernanceVersionStatus.Published,
             OperatedBy = publishedBy,
             OperatedAt = DateTime.UtcNow,
-            Remarks = "策略包版本发布"
+            Remarks = string.IsNullOrWhiteSpace(changeReason) ? "策略包版本发布" : changeReason
         }, ct);
     }
 
@@ -1009,6 +1249,97 @@ public class GovernanceVersionService : IGovernanceVersionService
             1 => inWindow[0],
             _ => throw new InvalidOperationException(
                 $"RunType={runType} 的默认 PUBLISHED 策略包存在歧义：{inWindow.Count} 个候选（Id: {string.Join(", ", inWindow.Select(v => v.Id))}），须收敛为 1 个再执行"),
+        };
+    }
+
+    // ==================== G3：当前 Published 版本便捷查询（3-4联调；C2） ====================
+
+    /// <summary>
+    /// 规则集当前生效 PUBLISHED 版本直达（G3/C2）
+    /// 语义：单 Set 内 Status==PUBLISHED + 生效窗口（EffectiveFrom≤now≤EffectiveTo，有值才校验）过滤；
+    /// 0 个 → null；恰 1 个 → 返回（RuleSet 投影 DemandPriorityJson，前端与 A3 详情一致）；&gt;1 个 → 歧义报错不随机取。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    public async Task<RuleSetVersion?> GetPublishedRuleSetVersionAsync(long ruleSetId, CancellationToken ct = default)
+    {
+        var versions = await _ruleSetVersionRepository.GetByRuleSetIdAsync(ruleSetId, ct);
+        var published = SelectCurrentPublished(
+            versions,
+            v => v.Status, v => v.Id,
+            v => v.EffectiveFrom, v => v.EffectiveTo,
+            $"规则集 {ruleSetId}");
+
+        if (published != null)
+        {
+            ProjectRuleSetContent(published);
+        }
+        return published;
+    }
+
+    /// <summary>
+    /// 参数集当前生效 PUBLISHED 版本直达（G3/C2；五主题 JSON 投影，与 A10 详情一致；多候选报错收敛）
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    public async Task<ParameterSetVersion?> GetPublishedParameterSetVersionAsync(long parameterSetId, CancellationToken ct = default)
+    {
+        var versions = await _parameterSetVersionRepository.GetByParameterSetIdAsync(parameterSetId, ct);
+        var published = SelectCurrentPublished(
+            versions,
+            v => v.Status, v => v.Id,
+            v => v.EffectiveFrom, v => v.EffectiveTo,
+            $"参数集 {parameterSetId}");
+
+        if (published != null)
+        {
+            ProjectParameterSetContent(published);
+        }
+        return published;
+    }
+
+    /// <summary>
+    /// 策略包当前生效 PUBLISHED 版本直达（G3/C2；无内容快照，仅治理+引用字段；多候选报错收敛）
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    public async Task<StrategyProfileVersion?> GetPublishedStrategyProfileVersionAsync(long strategyProfileId, CancellationToken ct = default)
+    {
+        var versions = await _strategyProfileVersionRepository.GetByStrategyProfileIdAsync(strategyProfileId, ct);
+        return SelectCurrentPublished(
+            versions,
+            v => v.Status, v => v.Id,
+            v => v.EffectiveFrom, v => v.EffectiveTo,
+            $"策略包 {strategyProfileId}");
+    }
+
+    /// <summary>
+    /// 从版本列表中挑选当前生效 PUBLISHED 版本（G3 通用辅助）
+    /// 红线 #4：返回列表而非单对象，禁止盲目 First()——0/1/多 三态判定，多候选报错收敛不随机取。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    private static T? SelectCurrentPublished<T>(
+        IReadOnlyList<T> versions,
+        Func<T, string> statusGetter,
+        Func<T, long> idGetter,
+        Func<T, DateTime?> effectiveFromGetter,
+        Func<T, DateTime?> effectiveToGetter,
+        string displayName)
+        where T : class
+    {
+        var now = DateTime.UtcNow;
+        // 物化一次可空生效窗口，避免同一 getter 两次调用导致 CS8629 流分析告警
+        var inWindow = versions
+            .Where(v => statusGetter(v) == GovernanceVersionStatus.Published)
+            .Select(v => (Version: v, From: effectiveFromGetter(v), To: effectiveToGetter(v)))
+            .Where(t => (!t.From.HasValue || t.From.Value <= now)
+                     && (!t.To.HasValue || t.To.Value >= now))
+            .Select(t => t.Version)
+            .ToList();
+
+        return inWindow.Count switch
+        {
+            0 => null,
+            1 => inWindow[0],
+            _ => throw new InvalidOperationException(
+                $"{displayName} 存在多个当前生效 PUBLISHED 版本（Id: {string.Join(", ", inWindow.Select(v => idGetter(v)))}），须收敛为 1 个再执行（不随机取）"),
         };
     }
 

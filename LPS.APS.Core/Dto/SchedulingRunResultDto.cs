@@ -25,4 +25,49 @@ public class SchedulingRunResult
 
     /// <summary>错误信息（成功时为null）</summary>
     public string? ErrorMessage { get; set; }
+
+    /// <summary>
+    /// 本 Domain 成功后产出的共享 Resource 占用块（FULL §9）。
+    /// 由编排层累积后作为后续 Domain 的不可用时间窗（DomainSolveRequest.UpstreamDomainResourceBlocks）。
+    /// </summary>
+    public List<ResourceBlock> EmittedResourceBlocks { get; set; } = new();
+
+    /// <summary>
+    /// Domain 级性能指标（§16/§21.6/D18）。失败时为 null。
+    /// </summary>
+    public DomainPerformanceMetrics? Metrics { get; set; }
+}
+
+/// <summary>
+/// Domain 级性能指标（§16/§21.6/D18）。
+/// 目标：用真实数据判断约 10 万 Task / 90 天 / 15 分钟目标是否满足。
+/// </summary>
+public sealed class DomainPerformanceMetrics
+{
+    /// <summary>真实 DomainKey</summary>
+    public string DomainKey { get; set; } = string.Empty;
+
+    /// <summary>需求数（本域 PlanVersion 的订单数）</summary>
+    public int DemandCount { get; set; }
+
+    /// <summary>逻辑生产需求数（Pegging 生成的 LogicalProductionDemand 数）</summary>
+    public int LogicalProductionDemandCount { get; set; }
+
+    /// <summary>FinalTask 数（1号位 求解产出的任务数）</summary>
+    public int FinalTaskCount { get; set; }
+
+    /// <summary>沙盘上下文构建耗时（毫秒）</summary>
+    public long ContextBuildMs { get; set; }
+
+    /// <summary>Pegging 阶段耗时（毫秒）</summary>
+    public long PeggingMs { get; set; }
+
+    /// <summary>1号位 Solver 求解耗时（毫秒）</summary>
+    public long SolverMs { get; set; }
+
+    /// <summary>落盘耗时（毫秒）</summary>
+    public long PersistMs { get; set; }
+
+    /// <summary>本 Domain 总耗时（毫秒）</summary>
+    public long TotalMs { get; set; }
 }

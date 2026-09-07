@@ -21,6 +21,11 @@ public class PeggingResult
     public int PlanVersionId { get; set; }
 
     /// <summary>
+    /// 真实 DomainKey（透传自 PeggingExecutionRequest.DomainKey，供 LogicalProductionDemand 等结果项携带）。
+    /// </summary>
+    public string DomainKey { get; set; } = string.Empty;
+
+    /// <summary>
     /// 需求侧订单ID
     /// </summary>
     public long OrderId { get; set; }
@@ -69,11 +74,6 @@ public class PeggingResult
     /// 内存账本（BOM 遍历的扣减过程，供调试和5号位内部使用）
     /// </summary>
     public List<PeggingLedgerEntry> LedgerEntries { get; set; } = new();
-
-    /// <summary>
-    /// 5号位规则裁决凭证（本次 Pegging 中5号位的裁决结果）
-    /// </summary>
-    public PeggingRuleVoucher? RuleVoucher { get; set; }
 
     /// <summary>
     /// 逻辑生产需求列表（V1.2）

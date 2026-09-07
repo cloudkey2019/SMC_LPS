@@ -83,6 +83,7 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.Test.json", optional: false)
+            .AddJsonFile("appsettings.Test.Local.json", optional: true)
             .Build();
         var authConn = configuration.GetSection("Database:Auth:ConnectionString").Value ?? string.Empty;
 
@@ -97,8 +98,8 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task 发布闭环_规则集参数集策略包全链路_校验发布解析追溯()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasContentSnapshotJsonColumn(),
-            "测试环境缺 APS_Auth 库或 ContentSnapshotJson 列（方案 A 未迁移），需 2号位部署 v5.1.2 后转绿");
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasContentSnapshotJsonColumn() || !TestEnvironment.HasGovernanceAuditLogTable(),
+            "测试环境缺 APS_Auth 库、ContentSnapshotJson 列或 GovernanceAuditLog 表（方案 A/审计 DDL 未迁移），需 2号位部署 v5.1.2 后转绿");
 
         await SetupBaseVersionsAsync();
 
@@ -124,7 +125,8 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
         publishedSpv.IsDefault.Should().BeTrue();
 
         // 默认解析：RunType 命中唯一 PUBLISHED 默认版本
-        var resolved = await _service.ResolveDefaultStrategyProfileVersionAsync("FULL_SCHEDULE");
+        // 注：测试用独立 RunType（LOCAL_RESCHEDULE），避免与生产种子 SP-DEMO-V2.0（FULL_SCHEDULE IsDefault=1）歧义
+        var resolved = await _service.ResolveDefaultStrategyProfileVersionAsync("LOCAL_RESCHEDULE");
         resolved.Should().NotBeNull();
         resolved!.Id.Should().Be(_testStrategyProfileVersionId);
 
@@ -132,7 +134,7 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
         var trace = await _service.GetRunStrategyProfileTraceAsync(_testStrategyProfileVersionId);
         trace.StrategyProfileVersionId.Should().Be(_testStrategyProfileVersionId);
         trace.StrategyProfileCode.Should().NotBeNullOrWhiteSpace();
-        trace.RunType.Should().Be("FULL_SCHEDULE");
+        trace.RunType.Should().Be("LOCAL_RESCHEDULE");
         trace.RuleSetVersionId.Should().Be(_testRuleSetVersionId);
         trace.RuleSetVersionCode.Should().NotBeNullOrWhiteSpace();
         trace.ParameterSetVersionId.Should().Be(_testParameterSetVersionId);
@@ -208,8 +210,8 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
     {
         // P1-01 方案 A 真实持久化端到端链（ContentSnapshotJson 唯一内容真相）：
         // Create → Reload → Update → Validate → Publish → Reload → Snapshot 六块值 → 历史重放
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasContentSnapshotJsonColumn(),
-            "测试库缺 APS_Auth 库或 ContentSnapshotJson 列（方案 A 未迁移），需 2号位部署 v5.1.2 后转绿");
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasContentSnapshotJsonColumn() || !TestEnvironment.HasGovernanceAuditLogTable(),
+            "测试库缺 APS_Auth 库、ContentSnapshotJson 列或 GovernanceAuditLog 表（方案 A/审计 DDL 未迁移），需 2号位部署 v5.1.2 后转绿");
 
         await SetupBaseVersionsAsync();
 
@@ -254,7 +256,9 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
         });
 
         var updated = await _service.GetRuleSetVersionAsync(_testRuleSetVersionId);
-        updated!.DemandPriorityJson.Should().Contain("方案A-紧急订单-U1");
+        // 投影 JSON 为默认编码（非 ASCII 转义为 \uXXXX），按块反序列化后断言解码值，避免转义串比对误判
+        var updatedBlock = JsonSerializer.Deserialize<DemandPriorityBlock>(updated!.DemandPriorityJson!);
+        updatedBlock!.Segments.Should().ContainSingle(s => s.SegmentName == "方案A-紧急订单-U1");
 
         // ③ Validate（规则集/参数集 DRAFT 阶段可校验；策略包引用版本须先 PUBLISHED 才能通过 REF_NOT_PUBLISHED）
         (await _service.ValidateRuleSetVersionForPublishAsync(_testRuleSetVersionId)).IsValid.Should().BeTrue();
@@ -322,10 +326,10 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
             new { Code = $"TEST-PS-{_uniqueSuffix}", Name = "集成测试参数集", Description = "Integration Test", CreatedAt = _now, CreatedBy = "IntegrationTest" },
             db: DatabaseId.APS);
 
-        // 父表：StrategyProfile（RunType=FULL_SCHEDULE 供默认解析命中）
+        // 父表：StrategyProfile（RunType=LOCAL_RESCHEDULE 供默认解析命中；独立 RunType 不与生产种子 FULL_SCHEDULE IsDefault=1 撞歧义）
         _testStrategyProfileId = await _cm.QueryFirstOrDefaultAsync<long>(
             "INSERT INTO [dbo].[StrategyProfile] ([StrategyProfileCode], [StrategyProfileName], [Description], [RunType], [IsActive], [CreatedAt], [CreatedBy]) VALUES (@Code, @Name, @Description, @RunType, 1, @CreatedAt, @CreatedBy); SELECT CAST(SCOPE_IDENTITY() AS BIGINT);",
-            new { Code = $"TEST-SP-{_uniqueSuffix}", Name = "集成测试策略包", Description = "Integration Test", RunType = "FULL_SCHEDULE", CreatedAt = _now, CreatedBy = "IntegrationTest" },
+            new { Code = $"TEST-SP-{_uniqueSuffix}", Name = "集成测试策略包", Description = "Integration Test", RunType = "LOCAL_RESCHEDULE", CreatedAt = _now, CreatedBy = "IntegrationTest" },
             db: DatabaseId.APS);
 
         // 版本表：RuleSetVersion —— 走服务层 CRUD（方案 A P0-01：入参 DemandPriorityJson 为内存字段，

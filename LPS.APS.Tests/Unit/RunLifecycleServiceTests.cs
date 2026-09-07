@@ -67,15 +67,15 @@ public class RunLifecycleServiceTests
             StartedAt = DateTime.UtcNow,
         };
 
-    /// <summary>构造 CANDIDATE 计划版本（默认关联可激活来源 Run 2）</summary>
+    /// <summary>构造 CANDIDATE 计划版本（D7：候选身份在 VersionCategory，Status 走执行词表完成态 Computed；默认关联可激活来源 Run 2）</summary>
     private static PlanVersion CandidateVersion(int id = 5, string? domainKey = "D1", int? sourceScheduleRunId = 2)
         => new()
         {
             Id = id,
             VersionCode = "V-CAND-5",
-            VersionCategory = "RESCHEDULE",
+            VersionCategory = "CANDIDATE",
             DomainKey = domainKey,
-            Status = "CANDIDATE",
+            Status = "Computed",
             SourceScheduleRunId = sourceScheduleRunId,
             CreatedAt = DateTime.UtcNow,
         };
@@ -250,11 +250,11 @@ public class RunLifecycleServiceTests
     }
 
     [Fact]
-    public async Task Confirm_非CANDIDATE状态_抛异常()
+    public async Task Confirm_非候选VersionCategory_抛异常()
     {
-        // Arrange
+        // Arrange（D7：候选身份在 VersionCategory，RESCHEDULE 非候选 → 拒绝）
         var version = CandidateVersion(5);
-        version.Status = "BUILDING";
+        version.VersionCategory = "RESCHEDULE";
         _planVersionRepo.Setup(r => r.GetByIdAsync(5, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
@@ -289,7 +289,7 @@ public class RunLifecycleServiceTests
         await _service.ConfirmCandidateAsync(5, "u1", "基于 Base ACTIVE 的新 Candidate", CancellationToken.None);
 
         // Assert：确认成功，仅记审计，不写 Activated、不转 ACTIVE、不触碰同域 ACTIVE
-        version.Status.Should().Be("CANDIDATE");
+        version.Status.Should().Be("Computed");
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<GovernanceAuditLog>(l =>
                 l.OperationType == "ConfirmCandidate"
@@ -310,7 +310,7 @@ public class RunLifecycleServiceTests
         // Assert（P0-05）：确认不污染 ActivatedAt/ActivatedBy，状态保持 CANDIDATE，不写库
         version.ActivatedAt.Should().BeNull();
         version.ActivatedBy.Should().BeNull();
-        version.Status.Should().Be("CANDIDATE");
+        version.Status.Should().Be("Computed");
         _planVersionRepo.Verify(r => r.UpdateAsync(It.IsAny<PlanVersion>(), It.IsAny<CancellationToken>()), Times.Never);
         _auditRepo.Verify(r => r.AddAsync(
             It.Is<GovernanceAuditLog>(l =>
@@ -431,7 +431,7 @@ public class RunLifecycleServiceTests
                 l.OperationType == "ActivateCandidate"
                 && l.EntityType == "PlanVersion"
                 && l.EntityId == 5
-                && l.BeforeStatus == "CANDIDATE"
+                && l.BeforeStatus == "Computed"
                 && l.AfterStatus == "ACTIVE"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -459,7 +459,7 @@ public class RunLifecycleServiceTests
                 l.OperationType == "ActivateCandidate"
                 && l.EntityType == "PlanVersion"
                 && l.EntityId == 5
-                && l.BeforeStatus == "CANDIDATE"
+                && l.BeforeStatus == "Computed"
                 && l.AfterStatus == "ACTIVE"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -598,5 +598,298 @@ public class RunLifecycleServiceTests
         trace.ExpectedDomainKeysJson.Should().Be("""["D1"]""");
         trace.PlanVersionId.Should().Be(7);
         trace.PlanVersionStatus.Should().Be("ACTIVE");
+    }
+
+    // ==================== CreateCandidateRunAsync（B-1 白天候选运行创建） ====================
+
+    /// <summary>构造白天候选运行创建入参（默认 MANUAL_RESCHEDULE + MANUAL_ADJUSTMENT + D1）</summary>
+    private static CandidateRunCreateSpec DaytimeSpec(
+        string runType = "MANUAL_RESCHEDULE",
+        string purpose = "MANUAL_ADJUSTMENT",
+        string domainKey = "D1",
+        int? basePlanVersionId = null)
+        => new()
+        {
+            RunType = runType,
+            Purpose = purpose,
+            DomainKey = domainKey,
+            BasePlanVersionId = basePlanVersionId,
+            Actor = "u1",
+        };
+
+    /// <summary>构造 Domain=D1 的 Base ACTIVE 计划版本（白天 Candidate 锚定）</summary>
+    private static PlanVersion ActiveBase(int id = 50, string? domainKey = "D1")
+        => new()
+        {
+            Id = id,
+            VersionCode = "V-BASE-50",
+            VersionCategory = "DAILY_BASELINE",
+            DomainKey = domainKey,
+            Status = "ACTIVE",
+            PlanHorizonStart = DateTime.Today,
+            PlanHorizonEnd = DateTime.Today.AddDays(90),
+            CreatedAt = DateTime.UtcNow,
+        };
+
+    /// <summary>构造默认 PUBLISHED 策略包版本列表（默认 1 条，无生效窗口限制）</summary>
+    private static IReadOnlyList<StrategyProfileVersion> DefaultStrategyVersions(int count = 1)
+    {
+        var list = new List<StrategyProfileVersion>(count);
+        for (var i = 0; i < count; i++)
+        {
+            list.Add(new StrategyProfileVersion
+            {
+                Id = 11 + i,
+                Status = "PUBLISHED",
+                IsDefault = true,
+            });
+        }
+        return list;
+    }
+
+    /// <summary>给每个用例铺默认策略版本 mock（合法窗口）</summary>
+    private void SetupDefaultStrategyVersions(int count = 1)
+        => _strategyProfileVersionRepo
+            .Setup(r => r.GetDefaultByRunTypeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DefaultStrategyVersions(count));
+
+    [Fact]
+    public async Task Create_Actor为空_抛异常()
+    {
+        // Arrange
+        var spec = DaytimeSpec();
+        spec.Actor = string.Empty;
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(spec, CancellationToken.None);
+
+        // Assert：不触发任何仓储写
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_RunType非白天候选类_抛异常()
+    {
+        // Arrange（FULL_SCHEDULE / SIMULATION 拒绝创建）
+        var spec = DaytimeSpec(runType: "FULL_SCHEDULE");
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(spec, CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_Purpose不在RunType合法组合_抛异常()
+    {
+        // Arrange（实施包 §十九：MANUAL_RESCHEDULE 仅 MANUAL_ADJUSTMENT；CTP 仅配 INSERT_ORDER_WHATIF）
+        var spec = DaytimeSpec(runType: "MANUAL_RESCHEDULE", purpose: "CTP");
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(spec, CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Create_DomainKey为空_抛异常()
+    {
+        // Arrange
+        var spec = DaytimeSpec(domainKey: string.Empty);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(spec, CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Create_Base版本不存在_抛异常()
+    {
+        // Arrange
+        _planVersionRepo.Setup(r => r.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((PlanVersion?)null);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(basePlanVersionId: 999), CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Create_Base非ACTIVE_抛异常()
+    {
+        // Arrange
+        var baseVersion = ActiveBase();
+        baseVersion.Status = "Created";
+        _planVersionRepo.Setup(r => r.GetByIdAsync(50, It.IsAny<CancellationToken>())).ReturnsAsync(baseVersion);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(basePlanVersionId: 50), CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Create_BaseDomainKey与目标不一致_抛异常()
+    {
+        // Arrange
+        _planVersionRepo.Setup(r => r.GetByIdAsync(50, It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase(domainKey: "D2"));
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(basePlanVersionId: 50), CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Create_未传Base且无当前ACTIVE_抛异常()
+    {
+        // Arrange
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync((PlanVersion?)null);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(), CancellationToken.None);
+
+        // Assert：白天候选必须基于 Base ACTIVE
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_无默认策略版本_抛异常()
+    {
+        // Arrange
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions(0);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(), CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_多默认策略版本歧义_抛异常()
+    {
+        // Arrange（红线 #4：歧义拒绝，不盲目取第一个）
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions(2);
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(), CancellationToken.None);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_合法_MANUAL_RESCHEDULE_冻结基线并审计()
+    {
+        // Arrange：Base ACTIVE + 唯一默认策略版本 + 原子写返回新 Run/壳
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions();
+        _scheduleRunRepo.Setup(r => r.CreateCandidateRunAsync(
+                It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CandidateRunCreatedResult { NewScheduleRunId = 200, NewPlanVersionId = 300 });
+
+        // Act
+        var result = await _service.CreateCandidateRunAsync(DaytimeSpec(), CancellationToken.None);
+
+        // Assert：返回新 Run/壳 Id；冻结 RunType/Domain/Base/策略版本；写 CreateCandidateRun 审计
+        result.NewScheduleRunId.Should().Be(200);
+        result.NewPlanVersionId.Should().Be(300);
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.Is<CandidateRunCreateSpec>(s =>
+                s.RunType == "MANUAL_RESCHEDULE"
+                && s.DomainKey == "D1"
+                && s.BasePlanVersionId == 50),
+            It.IsAny<long>(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _auditRepo.Verify(r => r.AddAsync(
+            It.Is<GovernanceAuditLog>(l =>
+                l.OperationType == "CreateCandidateRun"
+                && l.EntityType == "ScheduleRun"
+                && l.EntityId == 200
+                && l.AfterStatus == "RUNNING"
+                && l.OperatedBy == "u1"
+                && l.Remarks!.Contains("Purpose=MANUAL_ADJUSTMENT")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Create_合法_INSERT_ORDER_WHATIF_CTP_创建允许()
+    {
+        // Arrange（实施包 §十九：INSERT_ORDER_WHATIF+CTP 允许创建；激活由 ActivateCandidateAsync 拦截，已有测试覆盖）
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions();
+        _scheduleRunRepo.Setup(r => r.CreateCandidateRunAsync(
+                It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CandidateRunCreatedResult { NewScheduleRunId = 210, NewPlanVersionId = 310 });
+
+        // Act
+        var result = await _service.CreateCandidateRunAsync(
+            DaytimeSpec(runType: "INSERT_ORDER_WHATIF", purpose: "CTP"), CancellationToken.None);
+
+        // Assert
+        result.NewScheduleRunId.Should().Be(210);
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.Is<CandidateRunCreateSpec>(s => s.RunType == "INSERT_ORDER_WHATIF" && s.Purpose == "CTP"),
+            It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Create_合法_LOCAL_RESCHEDULE_INSERT_RESCHEDULE_成功()
+    {
+        // Arrange
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions();
+        _scheduleRunRepo.Setup(r => r.CreateCandidateRunAsync(
+                It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CandidateRunCreatedResult { NewScheduleRunId = 220, NewPlanVersionId = 320 });
+
+        // Act
+        var result = await _service.CreateCandidateRunAsync(
+            DaytimeSpec(runType: "LOCAL_RESCHEDULE", purpose: "INSERT_RESCHEDULE"), CancellationToken.None);
+
+        // Assert
+        result.NewScheduleRunId.Should().Be(220);
+        _scheduleRunRepo.Verify(r => r.CreateCandidateRunAsync(
+            It.Is<CandidateRunCreateSpec>(s => s.RunType == "LOCAL_RESCHEDULE" && s.Purpose == "INSERT_RESCHEDULE"),
+            It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Create_仓储原子写失败_异常向上传播且不写审计()
+    {
+        // Arrange：Run 或壳任一失败（mock 抛）→ 服务不吞异常、不写审计
+        _planVersionRepo.Setup(r => r.GetActiveByDomainKeyAsync("D1", It.IsAny<CancellationToken>())).ReturnsAsync(ActiveBase());
+        SetupDefaultStrategyVersions();
+        _scheduleRunRepo.Setup(r => r.CreateCandidateRunAsync(
+                It.IsAny<CandidateRunCreateSpec>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("模拟原子写失败"));
+
+        // Act
+        var act = async () => await _service.CreateCandidateRunAsync(DaytimeSpec(), CancellationToken.None);
+
+        // Assert：异常向上传播；不产生审计（无孤立写入）
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _auditRepo.Verify(r => r.AddAsync(It.IsAny<GovernanceAuditLog>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

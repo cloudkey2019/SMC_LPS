@@ -18,17 +18,20 @@ namespace LPS.APS.Core.Interfaces;
 /// </summary>
 public interface IGovernanceVersionService
 {
-    /// <summary>发布规则集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）</summary>
-    Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, CancellationToken ct = default);
+    /// <summary>发布规则集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）。G10：changeReason 记录于审计日志（版本表无 Remarks 列）。</summary>
+    Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
 
-    /// <summary>发布参数集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）</summary>
-    Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, CancellationToken ct = default);
+    /// <summary>发布参数集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）。G10：changeReason 记录于审计日志（版本表无 Remarks 列）。</summary>
+    Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
 
     /// <summary>对比两个规则集版本的差异（阶段 A-8：版本溯源）</summary>
     Task<VersionDiffResult> CompareRuleSetVersionsAsync(long sourceVersionId, long targetVersionId, CancellationToken ct = default);
 
     /// <summary>对比两个参数集版本的差异（阶段 A-8：版本溯源）</summary>
     Task<VersionDiffResult> CompareParameterSetVersionsAsync(long sourceVersionId, long targetVersionId, CancellationToken ct = default);
+
+    /// <summary>对比两个策略包版本的差异（G5/D3：3-4联调；V1 可后置，4号位策略包对比页）</summary>
+    Task<VersionDiffResult> CompareStrategyProfileVersionsAsync(long sourceVersionId, long targetVersionId, CancellationToken ct = default);
 
     /// <summary>校验规则集版本是否可发布（阶段 A-5：发布前完整校验）</summary>
     Task<PublishValidationResult> ValidateRuleSetVersionForPublishAsync(long ruleSetVersionId, CancellationToken ct = default);
@@ -47,8 +50,20 @@ public interface IGovernanceVersionService
     /// 发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）
     /// 发布前强制校验（与 P0-05 一致，无绕过路径）。
     /// IsDefault=1 时：先清同 Profile 其他默认（ClearDefaultFlagAsync）再置位，避免 UQ_StrategyProfileVersion_DefaultPublished 冲突。
+    /// G10：changeReason 记录于审计日志（版本表无 Remarks 列）。
     /// </summary>
-    Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default);
+    Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
+
+    // ==================== G2：版本停用（3-4联调；Retired↔DISABLED 语义映射 §8.4） ====================
+
+    /// <summary>停用规则集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
+    Task DisableRuleSetVersionAsync(long ruleSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
+
+    /// <summary>停用参数集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
+    Task DisableParameterSetVersionAsync(long parameterSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
+
+    /// <summary>停用策略包版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
+    Task DisableStrategyProfileVersionAsync(long strategyProfileVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
 
     /// <summary>
     /// 解析当前有效默认 PUBLISHED 策略包版本（P0-06：跨号位冻结语义，C2-3）
@@ -57,6 +72,17 @@ public interface IGovernanceVersionService
     /// 结果：0 个 → null；恰 1 个 → 返回；&gt;1 个 → 抛 InvalidOperationException（歧义，报配置错误，不随机取一个）。
     /// </summary>
     Task<StrategyProfileVersion?> ResolveDefaultStrategyProfileVersionAsync(string? runType, DateTime? asOf = null, CancellationToken ct = default);
+
+    // ==================== G3：当前 Published 版本便捷查询（3-4联调；C2，可替代：版本列表 + 前端过滤） ====================
+
+    /// <summary>规则集当前生效 PUBLISHED 版本直达（G3/C2：生效窗口过滤；多候选报错收敛不随机取——红线 #4）</summary>
+    Task<RuleSetVersion?> GetPublishedRuleSetVersionAsync(long ruleSetId, CancellationToken ct = default);
+
+    /// <summary>参数集当前生效 PUBLISHED 版本直达（G3/C2）</summary>
+    Task<ParameterSetVersion?> GetPublishedParameterSetVersionAsync(long parameterSetId, CancellationToken ct = default);
+
+    /// <summary>策略包当前生效 PUBLISHED 版本直达（G3/C2）</summary>
+    Task<StrategyProfileVersion?> GetPublishedStrategyProfileVersionAsync(long strategyProfileId, CancellationToken ct = default);
 
     /// <summary>Run 引用追溯（P0-06：StrategyProfileVersion → 父 Profile + 引用的 RuleSet/ParameterSet 版本）</summary>
     Task<RunStrategyProfileTrace> GetRunStrategyProfileTraceAsync(long strategyProfileVersionId, CancellationToken ct = default);

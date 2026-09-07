@@ -1,5 +1,6 @@
 using FluentAssertions;
 using LPS.APS.Application.Services;
+using LPS.APS.Core.DTOs.Governance;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Engine.Data;
 using LPS.APS.Engine.Repositories.Auth;
@@ -41,6 +42,9 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     private long _testParameterSetVersionId;
     private int _testScheduleRunId;
     private int _testPlanVersionId;
+    private int _testBasePlanVersionId;
+    private int _testCreatedRunId;
+    private int _testRecoveredRunId;
     private readonly string _uniqueSuffix;
     private readonly DateTime _now;
 
@@ -74,6 +78,7 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.Test.json", optional: false)
+            .AddJsonFile("appsettings.Test.Local.json", optional: true)
             .Build();
         var authConn = configuration.GetSection("Database:Auth:ConnectionString").Value ?? string.Empty;
 
@@ -90,15 +95,16 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     {
         Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
         Skip.If(!TestEnvironment.HasScheduleRunExpectedDomainKeysColumn(), "测试库 ScheduleRun 缺 ExpectedDomainKeysJson 列（冻结 DDL v5.1.2 未迁移），需 2号位迁移后转绿");
+        Skip.If(!TestEnvironment.HasGovernanceAuditLogTable(), "测试库缺 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
 
         // 建 FAILED 运行（预期 Domain 冻结 ["D1","D2"]，引用真实策略包版本）
         await SetupFailedRunAsync();
 
-        // 恢复：新建 RUNNING 继承基线
-        var newRunId = await _service.RecoverFailedRunAsync(_testScheduleRunId, CancellationToken.None);
+        // 恢复：新建 RUNNING 继承基线（新 Run Id 必须存字段，供 Dispose 清理——否则引用策略版本残留，删版本 FK 冲突）
+        _testRecoveredRunId = await _service.RecoverFailedRunAsync(_testScheduleRunId, CancellationToken.None);
 
         // 新记录落库验证：RUNNING + 继承 RunType/StrategyProfileVersionId/ExpectedDomainKeysJson
-        var newRun = await _scheduleRunRepo.GetByIdAsync(newRunId);
+        var newRun = await _scheduleRunRepo.GetByIdAsync(_testRecoveredRunId);
         newRun.Should().NotBeNull();
         newRun!.Status.Should().Be("RUNNING");
         newRun.RunType.Should().Be("FULL_SCHEDULE");
@@ -109,6 +115,38 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         var oldRun = await _scheduleRunRepo.GetByIdAsync(_testScheduleRunId);
         oldRun!.Status.Should().Be("FAILED");
         oldRun.ErrorMessage.Should().Be("致命错误");
+    }
+
+    [SkippableFact]
+    public async Task Run列表查询_G4过滤排序与take_真实库()
+    {
+        Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
+        Skip.If(!TestEnvironment.HasScheduleRunExpectedDomainKeysColumn(), "测试库 ScheduleRun 缺 ExpectedDomainKeysJson 列（冻结 DDL v5.1.2 未迁移），需 2号位迁移后转绿");
+
+        // 建 FAILED FULL_SCHEDULE 运行（含本次测试可识别的运行）
+        await SetupFailedRunAsync();
+
+        // 1) status 过滤：FAILED 命中，COMPLETED 不命中
+        var failedRuns = await _scheduleRunRepo.GetListAsync(status: "FAILED", ct: CancellationToken.None);
+        failedRuns.Should().Contain(r => r.Id == _testScheduleRunId);
+
+        var completedRuns = await _scheduleRunRepo.GetListAsync(status: "COMPLETED", ct: CancellationToken.None);
+        completedRuns.Should().NotContain(r => r.Id == _testScheduleRunId);
+
+        // 2) runType 过滤：FULL_SCHEDULE 命中
+        var fullRuns = await _scheduleRunRepo.GetListAsync(runType: "FULL_SCHEDULE", ct: CancellationToken.None);
+        fullRuns.Should().Contain(r => r.Id == _testScheduleRunId);
+
+        // 3) 排序：Id 倒序（最新在前），且返回行含本次新建运行
+        var newest = await _scheduleRunRepo.GetListAsync(take: 10, ct: CancellationToken.None);
+        newest.Should().NotBeEmpty();
+        var ids = newest.Select(r => r.Id).ToList();
+        ids.Should().BeInDescendingOrder();
+        ids.Should().Contain(_testScheduleRunId);
+
+        // 4) take 上限约束：take=1 只返回 1 行
+        var single = await _scheduleRunRepo.GetListAsync(take: 1, ct: CancellationToken.None);
+        single.Should().HaveCount(1);
     }
 
     [SkippableFact]
@@ -136,14 +174,15 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task 候选确认与激活_真实库落库()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(),
+            "测试环境缺 APS_Auth 库或 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
 
         await SetupCandidateAsync();
 
         // 确认（二轮复审 P0-05）：仅记审计，不写 ActivatedAt/ActivatedBy、不转 ACTIVE
         await _service.ConfirmCandidateAsync(_testPlanVersionId, "tester", "集成测试确认", CancellationToken.None);
         var confirmed = await _planVersionRepo.GetByIdAsync(_testPlanVersionId);
-        confirmed!.Status.Should().Be("CANDIDATE");
+        confirmed!.Status.Should().Be("Computed");
         confirmed.ActivatedAt.Should().BeNull();
         confirmed.ActivatedBy.Should().BeNull();
 
@@ -153,6 +192,138 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         activated!.Status.Should().Be("ACTIVE");
         activated.ActivatedAt.Should().NotBeNull();
         activated.ActivatedBy.Should().Be("tester");
+    }
+
+    [SkippableFact]
+    public async Task 创建白天候选运行_RUNNING运行加BUILDING壳_真实库()
+    {
+        Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
+        Skip.If(!TestEnvironment.HasScheduleRunExpectedDomainKeysColumn(), "测试库 ScheduleRun 缺 ExpectedDomainKeysJson 列（冻结 DDL v5.1.2 未迁移），需 2号位迁移后转绿");
+        Skip.If(!TestEnvironment.HasGovernanceAuditLogTable(), "测试库缺 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
+
+        // 建前置：MANUAL_RESCHEDULE 默认 PUBLISHED 策略版本 + 唯一 Domain 的 ACTIVE Base 计划版本
+        // （唯一 Domain 防 xUnit 并行下其他用例同域 ACTIVE 触发 UQ_PlanVersion_OneActivePerDomain）
+        var domainKey = $"D1-{_uniqueSuffix[^8..]}";
+        await SetupBaseActiveAndDefaultStrategyAsync(domainKey);
+
+        // 创建白天候选运行（未传 BasePlanVersionId → 服务解析当前 ACTIVE 为 Base）
+        var result = await _service.CreateCandidateRunAsync(new CandidateRunCreateSpec
+        {
+            RunType = "MANUAL_RESCHEDULE",
+            Purpose = "MANUAL_ADJUSTMENT",
+            DomainKey = domainKey,
+            Actor = "tester",
+        }, CancellationToken.None);
+
+        // 新 Run 落库：RUNNING + BasePlanVersionId + 冻结 Domain 基线 + 继承默认策略版本
+        _testCreatedRunId = result.NewScheduleRunId;
+        result.NewScheduleRunId.Should().BeGreaterThan(0);
+        result.NewPlanVersionId.Should().BeGreaterThan(0);
+        var run = await _scheduleRunRepo.GetByIdAsync(result.NewScheduleRunId);
+        run.Should().NotBeNull();
+        run!.Status.Should().Be("RUNNING");
+        run.RunType.Should().Be("MANUAL_RESCHEDULE");
+        run.BasePlanVersionId.Should().Be(_testBasePlanVersionId);
+        run.StrategyProfileVersionId.Should().Be(_testStrategyProfileVersionId);
+        run.ExpectedDomainKeysJson.Should().Be($"""["{domainKey}"]""");
+
+        // 新壳落库：CANDIDATE + Created + SourceScheduleRunId=新 Run（白天候选壳初始态，D7 词表）
+        _testPlanVersionId = result.NewPlanVersionId;
+        var shell = await _planVersionRepo.GetByIdAsync(result.NewPlanVersionId);
+        shell.Should().NotBeNull();
+        shell!.VersionCategory.Should().Be("CANDIDATE");
+        shell.Status.Should().Be("Created");
+        shell.DomainKey.Should().Be(domainKey);
+        shell.SourceScheduleRunId.Should().Be(result.NewScheduleRunId);
+    }
+
+    /// <summary>
+    /// 建 B-1 前置：MANUAL_RESCHEDULE 默认 PUBLISHED 策略版本（IsDefault=1、生效窗口覆盖当前）
+    /// + DomainKey 对应 ACTIVE Base 计划版本（白天 Candidate 锚定，只读）。
+    /// </summary>
+    private async Task SetupBaseActiveAndDefaultStrategyAsync(string domainKey)
+    {
+        var ruleSetId = await _cm.QueryFirstOrDefaultAsync<long>(
+            "INSERT INTO [dbo].[RuleSet] ([RuleSetCode], [RuleSetName], [Description], [IsActive], [CreatedAt], [CreatedBy]) VALUES (@Code, @Name, @Description, 1, @CreatedAt, @CreatedBy); SELECT CAST(SCOPE_IDENTITY() AS BIGINT);",
+            new { Code = $"TEST-RS-MR-{_uniqueSuffix}", Name = "集成测试规则集", Description = "Integration Test", CreatedAt = _now, CreatedBy = "IntegrationTest" },
+            db: DatabaseId.APS);
+        var parameterSetId = await _cm.QueryFirstOrDefaultAsync<long>(
+            "INSERT INTO [dbo].[ParameterSet] ([ParameterSetCode], [ParameterSetName], [Description], [IsActive], [CreatedAt], [CreatedBy]) VALUES (@Code, @Name, @Description, 1, @CreatedAt, @CreatedBy); SELECT CAST(SCOPE_IDENTITY() AS BIGINT);",
+            new { Code = $"TEST-PS-MR-{_uniqueSuffix}", Name = "集成测试参数集", Description = "Integration Test", CreatedAt = _now, CreatedBy = "IntegrationTest" },
+            db: DatabaseId.APS);
+        var strategyProfileId = await _cm.QueryFirstOrDefaultAsync<long>(
+            "INSERT INTO [dbo].[StrategyProfile] ([StrategyProfileCode], [StrategyProfileName], [Description], [RunType], [IsActive], [CreatedAt], [CreatedBy]) VALUES (@Code, @Name, @Description, @RunType, 1, @CreatedAt, @CreatedBy); SELECT CAST(SCOPE_IDENTITY() AS BIGINT);",
+            new { Code = $"TEST-SP-MR-{_uniqueSuffix}", Name = "集成测试策略包", Description = "Integration Test", RunType = "MANUAL_RESCHEDULE", CreatedAt = _now, CreatedBy = "IntegrationTest" },
+            db: DatabaseId.APS);
+
+        var ruleSetVersion = await _ruleSetVersionRepo.AddAsync(new RuleSetVersion
+        {
+            RuleSetId = ruleSetId,
+            VersionCode = $"TEST-R-MR-{_now:yyyyMMddHHmmss}",
+            Status = "PUBLISHED",
+            CreatedAt = _now,
+            CreatedBy = "IntegrationTest",
+        });
+        _testRuleSetVersionId = ruleSetVersion.Id;
+
+        var parameterSetVersion = await _parameterSetVersionRepo.AddAsync(new ParameterSetVersion
+        {
+            ParameterSetId = parameterSetId,
+            VersionCode = $"TEST-P-MR-{_now:yyyyMMddHHmmss}",
+            Status = "PUBLISHED",
+            CreatedAt = _now,
+            CreatedBy = "IntegrationTest",
+        });
+        _testParameterSetVersionId = parameterSetVersion.Id;
+
+        var spv = await _strategyProfileVersionRepo.AddAsync(new StrategyProfileVersion
+        {
+            StrategyProfileId = strategyProfileId,
+            VersionCode = $"TEST-S-MR-{_now:yyyyMMddHHmmss}",
+            RuleSetVersionId = _testRuleSetVersionId,
+            ParameterSetVersionId = _testParameterSetVersionId,
+            Status = "PUBLISHED",
+            IsDefault = true,
+            EffectiveFrom = _now.AddDays(-1),
+            EffectiveTo = _now.AddDays(1),
+            CreatedAt = _now,
+            CreatedBy = "IntegrationTest",
+        });
+        _testStrategyProfileVersionId = spv.Id;
+
+        // COMPLETED 运行 + DomainKey 对应 ACTIVE Base 计划版本（白天 Candidate 锚定，只读）
+        _testScheduleRunId = await _cm.QueryFirstOrDefaultAsync<int>(
+            @"INSERT INTO [dbo].[ScheduleRun]
+                ([RunType], [Status], [TriggeredBy], [DataCutoffTime],
+                 [StrategyProfileVersionId], [ExpectedDomainKeysJson], [StartedAt], [CompletedAt], [CreatedAt])
+              VALUES
+                ('MANUAL_RESCHEDULE', 'COMPLETED', 'Hangfire', GETDATE(),
+                 @StrategyProfileVersionId, @ExpectedDomainKeysJson, GETDATE(), GETDATE(), GETDATE());
+              SELECT CAST(SCOPE_IDENTITY() AS INT);",
+            new
+            {
+                StrategyProfileVersionId = _testStrategyProfileVersionId,
+                ExpectedDomainKeysJson = $"""["{domainKey}"]""",
+            },
+            db: DatabaseId.APS);
+
+        _testBasePlanVersionId = await _cm.QueryFirstOrDefaultAsync<int>(
+            @"INSERT INTO [dbo].[PlanVersion]
+                ([VersionCode], [VersionCategory], [DomainKey], [Status], [SourceScheduleRunId],
+                 [PlanHorizonStart], [PlanHorizonEnd], [ComputeMode], [CreatedBy], [CreatedAt])
+              VALUES
+                (@VersionCode, 'RESCHEDULE', @DomainKey, 'ACTIVE', @SourceScheduleRunId,
+                 @PlanHorizonStart, @PlanHorizonEnd, 'SIMULATION', 'IntegrationTest', GETDATE());
+              SELECT CAST(SCOPE_IDENTITY() AS INT);",
+            new
+            {
+                VersionCode = $"V-BASE-{_uniqueSuffix}",
+                DomainKey = domainKey,
+                SourceScheduleRunId = _testScheduleRunId,
+                PlanHorizonStart = DateTime.Today,
+                PlanHorizonEnd = DateTime.Today.AddDays(90),
+            },
+            db: DatabaseId.APS);
     }
 
     // ==================== 数据准备 ====================
@@ -201,14 +372,18 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
         _testPlanVersionId = await _cm.QueryFirstOrDefaultAsync<int>(
             @"INSERT INTO [dbo].[PlanVersion]
-                ([VersionCode], [VersionCategory], [DomainKey], [Status], [SourceScheduleRunId], [CreatedAt])
+                ([VersionCode], [VersionCategory], [DomainKey], [Status], [SourceScheduleRunId],
+                 [PlanHorizonStart], [PlanHorizonEnd], [ComputeMode], [CreatedBy], [CreatedAt])
               VALUES
-                (@VersionCode, 'RESCHEDULE', 'D1', 'ACTIVE', @SourceScheduleRunId, GETDATE());
+                (@VersionCode, 'RESCHEDULE', 'D1', 'ACTIVE', @SourceScheduleRunId,
+                 @PlanHorizonStart, @PlanHorizonEnd, 'SIMULATION', 'IntegrationTest', GETDATE());
               SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new
             {
                 VersionCode = $"V-{_uniqueSuffix}",
                 SourceScheduleRunId = _testScheduleRunId,
+                PlanHorizonStart = _now,
+                PlanHorizonEnd = _now.AddDays(30),
             },
             db: DatabaseId.APS);
     }
@@ -227,14 +402,18 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
         _testPlanVersionId = await _cm.QueryFirstOrDefaultAsync<int>(
             @"INSERT INTO [dbo].[PlanVersion]
-                ([VersionCode], [VersionCategory], [DomainKey], [Status], [SourceScheduleRunId], [CreatedAt])
+                ([VersionCode], [VersionCategory], [DomainKey], [Status], [SourceScheduleRunId],
+                 [PlanHorizonStart], [PlanHorizonEnd], [ComputeMode], [CreatedBy], [CreatedAt])
               VALUES
-                (@VersionCode, 'RESCHEDULE', 'D1', 'CANDIDATE', @SourceScheduleRunId, GETDATE());
+                (@VersionCode, 'CANDIDATE', 'D1', 'Computed', @SourceScheduleRunId,
+                 @PlanHorizonStart, @PlanHorizonEnd, 'SIMULATION', 'IntegrationTest', GETDATE());
               SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new
             {
                 VersionCode = $"V-CAND-{_uniqueSuffix}",
                 SourceScheduleRunId = _testScheduleRunId,
+                PlanHorizonStart = _now,
+                PlanHorizonEnd = _now.AddDays(30),
             },
             db: DatabaseId.APS);
     }
@@ -300,9 +479,26 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
     private async Task CleanupTestDataAsync()
     {
+        // FK 依赖倒序：PlanVersion(→SourceScheduleRunId) → ScheduleRun(→StrategyProfileVersionId) → StrategyProfileVersion(→RuleSet/ParameterSetVersion)
+        if (_testBasePlanVersionId > 0)
+        {
+            await _cm.ExecuteAsync("DELETE FROM PlanVersion WHERE Id = @Id", new { Id = _testBasePlanVersionId }, db: DatabaseId.APS);
+        }
         if (_testPlanVersionId > 0)
         {
             await _cm.ExecuteAsync("DELETE FROM PlanVersion WHERE Id = @Id", new { Id = _testPlanVersionId }, db: DatabaseId.APS);
+        }
+        if (_testCreatedRunId > 0)
+        {
+            await _cm.ExecuteAsync("DELETE FROM ScheduleRun WHERE Id = @Id", new { Id = _testCreatedRunId }, db: DatabaseId.APS);
+        }
+        if (_testScheduleRunId > 0)
+        {
+            await _cm.ExecuteAsync("DELETE FROM ScheduleRun WHERE Id = @Id", new { Id = _testScheduleRunId }, db: DatabaseId.APS);
+        }
+        if (_testRecoveredRunId > 0)
+        {
+            await _cm.ExecuteAsync("DELETE FROM ScheduleRun WHERE Id = @Id", new { Id = _testRecoveredRunId }, db: DatabaseId.APS);
         }
         if (_testStrategyProfileVersionId > 0)
         {
@@ -315,10 +511,6 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         if (_testParameterSetVersionId > 0)
         {
             await _cm.ExecuteAsync("DELETE FROM ParameterSetVersion WHERE Id = @Id", new { Id = _testParameterSetVersionId }, db: DatabaseId.APS);
-        }
-        if (_testScheduleRunId > 0)
-        {
-            await _cm.ExecuteAsync("DELETE FROM ScheduleRun WHERE Id = @Id", new { Id = _testScheduleRunId }, db: DatabaseId.APS);
         }
     }
 }

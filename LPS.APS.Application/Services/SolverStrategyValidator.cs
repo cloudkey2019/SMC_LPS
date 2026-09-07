@@ -26,6 +26,7 @@ public sealed class SolverStrategyValidator
         ValidateSplit(block, errors);
         ValidateSetup(block, errors);
         ValidateStageOverlap(block, errors);
+        ValidateMaxIterations(block, errors);
 
         return new ValidationResult(errors.Count == 0, errors, warnings);
     }
@@ -92,6 +93,15 @@ public sealed class SolverStrategyValidator
         if (block.StageOverlap.ThresholdPercent is < 0 or > 100)
         {
             errors.Add($"StageOverlap.ThresholdPercent 必须在 0~100 之间（当前：{block.StageOverlap.ThresholdPercent}）");
+        }
+    }
+
+    /// <summary>MaxIterations：求解迭代上限必须为正（默认 1000，DTO 注释）</summary>
+    private static void ValidateMaxIterations(SolverStrategyBlock block, List<string> errors)
+    {
+        if (block.MaxIterations <= 0)
+        {
+            errors.Add($"MaxIterations 必须为正（当前：{block.MaxIterations}）");
         }
     }
 }

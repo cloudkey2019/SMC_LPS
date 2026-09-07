@@ -30,6 +30,7 @@ public class DemandPriorityIntegrationTests : IDisposable
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.Test.json", optional: false)
+            .AddJsonFile("appsettings.Test.Local.json", optional: true)
             .Build();
 
         var loggerFactory = LoggerFactory.Create(builder => { });

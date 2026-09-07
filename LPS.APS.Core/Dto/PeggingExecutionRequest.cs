@@ -15,6 +15,12 @@ public class PeggingExecutionRequest
     public int PlanVersionId { get; set; }
 
     /// <summary>
+    /// 真实 DomainKey（= 本 PlanVersion 的 DomainKey，由编排层从 PlanVersion.DomainKey 读取传入）。
+    /// 禁止用 PlanVersionId / ScheduleRunId / FACTORY_{factoryId} 冒充（PM 终裁 2026-09-02）。
+    /// </summary>
+    public string DomainKey { get; set; } = string.Empty;
+
+    /// <summary>
     /// 订单ID列表（批量 Pegging）
     /// </summary>
     public List<long> OrderIds { get; set; } = new();
@@ -55,14 +61,10 @@ public class PeggingExecutionRequest
     public List<int> ProductFamilyIds { get; set; } = new();
 
     /// <summary>
-    /// 拓扑排序结果（01:50 静态扫描的输出）
+    /// 前序 Domain 成功后的共享 Resource 占用块（FULL §9）。
+    /// 由编排层在逐 Domain 串行时累积传入，最终透传至 DomainSolveRequest.UpstreamDomainResourceBlocks。
     /// </summary>
-    public Dictionary<int, int> TopologicalOrder { get; set; } = new();
-
-    /// <summary>
-    /// 虚拟库存余额（上游域的产出）
-    /// </summary>
-    public List<VirtualInventoryItem> VirtualInventory { get; set; } = new();
+    public IReadOnlyList<ResourceBlock>? UpstreamResourceBlocks { get; set; }
 
     /// <summary>
     /// 是否强制重新 Pegging（忽略冻结区）
@@ -89,45 +91,4 @@ public class PeggingExecutionRequest
     /// V1.2：用于传递给1号位IFiniteCapacityScheduler的完整上下文
     /// </summary>
     public Models.Scheduling.SchedulingContext? SchedulingContext { get; set; }
-}
-
-/// <summary>
-/// 虚拟库存项（跨域传递）
-/// </summary>
-public class VirtualInventoryItem
-{
-    /// <summary>
-    /// 物料ID
-    /// </summary>
-    public int MaterialId { get; set; }
-
-    /// <summary>
-    /// 工厂代码
-    /// </summary>
-    public string FactoryCode { get; set; } = string.Empty;
-
-    /// <summary>
-    /// 上游产品族ID
-    /// </summary>
-    public int SourceProductFamilyId { get; set; }
-
-    /// <summary>
-    /// 虚拟可用量
-    /// </summary>
-    public decimal VirtualAvailableQuantity { get; set; }
-
-    /// <summary>
-    /// 供应可用时间
-    /// </summary>
-    public DateTime AvailableAt { get; set; }
-
-    /// <summary>
-    /// 上游 Task ID
-    /// </summary>
-    public long? UpstreamTaskId { get; set; }
-
-    /// <summary>
-    /// 拓扑序号
-    /// </summary>
-    public int TopologicalOrder { get; set; }
 }

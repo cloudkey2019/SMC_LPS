@@ -143,12 +143,6 @@ public class SchedulingContext
     public Dictionary<string, decimal> MESRemainingQty { get; set; } = new();
 
     /// <summary>
-    /// 本次计划版本涉及的产品族ID列表（阶段1 装载，供3号位分域调度使用）
-    /// 【3号位消费】RunDomainSchedulingAsync 按此列表构建 layerMap
-    /// </summary>
-    public List<int> ProductFamilyIds { get; set; } = new();
-
-    /// <summary>
     /// 拼装 MES 进度键
     /// </summary>
     public static string BuildMESKey(string productionInstructionNo, string materialCode, string stageCode)

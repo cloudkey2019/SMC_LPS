@@ -4,6 +4,7 @@ obj/
 .vs/
 *.exe
 *.dll
+*.pdb
 *.log
 *.zip
 *.rar
@@ -13,3 +14,10 @@ bfg.jar
 ..bfg-report/
 bfg.jar
 ..bfg-report/
+
+# 本地真实凭据（不入库）：appsettings.Test.Local.json 覆盖 Test.json 的连接密码
+appsettings.Test.Local.json
+
+# SVN 冲突残留（.mine/.r<版本>/.working）
+*.mine
+*.r[0-9]*

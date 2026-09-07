@@ -56,4 +56,45 @@ public class GovernanceAuditLogRepository : IGovernanceAuditLogRepository
             .OrderByDescending(log => log.OperatedAt)
             .ToListAsync(ct);
     }
+
+    /// <summary>组合条件查询审计日志（G6：实体类型/实体ID/时间范围 可空组合；EF 动态过滤，参数化无注入面）</summary>
+    public async Task<IReadOnlyList<GovernanceAuditLog>> QueryAsync(
+        string? entityType = null,
+        long? entityId = null,
+        DateTime? from = null,
+        DateTime? to = null,
+        int? take = null,
+        CancellationToken ct = default)
+    {
+        IQueryable<GovernanceAuditLog> query = _context.GovernanceAuditLogs.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(entityType))
+        {
+            query = query.Where(log => log.EntityType == entityType);
+        }
+
+        if (entityId.HasValue)
+        {
+            query = query.Where(log => log.EntityId == entityId.Value);
+        }
+
+        if (from.HasValue)
+        {
+            query = query.Where(log => log.OperatedAt >= from.Value);
+        }
+
+        if (to.HasValue)
+        {
+            query = query.Where(log => log.OperatedAt <= to.Value);
+        }
+
+        query = query.OrderByDescending(log => log.OperatedAt);
+
+        if (take.HasValue)
+        {
+            query = query.Take(take.Value);
+        }
+
+        return await query.ToListAsync(ct);
+    }
 }

@@ -7,6 +7,7 @@ internal class PlanVersionInfoDto
 {
     public int Id { get; set; }
     public string VersionCode { get; set; } = string.Empty;
+    public string DomainKey { get; set; } = string.Empty;
     public DateTime PlanHorizonStart { get; set; }
     public DateTime PlanHorizonEnd { get; set; }
     public int SourceScheduleRunId { get; set; }

@@ -10,7 +10,7 @@ public static class BusinessRuleServiceExtensions
 {
     /// <summary>
     /// 注册业务规则服务（Scrutor 自动扫描）
-    /// 新增规则只需在 Rules 命名空间下创建 IXxxRule + XxxRule，无需手动注册
+    /// V1正式路径：Calculators / Services / Repositories / Loaders / Converters
     /// </summary>
     public static IServiceCollection AddBusinessRuleServices(this IServiceCollection services)
     {
@@ -20,8 +20,12 @@ public static class BusinessRuleServiceExtensions
             .FromAssemblies(assembly)
                 .AddClasses(classes => classes.Where(t =>
                     t.Namespace != null &&
-                    t.Namespace.StartsWith("LPS.APS.BusinessRules.Rules")))
-                .AsImplementedInterfaces()
+                    (t.Namespace.StartsWith("LPS.APS.BusinessRules.Calculators") ||
+                     t.Namespace.StartsWith("LPS.APS.BusinessRules.Services") ||
+                     t.Namespace.StartsWith("LPS.APS.BusinessRules.Repositories") ||
+                     t.Namespace.StartsWith("LPS.APS.BusinessRules.Loaders") ||
+                     t.Namespace.StartsWith("LPS.APS.BusinessRules.Converters"))))
+                .AsSelfWithInterfaces()
                 .WithScopedLifetime()
         );
 

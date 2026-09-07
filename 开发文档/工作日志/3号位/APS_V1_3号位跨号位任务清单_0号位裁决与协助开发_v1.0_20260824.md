@@ -12,7 +12,9 @@
 - 契约文档《05_3号位和1号位对外契约.md》§6.3（SchedulingOrchestrator 依赖）/ §6.10.5（ContentSnapshotJson 子块）/ §7.0（冻结契约 IFiniteCapacityScheduler）
 - 项目红线：红线 #5（接口即契约）、红线 #6（DB 结构变更 2号位 专属执行）
 
-**当前基线（2026-08-24）**：单测 **114/114 全绿**；集成测试 **115 pass / 13 skip / 1 fail**——唯一失败为 `v5.1.2: 完整排程流程集成测试`（RealScheduling DI：`Unable to resolve service for type 'LPS.APS.Scheduling.Solvers.FiniteCapacitySolver'`）；13 个 skip 为方案 A 集成测试（测试库未迁移，按动态 Skip 约定待 2号位 迁移后自动转绿）。
+**当前基线（2026-08-24 首版）**：单测 **114/114 全绿**；集成测试 **115 pass / 13 skip / 1 fail**——唯一失败为 `v5.1.2: 完整排程流程集成测试`（RealScheduling DI：`Unable to resolve service for type 'LPS.APS.Scheduling.Solvers.FiniteCapacitySolver'`）；13 个 skip 为方案 A 集成测试（测试库未迁移，按动态 Skip 约定待 2号位 迁移后自动转绿）。
+
+> **2026-08-27 基线更新**（详见 §七）：集成测试 **124 pass / 5 skip / 0 fail（总计 129）**——C1（ContentSnapshotJson 迁移）已完成、13 方案A skip 转绿；`v5.1.2: 完整排程流程集成测试` 已转绿（工作树 SchedulingOrchestrator 重构依赖接口 + 3号位 修复 PeggingOrchestrator SchedulingContext 透传，见《APS_V1_3号位越线自查与处置提报_20260827.md》§三）；剩余 5 skip = 2号位 待建 `GovernanceAuditLog` 表（3）+ `ScheduleRun.ExpectedDomainKeysJson` 列（2）。
 
 ---
 
@@ -20,10 +22,12 @@
 
 | 分类 | 编号 | 任务 | 负责号位 | 优先级 | 前置依赖 | 验收判据 | 状态 |
 |---|---|---|---|---|---|---|---|
-| 0号位 裁决 | **R1** | SchedulingOrchestrator DI 缺口修复方向裁决 | 0号位 | **P0** | — | 0号位 书面裁决；C2 按其执行后 `v5.1.2` 转绿 | 待裁决 |
-| 0号位 裁决 | **R2** | 集成测试验收口径裁决（迁移前置下 Skip 是否可验收） | 0号位 | **P1** | — | 0号位 明确验收口径 | 待裁决 |
-| 2号位 协助 | **C1** | 测试库 v5.1.2 迁移（ContentSnapshotJson 列） | 2号位 | **P0** | 方案 A（已裁决） | 13 个 Skip 集成测试自动转绿 | 待执行 |
-| 2号位 协助 | **C2** | SchedulingOrchestrator DI 修复（按 R1 方向） | 2号位 | **P0** | R1 | `v5.1.2: 完整排程流程集成测试` 转绿 | 待裁决 |
+| 0号位 裁决 | **R1** | SchedulingOrchestrator DI 缺口修复方向裁决 | 0号位 | **P0** | — | 0号位 书面裁决；C2 按其执行后 `v5.1.2` 转绿 | ✅ 已裁决（方案2） |
+| 0号位 裁决 | **R2** | 集成测试验收口径裁决（迁移前置下 Skip 是否可验收） | 0号位 | **P1** | — | 0号位 明确验收口径 | ✅ 已裁决（口径A调整版） |
+| 2号位 协助 | **C1** | 测试库 v5.1.2 迁移（ContentSnapshotJson 列） | 2号位 | **P0** | 方案 A（已裁决） | 13 个 Skip 集成测试自动转绿 | ✅ 已完成（2026-08-27 基线 13 skip→5） |
+| 2号位 协助 | **C2** | SchedulingOrchestrator DI 修复（按 R1 方案2：依赖接口） | 2号位 | **P0** | R1（已裁决） | `v5.1.2: 完整排程流程集成测试` 转绿 | ✅ 已转绿（工作树重构 + 3号位 修复，见 §七） |
+| 2号位 协助 | **C5** | 建 `GovernanceAuditLog` 表 + `ScheduleRun.ExpectedDomainKeysJson` 列（2号位 DDL） | 2号位 | **P0** | 3号位 实体/仓储/DbSet 已交付 | 5 个 Skip 自动转绿 → 129/0/0 | ⏳ 待 2号位 执行 |
+| 2号位 协助 | **C6** | 分域执行链收编/废弃裁决（4 文件已注释退出） | 2号位 | **P1** | 越线处置（已注释退出） | 书面裁决 + 处置落地 | ⏳ 待 2号位 裁决 |
 | 1号位 协助 | **C3** | FiniteCapacitySolver 完整实现 + 排程数据准备脚本可用性核对 | 1号位 | **P1** | C2 | RealScheduling 全链路跑通 | 待执行 |
 | 4号位 协助 | **C4** | 前端联调按 GET 投影契约（六块 JSON 为内存字段） | 4号位 | **P2** | 方案 A（已裁决） | 前端可读取/展示六块快照 | 待启动 |
 
@@ -120,8 +124,8 @@
 
 | # | 口径项 | 约定 |
 |---|---|---|
-| 1 | 方案 A 集成测试（C1 迁移前） | 按动态 Skip 约定视为"待 2号位 迁移"，不判失败；是否计入验收以 **R2 裁决**为准 |
-| 2 | `v5.1.2: 完整排程流程集成测试` | 视为**既有缺口**（非本次回归）；以 **R1 裁决 + C2/C3 执行**为闭环条件 |
+| 1 | 方案 A 集成测试（C1 迁移前） | **R2 已裁决（口径A 调整版）**：整改完成但**不提前宣布最终验收**；终验 = C1 迁移 + 真实集成测试 + 全链路（Create→Reload→Update→Validate→Publish→Reload→Snapshot→历史重放） |
+| 2 | `v5.1.2: 完整排程流程集成测试` | **R1 已裁决（方案2）**：`SchedulingOrchestrator` 依赖接口 `IFiniteCapacityScheduler`，2号位 整改（契约 §6.3 前置已更新）；C2/C3 执行为闭环条件 |
 | 3 | 接口签名变更 | 红线 #5：先更新契约文档（§6.3 / §7.0）再改代码 |
 | 4 | DB 结构变更 | 红线 #6：仅 2号位 执行；3号位 侧仅走变更申请 |
 
@@ -129,14 +133,31 @@
 
 # 六、状态跟踪（2026-08-24 首版）
 
-- [ ] R1 0号位 裁决 DI 修复方向（P0）—— 待裁决
-- [ ] R2 0号位 裁决集成测试验收口径（P1）—— 待裁决
-- [ ] C1 2号位 测试库 v5.1.2 迁移（P0）—— 待执行（3号位 变更申请已提交）
-- [ ] C2 2号位 SchedulingOrchestrator DI 修复（P0）—— 待 R1 裁决
-- [ ] C3 1号位 FiniteCapacitySolver 实现 + 数据脚本（P1）—— 待 C2
+- [x] R1 0号位 裁决 DI 修复方向（P0）—— ✅ 已裁决：**方案2**（`SchedulingOrchestrator` 依赖接口，2号位 修改）—— 依据 0号位《8802d56 正式复审报告》§三
+- [x] R2 0号位 裁决集成测试验收口径（P1）—— ✅ 已裁决：**口径A（调整版）**——整改完成但**不提前宣布最终验收**，依据 §四
+- [ ] C1 2号位 测试库 v5.1.2 迁移（P0）—— ⏳ 待 2号位 执行（3号位 变更申请已提交）
+- [ ] C2 2号位 SchedulingOrchestrator DI 修复（P0）—— ⏳ 待 2号位 执行（按 R1 方案2；3号位 契约 §6.3 前置已更新）
+- [ ] C3 真实集成测试执行（P1）—— 3号位 配合；待 C1+C2 就位（终验链路：Create→Reload→Update→Validate→Publish→Reload→Snapshot→历史重放）
+- [x] P1 .gitignore 二进制污染 —— ✅ 已关闭（#27 解除 669 文件跟踪 + 本轮补 `*.pdb`）
 - [ ] C4 4号位 前端联调投影契约（P2）—— 待前端启动
 
-**下一步建议**：3号位 将 R1 / R2 以正式裁决申请形式呈报 0号位；R1 裁决与 C1 迁移到位后，集成套件自动全绿，方案 A 收口即可闭环验收。
+**下一步建议**：R1/R2 已获 0号位 裁决（《8802d56 正式复审报告》）；3号位 侧待办收敛为"契约 §6.3 前置（已更新）+ 真实集成测试配合"，待 C1/C2（2号位 迁移 + DI 整改）就位后执行终验链路。
+
+---
+
+# 七、状态跟踪更新（2026-08-27 越线处置 + 收口复核后）
+
+**关联提报**：《APS_V1_3号位越线自查与处置提报_20260827.md》（越位代码处置 / 收口复核修复全记录）。
+
+- [x] **C1** 2号位 测试库 v5.1.2 迁移（ContentSnapshotJson 列）—— ✅ 已完成：13 方案A skip 已转绿（08-27 基线确认）
+- [x] **C2** SchedulingOrchestrator DI 修复—— ✅ 已转绿：工作树 SchedulingOrchestrator 重构已依赖接口 `IFiniteCapacityScheduler`；剩余 `v5.1.2` 测试失败根因为 3号位 PeggingOrchestrator 批量重构丢失 `SchedulingContext`（已修复，见提报 §三.2）
+- [ ] **C5** 2号位 建 `GovernanceAuditLog` 表 + `ScheduleRun.ExpectedDomainKeysJson` 列（P0）—— ⏳ 待 2号位 执行；闭环后 5 skip→0、集成套件 129/0/0
+- [ ] **C6** 2号位 分域执行链收编/废弃裁决（P1）—— ⏳ 待 2号位 裁决；4 文件已注释退出、原文保留（越线处置 §四.1）
+- [ ] **C3** 1号位 求解器 + 数据脚本（P1）—— 待执行（不阻塞当前 124/5/0 绿基线）
+- [x] **3号位 越线处置** —— ✅ 4 文件注释退出（DomainSchedulingJob / DomainLayerCoordinatorJob / 两接口），构建 0 错误、Web 启动无 DI 崩溃
+- [x] **3号位 收口复核修复** —— ✅ 测试配置加载（5 fixture 补 Local.json + csproj 复制）+ PeggingOrchestrator SchedulingContext 透传，全量 124/5/0 恢复基线
+
+**下一步**：全局转绿判据由 `C1 + C2` 收敛为 **C5（2号位 2 项 DDL）**；C5 到位后集成套件 **129 pass / 0 skip / 0 fail**。终验链路（C3 真实全链路：Create→Reload→Update→Validate→Publish→Reload→Snapshot→历史重放）待 C3/C5 就位后执行。
 
 ---
 

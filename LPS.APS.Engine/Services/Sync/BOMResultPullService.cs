@@ -53,7 +53,7 @@ public class BOMResultPullService : IBOMResultPullService
     }
 
     /// <inheritdoc />
-    public async Task<int> PullBOMResultFromODSAsync(string batchNo, int planVersionId, CancellationToken cancellationToken = default)
+    public async Task<int> PullBOMResultFromODSAsync(string batchNo, IReadOnlyList<int> planVersionIds, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("BOM展开结果接货开始: BatchNo={BatchNo}", batchNo);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -157,7 +157,7 @@ public class BOMResultPullService : IBOMResultPullService
             // ═══════════════════════════════════════════
             // Step 5c: 生成 OrderBomRequestLink（v5.0.31 Order→BOM追溯链闭合）
             // ═══════════════════════════════════════════
-            await GenerateOrderBomRequestLinkAsync(batchNo, planVersionId);
+            await GenerateOrderBomRequestLinkAsync(batchNo, planVersionIds);
 
             // ═══════════════════════════════════════════
             // Step 6: 更新ODS批次状态为 CONSUMED
@@ -281,12 +281,12 @@ public class BOMResultPullService : IBOMResultPullService
     /// <summary>
     /// Step 5c: 生成 OrderBomRequestLink（v5.0.31）
     /// 数据源：ODS.MES_API_BOM_Request_Detail + ODS.MES_APS_BOM_Workset
-    /// 映射：APS.[Order] 按 PlanVersionId + OrderCanonicalId 查找 OrderId
+    /// 映射：APS.[Order] 跨本批全部 Domain PlanVersion（每顶层 Order 只归一个真实 Domain）按 OrderCanonicalId 查找 OrderId + PlanVersionId
     /// </summary>
-    private async Task GenerateOrderBomRequestLinkAsync(string batchNo, int planVersionId)
+    private async Task GenerateOrderBomRequestLinkAsync(string batchNo, IReadOnlyList<int> planVersionIds)
     {
-        _logger.LogInformation("OrderBomRequestLink生成开始: BatchNo={BatchNo}, PlanVersionId={PlanVersionId}",
-            batchNo, planVersionId);
+        _logger.LogInformation("OrderBomRequestLink生成开始: BatchNo={BatchNo}, PlanVersionCount={PlanVersionCount}",
+            batchNo, planVersionIds.Count);
 
         // 1. 从 ODS 获取 RequestDetail 信息
         var detailSql = @"
@@ -324,21 +324,21 @@ public class BOMResultPullService : IBOMResultPullService
             worksetSql, new { BatchNo = batchNo }, db: DatabaseId.ODS, commandTimeout: 120))
             .ToDictionary(w => w.RequestDetailId);
 
-        // 3. 从 APS [Order] 按 PlanVersionId + OrderCanonicalId 查找 OrderId
+        // 3. 从 APS [Order] 跨本批全部 Domain PlanVersion 按 OrderCanonicalId 查找 OrderId + 所属 PlanVersionId
         var orderSql = @"
-            SELECT OrderCanonicalId, Id AS OrderId
+            SELECT OrderCanonicalId, Id AS OrderId, PlanVersionId
             FROM [Order]
-            WHERE PlanVersionId = @PlanVersionId
+            WHERE PlanVersionId IN @PlanVersionIds
               AND OrderCanonicalId IS NOT NULL";
 
         var orderMap = (await _connectionManager.QueryAsync<BomLinkOrderDto>(
-            orderSql, new { PlanVersionId = planVersionId }, db: DatabaseId.APS))
+            orderSql, new { PlanVersionIds = planVersionIds }, db: DatabaseId.APS))
             .ToDictionary(o => o.OrderCanonicalId);
 
         // 4. 幂等保护：清理该批次旧 Link 数据
         var deletedCount = await _connectionManager.ExecuteAsync(
-            "DELETE FROM OrderBomRequestLink WHERE BatchNo = @BatchNo AND PlanVersionId = @PlanVersionId",
-            new { BatchNo = batchNo, PlanVersionId = planVersionId },
+            "DELETE FROM OrderBomRequestLink WHERE BatchNo = @BatchNo AND PlanVersionId IN @PlanVersionIds",
+            new { BatchNo = batchNo, PlanVersionIds = planVersionIds },
             db: DatabaseId.APS);
 
         if (deletedCount > 0)
@@ -394,7 +394,7 @@ public class BOMResultPullService : IBOMResultPullService
             }
 
             dataTable.Rows.Add(
-                (long)planVersionId,
+                order != null ? (object)(long)order.PlanVersionId : DBNull.Value,
                 batchNo,
                 order != null ? (object)order.OrderId : DBNull.Value,
                 detail.OrderCanonicalId,
@@ -442,5 +442,6 @@ public class BOMResultPullService : IBOMResultPullService
     {
         public long OrderCanonicalId { get; set; }
         public long OrderId { get; set; }
+        public int PlanVersionId { get; set; }
     }
 }

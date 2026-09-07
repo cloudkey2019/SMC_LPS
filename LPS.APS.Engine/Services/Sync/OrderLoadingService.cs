@@ -60,4 +60,56 @@ public class OrderLoadingService : IOrderLoadingService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<int> DetectUnassignedOrdersAsync(IReadOnlyList<int> planVersionIds, CancellationToken cancellationToken = default)
+    {
+        if (planVersionIds == null || planVersionIds.Count == 0)
+            return 0;
+
+        var rows = await _connectionManager.QueryAsync<UnassignedOrderRow>(
+            @"SELECT oc.OrderNo, oc.MaterialCode, oc.FactoryCode, m.ProductFamilyId
+              FROM Order_Canonical oc
+              LEFT JOIN Material m ON oc.MaterialCode = m.MaterialCode
+              WHERE oc.Status IN ('Open', 'Released')
+                AND oc.DueDate BETWEEN GETDATE() AND DATEADD(DAY, 90, GETDATE())
+                AND NOT EXISTS (
+                    SELECT 1 FROM [Order] o
+                    WHERE o.OrderNo = oc.OrderNo AND o.PlanVersionId IN @PlanVersionIds
+                )",
+            new { PlanVersionIds = planVersionIds },
+            db: DatabaseId.APS);
+
+        var unassigned = rows.ToList();
+        if (unassigned.Count == 0)
+        {
+            _logger.LogInformation("归域失败捡漏：全部活跃订单均已归入某个 Domain，无落空订单");
+            return 0;
+        }
+
+        _logger.LogWarning("归域失败捡漏：发现 {Count} 条未归域活跃订单（未匹配到任何 DomainDefinition）", unassigned.Count);
+
+        // 登记 APS_ETL_Log（分批，避免单条 Message 过长），Status=WARN 标记数据问题
+        const int batchSize = 100;
+        foreach (var chunk in unassigned.Chunk(batchSize))
+        {
+            var detail = string.Join("; ",
+                chunk.Select(r => $"OrderNo={r.OrderNo},Material={r.MaterialCode},Factory={r.FactoryCode ?? "NULL"},ProductFamilyId={r.ProductFamilyId?.ToString() ?? "NULL"}"));
+            await _connectionManager.ExecuteAsync(
+                @"INSERT INTO APS_ETL_Log (BatchNo, Step, Message, Status, CreatedAt)
+                  VALUES ('SYNC', 'OrderDomainAssignment.Unassigned', @Message, 'WARN', GETDATE())",
+                new { Message = detail },
+                db: DatabaseId.APS);
+        }
+
+        return unassigned.Count;
+    }
+
+    private sealed class UnassignedOrderRow
+    {
+        public string OrderNo { get; set; } = string.Empty;
+        public string MaterialCode { get; set; } = string.Empty;
+        public string? FactoryCode { get; set; }
+        public int? ProductFamilyId { get; set; }
+    }
+
 }

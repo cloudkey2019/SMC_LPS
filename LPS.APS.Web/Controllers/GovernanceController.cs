@@ -1,6 +1,13 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Core.Entities.APS;
+using LPS.APS.Core.DTOs.Governance;
+using LPS.APS.Application.Services.Query;
+using LPS.APS.Application.Services.Query.Dto;
+using LPS.APS.Shared.Models;
 
 namespace LPS.APS.Web.Controllers;
 
@@ -18,7 +25,15 @@ public class GovernanceController : ControllerBase
     private readonly IRuleSetVersionRepository _ruleSetVersionRepo;
     private readonly IParameterSetVersionRepository _parameterSetVersionRepo;
     private readonly IStrategyProfileVersionRepository _strategyProfileVersionRepo;
+    private readonly IRuleSetRepository _ruleSetRepo;
+    private readonly IParameterSetRepository _parameterSetRepo;
+    private readonly IStrategyProfileRepository _strategyProfileRepo;
+    private readonly IDomainDependencyRepository _domainDependencyRepo;
+    private readonly IGovernanceAuditLogRepository _auditLogRepo;
     private readonly IRunLifecycleService _runLifecycleService;
+    private readonly IScheduleRunRepository _scheduleRunRepo;
+    private readonly IScheduleQueryService _queryService;
+    private readonly IDomainDefinitionGovernanceService _domainDefinitionService;
     private readonly ILogger<GovernanceController> _logger;
 
     public GovernanceController(
@@ -26,16 +41,36 @@ public class GovernanceController : ControllerBase
         IRuleSetVersionRepository ruleSetVersionRepo,
         IParameterSetVersionRepository parameterSetVersionRepo,
         IStrategyProfileVersionRepository strategyProfileVersionRepo,
+        IRuleSetRepository ruleSetRepo,
+        IParameterSetRepository parameterSetRepo,
+        IStrategyProfileRepository strategyProfileRepo,
+        IDomainDependencyRepository domainDependencyRepo,
+        IGovernanceAuditLogRepository auditLogRepo,
         IRunLifecycleService runLifecycleService,
+        IScheduleRunRepository scheduleRunRepo,
+        IScheduleQueryService queryService,
+        IDomainDefinitionGovernanceService domainDefinitionService,
         ILogger<GovernanceController> logger)
     {
         _governanceService = governanceService;
         _ruleSetVersionRepo = ruleSetVersionRepo;
         _parameterSetVersionRepo = parameterSetVersionRepo;
         _strategyProfileVersionRepo = strategyProfileVersionRepo;
+        _ruleSetRepo = ruleSetRepo;
+        _parameterSetRepo = parameterSetRepo;
+        _strategyProfileRepo = strategyProfileRepo;
+        _domainDependencyRepo = domainDependencyRepo;
+        _auditLogRepo = auditLogRepo;
         _runLifecycleService = runLifecycleService;
+        _scheduleRunRepo = scheduleRunRepo;
+        _queryService = queryService;
+        _domainDefinitionService = domainDefinitionService;
         _logger = logger;
     }
+
+    /// <summary>解析当前登录用户 Id（无效时返回 0 → 范围解析为拒绝全部，安全默认）</summary>
+    private int GetCurrentUserId()
+        => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
 
     #region RuleSetVersion CRUD
 
@@ -63,6 +98,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>创建规则集版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖；内容归一化到 ContentSnapshotJson 持久化）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPost("rule-set/version")]
     public async Task<IActionResult> CreateRuleSetVersion([FromBody] RuleSetVersion version, CancellationToken ct)
     {
@@ -72,6 +108,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>更新规则集版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPut("rule-set/version/{versionId}")]
     public async Task<IActionResult> UpdateRuleSetVersion(long versionId, [FromBody] RuleSetVersion version, CancellationToken ct)
     {
@@ -115,6 +152,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>创建参数集版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖；五主题 JSON 归一化到 ContentSnapshotJson 持久化）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPost("parameter-set/version")]
     public async Task<IActionResult> CreateParameterSetVersion([FromBody] ParameterSetVersion version, CancellationToken ct)
     {
@@ -124,6 +162,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>更新参数集版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPut("parameter-set/version/{versionId}")]
     public async Task<IActionResult> UpdateParameterSetVersion(long versionId, [FromBody] ParameterSetVersion version, CancellationToken ct)
     {
@@ -148,13 +187,14 @@ public class GovernanceController : ControllerBase
     /// 红线：仅 DRAFT/SUBMITTED/APPROVED 可发布；PUBLISHED 拒绝（历史不可覆盖）；A-6 不变量自动处理。
     /// </summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RulePublish)]
     [HttpPost("rule-set/version/{versionId}/publish")]
     public async Task<IActionResult> PublishRuleSetVersion(long versionId, [FromBody] PublishRequest request, CancellationToken ct)
     {
         try
         {
-            await _governanceService.PublishRuleSetVersionAsync(versionId, request.PublishedBy, ct);
-            _logger.LogInformation("规则集版本已发布：{VersionId}，发布人：{PublishedBy}", versionId, request.PublishedBy);
+            await _governanceService.PublishRuleSetVersionAsync(versionId, request?.PublishedBy, ct, changeReason: request?.ChangeReason);
+            _logger.LogInformation("规则集版本已发布：{VersionId}，发布人：{PublishedBy}", versionId, request?.PublishedBy);
             return Ok(new { success = true, message = $"规则集版本 {versionId} 已发布" });
         }
         catch (InvalidOperationException ex)
@@ -169,18 +209,90 @@ public class GovernanceController : ControllerBase
     /// 红线：仅 DRAFT/SUBMITTED/APPROVED 可发布；新 Run 可引用新版本、旧 Run 引用不变；A-6 不变量自动处理。
     /// </summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RulePublish)]
     [HttpPost("parameter-set/version/{versionId}/publish")]
     public async Task<IActionResult> PublishParameterSetVersion(long versionId, [FromBody] PublishRequest request, CancellationToken ct)
     {
         try
         {
-            await _governanceService.PublishParameterSetVersionAsync(versionId, request.PublishedBy, ct);
-            _logger.LogInformation("参数集版本已发布：{VersionId}，发布人：{PublishedBy}", versionId, request.PublishedBy);
+            await _governanceService.PublishParameterSetVersionAsync(versionId, request?.PublishedBy, ct, changeReason: request?.ChangeReason);
+            _logger.LogInformation("参数集版本已发布：{VersionId}，发布人：{PublishedBy}", versionId, request?.PublishedBy);
             return Ok(new { success = true, message = $"参数集版本 {versionId} 已发布" });
         }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "参数集版本发布失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    #endregion
+
+    #region 版本停用（G2：Retired↔DISABLED，3-4联调）
+
+    /// <summary>
+    /// 停用规则集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED）
+    /// 红线：DRAFT 拒绝（草稿直接编辑/删除）；DISABLED/ARCHIVED 幂等保护拒绝。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
+    [HttpPost("rule-set/version/{versionId}/disable")]
+    public async Task<IActionResult> DisableRuleSetVersion(long versionId, [FromBody] DisableRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _governanceService.DisableRuleSetVersionAsync(versionId, request?.OperatedBy, request?.Reason, ct);
+            _logger.LogInformation("规则集版本已停用：{VersionId}，操作人：{OperatedBy}", versionId, request?.OperatedBy);
+            return Ok(new { success = true, message = $"规则集版本 {versionId} 已停用" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "规则集版本停用失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 停用参数集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED）
+    /// 红线：DRAFT 拒绝（草稿直接编辑/删除）；DISABLED/ARCHIVED 幂等保护拒绝。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
+    [HttpPost("parameter-set/version/{versionId}/disable")]
+    public async Task<IActionResult> DisableParameterSetVersion(long versionId, [FromBody] DisableRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _governanceService.DisableParameterSetVersionAsync(versionId, request?.OperatedBy, request?.Reason, ct);
+            _logger.LogInformation("参数集版本已停用：{VersionId}，操作人：{OperatedBy}", versionId, request?.OperatedBy);
+            return Ok(new { success = true, message = $"参数集版本 {versionId} 已停用" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "参数集版本停用失败：{VersionId}", versionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 停用策略包版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED）
+    /// 红线：DRAFT 拒绝；DISABLED/ARCHIVED 幂等保护拒绝。
+    /// IsDefault=1 停用时自动清默认标志（避免 DISABLED 默认残留于 ResolveDefault 范围）。
+    /// </summary>
+    /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
+    [HttpPost("strategy-profile/version/{versionId}/disable")]
+    public async Task<IActionResult> DisableStrategyProfileVersion(long versionId, [FromBody] DisableRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _governanceService.DisableStrategyProfileVersionAsync(versionId, request?.OperatedBy, request?.Reason, ct);
+            _logger.LogInformation("策略包版本已停用：{VersionId}，操作人：{OperatedBy}", versionId, request?.OperatedBy);
+            return Ok(new { success = true, message = $"策略包版本 {versionId} 已停用" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "策略包版本停用失败：{VersionId}", versionId);
             return BadRequest(new { success = false, error = ex.Message });
         }
     }
@@ -219,6 +331,23 @@ public class GovernanceController : ControllerBase
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "参数集版本对比失败：{SourceVersionId} vs {TargetVersionId}", sourceVersionId, targetVersionId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>对比两个策略包版本的差异（G5/D3：策略包对比页；裸 DTO，同 D1/D2）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/version/diff")]
+    public async Task<IActionResult> CompareStrategyProfileVersions([FromQuery] long sourceVersionId, [FromQuery] long targetVersionId, CancellationToken ct)
+    {
+        try
+        {
+            var result = await _governanceService.CompareStrategyProfileVersionsAsync(sourceVersionId, targetVersionId, ct);
+            return Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "策略包版本对比失败：{SourceVersionId} vs {TargetVersionId}", sourceVersionId, targetVersionId);
             return BadRequest(new { success = false, error = ex.Message });
         }
     }
@@ -273,6 +402,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>创建策略包版本（P0-02：Service 强制初始状态 DRAFT——入参 Status 一律被忽略覆盖）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPost("strategy-profile/version")]
     public async Task<IActionResult> CreateStrategyProfileVersion([FromBody] StrategyProfileVersion version, CancellationToken ct)
     {
@@ -282,6 +412,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>更新策略包版本（P0-02：状态机约束——已发布/失效/归档拒绝原地修改；Status/治理字段/引用字段冻结，禁止越权改状态）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RuleMaintain)]
     [HttpPut("strategy-profile/version/{versionId}")]
     public async Task<IActionResult> UpdateStrategyProfileVersion(long versionId, [FromBody] StrategyProfileVersion version, CancellationToken ct)
     {
@@ -299,12 +430,13 @@ public class GovernanceController : ControllerBase
 
     /// <summary>发布策略包版本（P0-06：DRAFT/SUBMITTED/APPROVED → PUBLISHED；发布前强制校验）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.RulePublish)]
     [HttpPost("strategy-profile/version/{versionId}/publish")]
     public async Task<IActionResult> PublishStrategyProfileVersion(long versionId, [FromBody] PublishRequest request, CancellationToken ct)
     {
         try
         {
-            await _governanceService.PublishStrategyProfileVersionAsync(versionId, request?.PublishedBy, ct);
+            await _governanceService.PublishStrategyProfileVersionAsync(versionId, request?.PublishedBy, ct, changeReason: request?.ChangeReason);
             return Ok(new { success = true, message = $"策略包版本 {versionId} 发布成功" });
         }
         catch (InvalidOperationException ex)
@@ -381,6 +513,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>Candidate 最小人工确认（P0-08：仅记录 Actor/ConfirmedAt/CandidatePlanVersionId/Remark，不转 ACTIVE）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.CandidateConfirm)]
     [HttpPost("plan-version/{planVersionId}/confirm-candidate")]
     public async Task<IActionResult> ConfirmCandidate(int planVersionId, [FromBody] ConfirmCandidateRequest request, CancellationToken ct)
     {
@@ -398,6 +531,7 @@ public class GovernanceController : ControllerBase
 
     /// <summary>激活 Candidate（P0-08：CANDIDATE → ACTIVE，每域单一正式采用版本）</summary>
     /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.CandidateConfirm)]
     [HttpPost("plan-version/{planVersionId}/activate-candidate")]
     public async Task<IActionResult> ActivateCandidate(int planVersionId, [FromBody] ActivateCandidateRequest request, CancellationToken ct)
     {
@@ -410,6 +544,31 @@ public class GovernanceController : ControllerBase
         {
             _logger.LogWarning(ex, "候选版本激活失败：{PlanVersionId}", planVersionId);
             return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>候选 vs 基础 计划版本对比复合查询（H1；U10 候选对比页；v1.2 §三）</summary>
+    /// <remarks>开发者：3号位；estimatedOnlyCount 归 2号位 边界返 null；crossDomain 计数未落盘保守返 0（v1.2 §九-b）；reasons[] 不在 v1.2 返回</remarks>
+    [HttpGet("plan-version/{candidatePlanVersionId}/compare-with/{basePlanVersionId}")]
+    public async Task<IActionResult> CompareCandidateWithBase(
+        int candidatePlanVersionId,
+        int basePlanVersionId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var result = await _queryService.GetCandidateComparisonAsync(GetCurrentUserId(), candidatePlanVersionId, basePlanVersionId, ct);
+            return Ok(ApiResponse<CandidateComparisonDto>.Success(result));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "候选对比失败：候选/基础版本不存在");
+            return NotFound(ApiResponse<CandidateComparisonDto>.Fail(404, ex.Message));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "候选对比失败：候选版本状态校验未过");
+            return BadRequest(ApiResponse<CandidateComparisonDto>.Fail(400, ex.Message));
         }
     }
 
@@ -426,6 +585,36 @@ public class GovernanceController : ControllerBase
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "FAILED 运行恢复失败：{ScheduleRunId}", failedScheduleRunId);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>白天候选运行创建（B-1：0号位 2026-08-29 裁决3——4号位 → 3号位 入口；冻结 RunType×Purpose×策略版本，交 2号位 主流程执行收口）</summary>
+    /// <remarks>开发者：3号位；触发 2号位 主流程留契约接缝（契约草案 §四 方案 A/B/C，待 2号位/0号位 裁定）</remarks>
+    [HttpPost("run/candidate")]
+    public async Task<IActionResult> CreateCandidateRun([FromBody] CreateCandidateRunRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var result = await _runLifecycleService.CreateCandidateRunAsync(new CandidateRunCreateSpec
+            {
+                RunType = request?.RunType ?? string.Empty,
+                Purpose = request?.Purpose ?? string.Empty,
+                DomainKey = request?.DomainKey ?? string.Empty,
+                BasePlanVersionId = request?.BasePlanVersionId,
+                DataCutoffTime = request?.DataCutoffTime,
+                Actor = request?.Actor ?? string.Empty,
+            }, ct);
+            return Ok(new
+            {
+                success = true,
+                data = result,
+                message = $"白天候选运行创建成功：RunId={result.NewScheduleRunId}, CandidatePlanVersionId={result.NewPlanVersionId}",
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "白天候选运行创建失败：RunType={RunType}, Domain={Domain}", request?.RunType, request?.DomainKey);
             return BadRequest(new { success = false, error = ex.Message });
         }
     }
@@ -447,6 +636,294 @@ public class GovernanceController : ControllerBase
     }
 
     #endregion
+
+    #region 主表列表与运行支撑（G1/G7：3-4联调）
+
+    /// <summary>规则集主表列表（G1/A1：4号位规则集列表页）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("rule-sets")]
+    public async Task<IActionResult> GetRuleSets(
+        [FromQuery] bool? activeOnly = null,
+        [FromQuery] string? keyword = null,
+        [FromQuery] int? page = null,
+        [FromQuery] int? pageSize = null,
+        CancellationToken ct = default)
+    {
+        var (skip, take) = ResolvePaging(page, pageSize);
+        var result = await _ruleSetRepo.GetListAsync(activeOnly, keyword, skip, take, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>参数集主表列表（G1/A8：4号位参数集列表页）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("parameter-sets")]
+    public async Task<IActionResult> GetParameterSets(
+        [FromQuery] bool? activeOnly = null,
+        [FromQuery] string? keyword = null,
+        [FromQuery] int? page = null,
+        [FromQuery] int? pageSize = null,
+        CancellationToken ct = default)
+    {
+        var (skip, take) = ResolvePaging(page, pageSize);
+        var result = await _parameterSetRepo.GetListAsync(activeOnly, keyword, skip, take, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>策略包主表列表（G1/A12：4号位策略包列表页）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profiles")]
+    public async Task<IActionResult> GetStrategyProfiles(
+        [FromQuery] bool? activeOnly = null,
+        [FromQuery] string? keyword = null,
+        [FromQuery] int? page = null,
+        [FromQuery] int? pageSize = null,
+        CancellationToken ct = default)
+    {
+        var (skip, take) = ResolvePaging(page, pageSize);
+        var result = await _strategyProfileRepo.GetListAsync(activeOnly, keyword, skip, take, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>规则集当前生效 PUBLISHED 版本直达（G3/C2：当前 Published 版本展示；生效窗口过滤；多候选报错）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("rule-set/{ruleSetId}/published-version")]
+    public async Task<IActionResult> GetPublishedRuleSetVersion(long ruleSetId, CancellationToken ct)
+    {
+        try
+        {
+            var version = await _governanceService.GetPublishedRuleSetVersionAsync(ruleSetId, ct);
+            if (version == null)
+            {
+                return NotFound(new { success = false, error = $"规则集 {ruleSetId} 无当前生效 PUBLISHED 版本" });
+            }
+            return Ok(new { success = true, data = version });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>参数集当前生效 PUBLISHED 版本直达（G3/C2）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("parameter-set/{parameterSetId}/published-version")]
+    public async Task<IActionResult> GetPublishedParameterSetVersion(long parameterSetId, CancellationToken ct)
+    {
+        try
+        {
+            var version = await _governanceService.GetPublishedParameterSetVersionAsync(parameterSetId, ct);
+            if (version == null)
+            {
+                return NotFound(new { success = false, error = $"参数集 {parameterSetId} 无当前生效 PUBLISHED 版本" });
+            }
+            return Ok(new { success = true, data = version });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>策略包当前生效 PUBLISHED 版本直达（G3/C2）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("strategy-profile/{strategyProfileId}/published-version")]
+    public async Task<IActionResult> GetPublishedStrategyProfileVersion(long strategyProfileId, CancellationToken ct)
+    {
+        try
+        {
+            var version = await _governanceService.GetPublishedStrategyProfileVersionAsync(strategyProfileId, ct);
+            if (version == null)
+            {
+                return NotFound(new { success = false, error = $"策略包 {strategyProfileId} 无当前生效 PUBLISHED 版本" });
+            }
+            return Ok(new { success = true, data = version });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>域依赖关系查询（G7：4号位失败链 / 域依赖展示；数据源为 2号位 sp_ScanDomainDependency 扫描结果，只读）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("domain-dependencies")]
+    public async Task<IActionResult> GetDomainDependencies(
+        [FromQuery] string domainCode,
+        [FromQuery] string direction = "downstream",
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(domainCode))
+        {
+            return BadRequest(new { success = false, error = "domainCode 必填" });
+        }
+
+        var result = await _domainDependencyRepo.GetByDomainAsync(domainCode.Trim(), direction, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>治理审计日志查询（G6：实体类型/实体ID/时间范围 可空组合，按操作时间倒序）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [Authorize(Policy = PermissionCodes.AuditView)]
+    [HttpGet("audit-logs")]
+    public async Task<IActionResult> GetAuditLogs(
+        [FromQuery] string? entityType = null,
+        [FromQuery] long? entityId = null,
+        [FromQuery] DateTime? from = null,
+        [FromQuery] DateTime? to = null,
+        [FromQuery] int? take = 200,
+        CancellationToken ct = default)
+    {
+        var result = await _auditLogRepo.QueryAsync(entityType, entityId, from, to, take, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>Run 域级状态汇总（G8：FULL 失败链 成功/失败/被阻断 区分；3号位文档 §十六）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("run/{scheduleRunId}/domain-status")]
+    public async Task<IActionResult> GetRunDomainStatus(int scheduleRunId, CancellationToken ct)
+    {
+        try
+        {
+            var result = await _runLifecycleService.GetRunDomainStatusAsync(scheduleRunId, ct);
+            return Ok(new { success = true, data = result });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Run 域级状态汇总失败：{ScheduleRunId}", scheduleRunId);
+            return NotFound(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>Run 历史列表查询（G4：0号位 2026-08-29 裁决——3号位 只读 ScheduleRun 运行事实封装查询；状态回填由 2号位 运行收口负责，本端点不修改运行结果语义）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("runs")]
+    public async Task<IActionResult> GetRuns(
+        [FromQuery] int? take = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? runType = null,
+        CancellationToken ct = default)
+    {
+        var result = await _scheduleRunRepo.GetListAsync(take, status, runType, ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>解析 1 基页码到 skip/take（page=1 → skip=0；pageSize 上限 500 防全表拉取）</summary>
+    private static (int? Skip, int? Take) ResolvePaging(int? page, int? pageSize)
+    {
+        if (!page.HasValue && !pageSize.HasValue)
+        {
+            return (null, null);
+        }
+
+        var pageValue = Math.Max(page ?? 1, 1);
+        var sizeValue = Math.Clamp(pageSize ?? 20, 1, 500);
+        return ((pageValue - 1) * sizeValue, sizeValue);
+    }
+
+    #endregion
+
+    #region DomainDefinition 治理（E-1：3号位 CRUD + 启用/停用 + 当前有效集合查询）
+
+    /// <summary>域定义列表（含停用；G-D01）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("domain-definition")]
+    public async Task<IActionResult> GetDomainDefinitions(CancellationToken ct)
+    {
+        var result = await _domainDefinitionService.GetAllAsync(ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>当前有效域集合（G-D09/G-D10：2号位归域执行唯一事实源）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("domain-definition/active")]
+    public async Task<IActionResult> GetActiveDomainDefinitions(CancellationToken ct)
+    {
+        var result = await _domainDefinitionService.GetActiveAsync(ct);
+        return Ok(new { success = true, data = result });
+    }
+
+    /// <summary>域定义详情（G-D01）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpGet("domain-definition/{id}")]
+    public async Task<IActionResult> GetDomainDefinition(int id, CancellationToken ct)
+    {
+        var entity = await _domainDefinitionService.GetByIdAsync(id, ct);
+        if (entity == null)
+        {
+            return NotFound(new { success = false, error = $"域定义不存在：{id}" });
+        }
+        return Ok(new { success = true, data = entity });
+    }
+
+    /// <summary>新建域定义（G-D02：唯一性 / ScopeType / 引用合法性校验 + 审计；新建默认启用）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("domain-definition")]
+    public async Task<IActionResult> CreateDomainDefinition([FromBody] DomainDefinition entity, CancellationToken ct)
+    {
+        try
+        {
+            var created = await _domainDefinitionService.CreateAsync(entity, entity.CreatedBy, ct);
+            return CreatedAtAction(nameof(GetDomainDefinition), new { id = created.Id }, new { success = true, data = created });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "域定义新建失败：{DomainKey}", entity.DomainKey);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>编辑域定义（G-D03~G-D05：DomainKey 不可变更 + 校验）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPut("domain-definition/{id}")]
+    public async Task<IActionResult> UpdateDomainDefinition(int id, [FromBody] DomainDefinition entity, CancellationToken ct)
+    {
+        try
+        {
+            var updated = await _domainDefinitionService.UpdateAsync(id, entity, entity.UpdatedBy ?? entity.CreatedBy, ct);
+            return Ok(new { success = true, data = updated });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "域定义更新失败：{Id}", id);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>启用域定义（G-D16 反向）</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("domain-definition/{id}/enable")]
+    public async Task<IActionResult> EnableDomainDefinition(int id, [FromQuery] string? operatedBy, CancellationToken ct)
+    {
+        try
+        {
+            var updated = await _domainDefinitionService.SetActiveAsync(id, true, operatedBy, ct);
+            return Ok(new { success = true, data = updated });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "域定义启用失败：{Id}", id);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    /// <summary>停用域定义</summary>
+    /// <remarks>开发者：3号位</remarks>
+    [HttpPost("domain-definition/{id}/disable")]
+    public async Task<IActionResult> DisableDomainDefinition(int id, [FromQuery] string? operatedBy, CancellationToken ct)
+    {
+        try
+        {
+            var updated = await _domainDefinitionService.SetActiveAsync(id, false, operatedBy, ct);
+            return Ok(new { success = true, data = updated });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "域定义停用失败：{Id}", id);
+            return BadRequest(new { success = false, error = ex.Message });
+        }
+    }
+
+    #endregion
 }
 
 /// <summary>发布请求 DTO（3号位 Web 层契约）</summary>
@@ -454,6 +931,20 @@ public class GovernanceController : ControllerBase
 public class PublishRequest
 {
     public string? PublishedBy { get; set; }
+
+    /// <summary>变更原因（G10：发布时写入版本 Remarks，审计可追溯）</summary>
+    public string? ChangeReason { get; set; }
+}
+
+/// <summary>版本停用请求 DTO（G2：3-4联调）</summary>
+/// <remarks>开发者：3号位</remarks>
+public class DisableRequest
+{
+    /// <summary>操作人（必填，审计记录）</summary>
+    public string? OperatedBy { get; set; }
+
+    /// <summary>停用原因（写入版本 Remarks + 审计 Remarks，可空）</summary>
+    public string? Reason { get; set; }
 }
 
 /// <summary>Candidate 确认请求 DTO（P0-08）</summary>
@@ -473,4 +964,30 @@ public class ActivateCandidateRequest
 {
     /// <summary>激活人（必填）</summary>
     public string? Actor { get; set; }
+}
+
+/// <summary>白天候选运行创建请求 DTO（B-1）</summary>
+/// <remarks>开发者：3号位</remarks>
+public class CreateCandidateRunRequest
+{
+    /// <summary>运行类型（白天候选类：MANUAL_RESCHEDULE / LOCAL_RESCHEDULE / INSERT_ORDER_WHATIF）</summary>
+    public string? RunType { get; set; }
+
+    /// <summary>用途（须 ∈ RunType 冻结合法组合：CTP / INSERT_IMPACT_ANALYSIS / INSERT_RESCHEDULE / MANUAL_ADJUSTMENT）</summary>
+    public string? Purpose { get; set; }
+
+    /// <summary>目标 Domain（严格单 Domain）</summary>
+    public string? DomainKey { get; set; }
+
+    /// <summary>所基于的当前 ACTIVE 计划版本（可选；缺省按 DomainKey 解析当前 ACTIVE）</summary>
+    public int? BasePlanVersionId { get; set; }
+
+    /// <summary>本次运行统一数据切片边界（可选；缺省 now）</summary>
+    public DateTime? DataCutoffTime { get; set; }
+
+    /// <summary>操作人（必填）</summary>
+    public string? Actor { get; set; }
+
+    /// <summary>备注（契约位保留，B-1 本轮不参与业务逻辑）</summary>
+    public string? Remark { get; set; }
 }

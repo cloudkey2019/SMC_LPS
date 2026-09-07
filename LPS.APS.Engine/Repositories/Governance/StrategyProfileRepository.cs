@@ -1,3 +1,4 @@
+using System.Text;
 using Dapper;
 using LPS.APS.Core.Entities.APS;
 using LPS.APS.Core.Interfaces;
@@ -44,6 +45,50 @@ public class StrategyProfileRepository : IStrategyProfileRepository
 
         var results = await _connectionManager.QueryAsync<StrategyProfile>(
             sql, new { RunType = runType }, db: DatabaseId.APS);
+
+        return results.ToList();
+    }
+
+    public async Task<IReadOnlyList<StrategyProfile>> GetListAsync(
+        bool? activeOnly = null,
+        string? keyword = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken ct = default)
+    {
+        var sql = new StringBuilder(@"
+            SELECT * FROM [dbo].[StrategyProfile]
+            WHERE 1 = 1");
+
+        var parameters = new DynamicParameters();
+        if (activeOnly.HasValue)
+        {
+            sql.Append(" AND [IsActive] = @IsActive");
+            parameters.Add("IsActive", activeOnly.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            sql.Append(" AND ([StrategyProfileCode] LIKE @Keyword OR [StrategyProfileName] LIKE @Keyword)");
+            parameters.Add("Keyword", $"%{keyword.Trim()}%");
+        }
+
+        sql.Append(" ORDER BY [Id] DESC");
+
+        if (skip.HasValue)
+        {
+            sql.Append(" OFFSET @Skip ROWS");
+            parameters.Add("Skip", skip.Value);
+        }
+
+        if (take.HasValue)
+        {
+            sql.Append(" FETCH NEXT @Take ROWS ONLY");
+            parameters.Add("Take", take.Value);
+        }
+
+        var results = await _connectionManager.QueryAsync<StrategyProfile>(
+            sql.ToString(), parameters, db: DatabaseId.APS);
 
         return results.ToList();
     }

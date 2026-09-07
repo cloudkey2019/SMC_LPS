@@ -19,6 +19,7 @@ public static class TestEnvironment
     private static bool? _authDbAvailable;
     private static bool? _scheduleRunHasExpectedDomainKeysColumn;
     private static bool? _hasContentSnapshotJsonColumn;
+    private static bool? _hasGovernanceAuditLogTable;
 
     /// <summary>按 appsettings.Test.json 构造连接管理器（惰性单例，集成测试共用）</summary>
     public static DatabaseConnectionManager GetConnectionManager()
@@ -31,6 +32,7 @@ public static class TestEnvironment
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile("appsettings.Test.json", optional: false)
+            .AddJsonFile("appsettings.Test.Local.json", optional: true)
             .Build();
 
         var dbOptions = configuration.GetSection("Database").Get<LPS.APS.Engine.Configuration.DatabaseOptions>()
@@ -113,6 +115,36 @@ public static class TestEnvironment
         }
 
         return _hasContentSnapshotJsonColumn.Value;
+    }
+
+    /// <summary>
+    /// APS_Auth 库 GovernanceAuditLog 表是否已建（治理审计，3号位 A-7 配套 2号位 DDL）。
+    /// 语义：实体/仓储/DbSet 已由 3号位 交付，物理表需 2号位 Auth 库 DDL 补建并迁移测试库
+    /// （红线 #6 DB 结构变更 2号位 专属）；建表前相关治理发布/确认/激活集成测试动态 Skip，
+    /// 建表后自动转绿无需改测试代码。
+    /// </summary>
+    public static bool HasGovernanceAuditLogTable()
+    {
+        if (_hasGovernanceAuditLogTable.HasValue)
+        {
+            return _hasGovernanceAuditLogTable.Value;
+        }
+
+        try
+        {
+            var count = GetConnectionManager().QueryFirstOrDefaultAsync<int>(
+                "SELECT COUNT(*) FROM sys.tables WHERE name = 'GovernanceAuditLog'",
+                null,
+                db: DatabaseId.Auth).GetAwaiter().GetResult();
+
+            _hasGovernanceAuditLogTable = count > 0;
+        }
+        catch
+        {
+            _hasGovernanceAuditLogTable = false;
+        }
+
+        return _hasGovernanceAuditLogTable.Value;
     }
 
     /// <summary>清理测试数据（按 FK 依赖倒序 DELETE）</summary>

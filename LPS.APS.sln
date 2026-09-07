@@ -19,6 +19,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LPS.APS.Scheduling", "LPS.A
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LPS.APS.Tests", "LPS.APS.Tests\LPS.APS.Tests.csproj", "{9A02F4E1-1673-418A-8216-D5BBAE06CF0B}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LPS.APS.BusinessRules.Tests", "LPS.APS.BusinessRules.Tests\LPS.APS.BusinessRules.Tests.csproj", "{C8F3D8E2-9A47-4C1B-8E5D-3F2A1B4C6D7E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -57,6 +59,10 @@ Global
 		{9A02F4E1-1673-418A-8216-D5BBAE06CF0B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9A02F4E1-1673-418A-8216-D5BBAE06CF0B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9A02F4E1-1673-418A-8216-D5BBAE06CF0B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C8F3D8E2-9A47-4C1B-8E5D-3F2A1B4C6D7E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C8F3D8E2-9A47-4C1B-8E5D-3F2A1B4C6D7E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C8F3D8E2-9A47-4C1B-8E5D-3F2A1B4C6D7E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C8F3D8E2-9A47-4C1B-8E5D-3F2A1B4C6D7E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

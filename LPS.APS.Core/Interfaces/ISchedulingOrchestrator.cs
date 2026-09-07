@@ -36,7 +36,17 @@ public interface ISchedulingOrchestrator
     Task<SchedulingRunResult> RunSchedulingAutoAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 自动发现最新待排计划版本并执行分域并行调度（B2 方案 Hangfire 触发入口）
+    /// 白天候选专用：单域执行并收口 Run（3号位 建 Run + 候选壳后调用，§5.3.1）。
+    /// 语义：RUNNING → COMPLETED（IsSuccess=true）/ FAILED（IsSuccess=false，ErrorMessage 落 Run）。
+    /// 基线快照：按 scheduleRunId 反查 BasePlanVersionId，候选需求侧订单数据源钉基线（只读，防 ACTIVE 漂移）。
     /// </summary>
-    Task<SchedulingRunResult> RunDomainSchedulingAutoAsync(CancellationToken cancellationToken = default);
+    /// <param name="planVersionId">候选 PlanVersion 壳 Id（结果写回目标）</param>
+    /// <param name="scheduleRunId">3号位 创建的白天候选 ScheduleRun Id（终态收口目标 + BasePlanVersionId 来源）</param>
+    /// <param name="strategyProfileVersionId">策略包版本 Id（以 Run 冻结值优先，本参数作回退）</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    Task<SchedulingRunResult> RunSchedulingAndFinalizeAsync(
+        int planVersionId,
+        int scheduleRunId,
+        long strategyProfileVersionId,
+        CancellationToken cancellationToken = default);
 }
