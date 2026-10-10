@@ -6,9 +6,14 @@ namespace LPS.APS.Core.Dto;
 public sealed class InterplantTransitFact
 {
     /// <summary>
-    /// 在途单据号
+    /// 在途单据号（= 生产指示号 PI No，PM 0910 归属键）
     /// </summary>
     public string TransitDocumentNo { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 物料代码（PM 0910 一致性校验条件，非归属键）
+    /// </summary>
+    public string MaterialCode { get; init; } = string.Empty;
 
     /// <summary>
     /// 源工厂代码

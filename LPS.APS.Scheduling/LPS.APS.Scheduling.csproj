@@ -11,4 +11,16 @@
     <ProjectReference Include="..\LPS.APS.Shared\LPS.APS.Shared.csproj" />
   </ItemGroup>
 
+  <!--
+    1号位（Scheduling）自有单测需要直接锁住**内部**契约行为：
+      · PhaseTwoInitialScheduler —— 执行批形成 / 批键域 / 归批键回填（P0-01/02/03）
+      · ConstraintContext         —— ChosenRoutePaths / ExecutionBatchDraftKeys 等求解态
+    这些类型**必须保持 internal**（它们是求解器实现，不是 1↔2 契约面），
+    故按最小可见性放宽：只对本工程自己的测试程序集开放，**不放宽为 public**。
+    ⇒ public API 面零变化，1↔2 契约零变化。
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="LPS.APS.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -23,7 +23,7 @@ public class StrategyProfileVersionGovernanceTests
     private readonly Mock<IParameterSetVersionRepository> _parameterSetRepo = new();
     private readonly Mock<IStrategyProfileRepository> _strategyProfileRepo = new();
     private readonly Mock<IStrategyProfileVersionRepository> _strategyProfileVersionRepo = new();
-    private readonly Mock<IGovernanceAuditLogRepository> _auditRepo = new();
+    private readonly Mock<IAuditLogRepository> _auditRepo = new();
     private readonly GovernanceVersionService _service;
 
     public StrategyProfileVersionGovernanceTests()
@@ -149,13 +149,13 @@ public class StrategyProfileVersionGovernanceTests
         SetupValidReferences(100, 200);
 
         // Act
-        await _service.PublishStrategyProfileVersionAsync(1, "tester", CancellationToken.None);
+        await _service.PublishStrategyProfileVersionAsync(1, "tester", 1001, CancellationToken.None);
 
         // Assert
         version.Status.Should().Be(GovernanceVersionStatus.Published);
         version.PublishedAt.Should().NotBeNull();
         _strategyProfileVersionRepo.Verify(r => r.UpdateAsync(version, It.IsAny<CancellationToken>()), Times.Once);
-        _auditRepo.Verify(r => r.AddAsync(It.IsAny<LPS.APS.Core.Entities.Auth.GovernanceAuditLog>(), It.IsAny<CancellationToken>()), Times.Once);
+        _auditRepo.Verify(r => r.AddAsync(It.IsAny<LPS.APS.Core.Entities.Auth.AuditLog>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public class StrategyProfileVersionGovernanceTests
         SetupValidReferences(100, 200);
 
         // Act
-        await _service.PublishStrategyProfileVersionAsync(1, "tester", CancellationToken.None);
+        await _service.PublishStrategyProfileVersionAsync(1, "tester", 1001, CancellationToken.None);
 
         // Assert —— 先清旧默认再更新
         _strategyProfileVersionRepo.Verify(r => r.ClearDefaultFlagAsync(10, 1, It.IsAny<CancellationToken>()), Times.Once);
@@ -195,7 +195,7 @@ public class StrategyProfileVersionGovernanceTests
         SetupValidReferences(100, 200);
 
         // Act
-        var act = () => _service.PublishStrategyProfileVersionAsync(1, "tester", CancellationToken.None);
+        var act = () => _service.PublishStrategyProfileVersionAsync(1, "tester", 1001, CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();

@@ -16,6 +16,7 @@ public class Order
     public int MaterialId { get; set; }
     public int ProductFamilyId { get; set; }
     public int FactoryId { get; set; }
+    public int? SourceFactoryId { get; set; }
     public decimal Quantity { get; set; }
     public string UOM { get; set; } = string.Empty;
     public DateTime CustomerDueDate { get; set; }

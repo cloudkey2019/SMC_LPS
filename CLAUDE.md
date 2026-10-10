@@ -74,8 +74,8 @@ Database operations go through `DatabaseConnectionManager` which dispatches to t
 > **物料映射 API 返回列表而非单对象**——禁止盲目 `.First()`，须结合优先级判定选择
 5. **Interfaces are contracts** — never modify signatures without updating contract docs first
 > **接口即契约**——未经更新契约文档，禁止修改接口签名
-6. **DB schema changes are 2号位 exclusive** — all others submit change requests
-> **数据库结构变更由 2 号位专属执行**——其他号位须提交变更申请
+6. **DB schema changes follow business Owner** — no longer 2号位-exclusive (Rule/Parameter/Strategy & APS_Auth = 3号位, core runtime = 2号位, ODS/complex-business-facts = 5号位); shared-DB schema execution must obey env permissions + change control (authorization when needed); cross-Owner core structures require cross-号位 review
+> **数据库结构按业务 Owner 负责**，不再「所有 DDL 归 2号位」——Rule/Parameter/Strategy 与 APS_Auth = 3号位、核心运行 = 2号位、ODS/复杂业务事实 = 5号位；共享库实际执行须服从环境权限与变更控制（必要时取得授权）；涉及它号位核心结构须跨号位评审
 
 ## Developer Role System ("号位") / 开发者角色体系（"号位"）
 

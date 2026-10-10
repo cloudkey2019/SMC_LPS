@@ -6,13 +6,14 @@ namespace LPS.APS.BusinessRules.Calculators;
 /// <summary>
 /// Timed Supply事实计算器
 ///
-/// 【职责边界说明 - 2026-08-25新基线】
+/// 【2026-09-06审核确认】
+/// - 调用Owner：2号位运行消费
+/// - 5号位正式业务链不使用本类结果作为最终AvailableTime
 /// - 本类包含ETA优先级公式和AvailableTime计算逻辑
-/// - 根据新冻结基线，Effective ETA和AvailableTime的最终计算属于2号位职责
-/// - 本类保留作为工具类供2号位调用，不作为5号位正式主链
+/// - Effective ETA和AvailableTime的最终计算属于2号位职责
 /// - 5号位正式职责：提供原始事实（ETA/ReleaseDate/Warehouse等），不计算最终时间
 ///
-/// 参考：文档/20260818/更新文档20260825/APS_V1_5号位新基线增量整改开发包_v1.0_20260825.md
+/// 参考：APS_V1_5号位代码审核报告_Commit_9872bae_20260906.md P2-02
 /// 核心逻辑：F13-F18、F20
 /// </summary>
 public sealed class TimedSupplyFactCalculator

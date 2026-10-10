@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using LPS.APS.Engine.Data;
 using LPS.APS.Engine.Configuration;
+using LPS.APS.Core.Interfaces;
 
 namespace LPS.APS.Engine.Extensions;
 
@@ -68,7 +69,8 @@ public static class DatabaseServiceExtensions
         services.AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>("database-aps")
             .AddCheck<OdsDatabaseHealthCheck>("database-ods")
-            .AddCheck<AuthDatabaseHealthCheck>("database-auth");
+            .AddCheck<AuthDatabaseHealthCheck>("database-auth")
+            .AddCheck<PermissionBaselineHealthCheck>("permission-baseline");
 
         return services;
     }
@@ -217,6 +219,39 @@ public class AuthDatabaseHealthCheck : Microsoft.Extensions.Diagnostics.HealthCh
         catch (Exception ex)
         {
             return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("Auth权限库健康检查异常", ex);
+        }
+    }
+}
+
+/// <summary>
+/// 权限基线健康检查（P1-06，3号位）：校验 APS_Auth.Permission 表与代码侧 V1 功能权限码对齐。
+/// 权限基线未对齐（缺失任一 V1 功能权限码）时返回 Unhealthy，配合 /health 门禁使部署「不可验收」。
+/// </summary>
+public class PermissionBaselineHealthCheck : Microsoft.Extensions.Diagnostics.HealthChecks.IHealthCheck
+{
+    private readonly IPermissionSeedService _seedService;
+
+    public PermissionBaselineHealthCheck(IPermissionSeedService seedService)
+    {
+        _seedService = seedService ?? throw new ArgumentNullException(nameof(seedService));
+    }
+
+    public async Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult> CheckHealthAsync(
+        Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var missing = await _seedService.FindMissingPermissionCodesAsync(cancellationToken);
+
+            return missing.Count == 0
+                ? Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy("权限基线已对齐（代码侧 V1 功能权限码全部落库）")
+                : Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy(
+                    $"权限基线未对齐，缺失 {missing.Count} 个功能权限码：{string.Join(", ", missing)}");
+        }
+        catch (Exception ex)
+        {
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy("权限基线健康检查异常（无法确认权限基线对齐）", ex);
         }
     }
 }

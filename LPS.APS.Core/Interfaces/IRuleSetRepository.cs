@@ -1,3 +1,4 @@
+using LPS.APS.Core.DTOs.Governance;
 using LPS.APS.Core.Entities.APS;
 
 namespace LPS.APS.Core.Interfaces;
@@ -19,6 +20,24 @@ public interface IRuleSetRepository
     /// <param name="take">返回行数（分页 size；null=不分页）</param>
     /// <param name="ct">取消令牌</param>
     Task<IReadOnlyList<RuleSet>> GetListAsync(
+        bool? activeOnly = null,
+        string? keyword = null,
+        int? skip = null,
+        int? take = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// 规则集列表查询（含最新版本摘要，R2 扩展：催办单 2026-09-22）
+    /// 与 <see cref="GetListAsync"/> 同过滤/分页语义，另 LEFT JOIN 最新版本
+    /// （CurrentVersionCode/DraftVersionCode/Status/LastChangeReason/PublishedAt/RetiredAt）。
+    /// 真源：版本摘要取自 RuleSetVersion（VersionCode 字符串；DomainKey 无真源未纳入）。
+    /// </summary>
+    /// <param name="activeOnly">true=仅启用（IsActive=1）；null=不区分</param>
+    /// <param name="keyword">模糊关键字，匹配 RuleSetCode 或 RuleSetName（null=不过滤）</param>
+    /// <param name="skip">跳过行数（分页 offset；null=不分页）</param>
+    /// <param name="take">返回行数（分页 size；null=不分页）</param>
+    /// <param name="ct">取消令牌</param>
+    Task<IReadOnlyList<RuleSetListItemDto>> GetListWithVersionAsync(
         bool? activeOnly = null,
         string? keyword = null,
         int? skip = null,

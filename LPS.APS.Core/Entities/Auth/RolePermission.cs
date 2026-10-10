@@ -6,9 +6,7 @@ namespace LPS.APS.Core.Entities.Auth;
 /// </summary>
 public class RolePermission
 {
-    public int Id { get; set; }
     public int RoleId { get; set; }
     public int PermissionId { get; set; }
     public DateTime AssignedAt { get; set; }
-    public int? AssignedBy { get; set; }
 }

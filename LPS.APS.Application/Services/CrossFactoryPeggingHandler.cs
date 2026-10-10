@@ -1,4 +1,3 @@
-using LPS.APS.Core.Dto;
 using Microsoft.Extensions.Logging;
 
 namespace LPS.APS.Application.Services;
@@ -6,16 +5,22 @@ namespace LPS.APS.Application.Services;
 /// <summary>
 /// 跨厂Pegging处理器（2号位职责）
 ///
-/// 职责边界（PM 2026-09-01 两类跨厂裁决）：
+/// 职责边界（PM 2026-09-09 跨厂SH单一Supply、分层Pegging 与 2/5号位统一裁决 v1.0）：
 /// - STAGE_HANDOFF（大工艺接续型，PI级）：同一个 PI 沿大工艺跨厂继续生产，
 ///   跨厂在途（Interplant Transit）= PI Position 的一种当前位置，不是独立 Supply。
 ///   该链由 ProductionInstructionPositionCalculator.CalculateTransitPositions 处理
 ///   （TransitFacts → PositionSlice(INTERPLANT_IN_TRANSIT)），不经过本 handler。
-/// - INTER_FACTORY_ORDER（厂间出荷指示型，SH级）：目标厂需求 → BS/KS 库存 → 具体 SH 承接，
-///   同 SH 内部按「Transit → Received → 未生产」闭合，未生产才进源厂生产需求。
-///   本 handler 的 Consume* 方法服务于该 SH 级履行闭合。
+/// - INTER_FACTORY_ORDER（厂间出荷指示型，SH级）：SH 本身是 Order（OrderType=SALES_ORDER
+///   + CustomerSegment='跨厂'，OrderNo=SH号），单一 Supply 身份，禁拆 Transit/Received/Unproduced
+///   三段式。单个 SH 整单一次入库。分两层 Pegging：第一层 Top Demand → SH Supply；
+///   第二层 SH Demand → 源厂 Supply（源厂生产完成 → SourceReadyTime → 下游 SH AvailableTime）。
 ///
-/// 5号位职责：提供 Transit/Received 事实（数量、可用时间、SH No 绑定）；2号位职责：Pegging 消费与 Quantity-Time 传播。
+/// 时间传播原语：
+///   - SourceReadyTime = max(该 SH 全部源厂 Task 的 PlannedEndTime) —— 整单最后一批完成时间。
+///   - SH AvailableTime = SourceReadyTime + CrossFactoryLT（Transit/Inspection/Transfer 三元组天数）。
+///
+/// 5号位职责：提供 ERP 跨厂事实（在途/发运/到达）与 Strict Binding Evidence；不建 SH 主档。
+/// 2号位职责：Pegging 消费与 Quantity-Time 传播（本 handler 承载时间原语，消费在主链 PeggingOrchestrator）。
 /// </summary>
 public sealed class CrossFactoryPeggingHandler
 {
@@ -27,132 +32,51 @@ public sealed class CrossFactoryPeggingHandler
     }
 
     /// <summary>
-    /// 消费同一 SH 的厂间出荷履行（防止重复计数）
+    /// 计算 SH 源厂就绪时间 = max(该 SH 全部源厂 Task 的 PlannedEndTime)。
     ///
-    /// PM 冻结口径（INTER_FACTORY_ORDER，SH级）：
-    /// - SH 内部 Transit、Received、未生产属于同一 SH 履行状态
-    /// - 不能拆成多个外部 Supply 重复入池
-    /// - 按顺序消费：Transit → Received → 剩余份额 = 未生产（触发源厂生产 Demand）
+    /// PM v1.0 口径：整单一次入库红线 → SourceReadyTime = 源厂生产份额最后一批完成时间，
+    /// 即对源厂侧已落盘 Task 的完成时间取 max。无任何源厂 Task（源厂未排）时返回 null，
+    /// 表示 SourceReadyTime 尚未产生，下游 SH AvailableTime 待 Layer-2 源厂求解后回传。
     /// </summary>
-    public InterFactoryShipmentConsumption ConsumeInterFactoryShipment(
-        string shipmentNo,
-        decimal shipmentRemainingQty,
-        IEnumerable<SupplyFact> transitSupplies,
-        IEnumerable<SupplyFact> receivedSupplies)
+    public DateTime? CalculateSourceReadyTime(IEnumerable<DateTime?> sourceFactoryCompletionTimes)
     {
-        var remaining = shipmentRemainingQty;
+        ArgumentNullException.ThrowIfNull(sourceFactoryCompletionTimes);
 
-        // 1. 消费同 SH 的 Transit
-        var transitQty = transitSupplies
-            .Where(s => s.SourceKey == shipmentNo)
-            .Sum(s => s.AvailableQuantity);
+        var valid = sourceFactoryCompletionTimes
+            .Where(t => t.HasValue)
+            .Select(t => t!.Value)
+            .ToList();
 
-        var consumedTransit = Math.Min(remaining, transitQty);
-        remaining -= consumedTransit;
-
-        // 2. 消费同 SH 的 Received
-        var receivedQty = receivedSupplies
-            .Where(s => s.SourceKey == shipmentNo)
-            .Sum(s => s.AvailableQuantity);
-
-        var consumedReceived = Math.Min(remaining, receivedQty);
-        remaining -= consumedReceived;
-
-        // 3. 剩余部分 = SH 未生产份额（触发源厂生产 Demand）
-        var unproducedQty = remaining;
-
-        _logger.LogInformation(
-            "Inter-factory shipment {SH} consumption: Total={Total}, Transit={Transit}, Received={Received}, Unproduced={Unproduced}",
-            shipmentNo, shipmentRemainingQty, consumedTransit, consumedReceived, unproducedQty);
-
-        return new InterFactoryShipmentConsumption
+        if (valid.Count == 0)
         {
-            ShipmentNo = shipmentNo,
-            TotalRemainingQty = shipmentRemainingQty,
-            ConsumedTransitQty = consumedTransit,
-            ConsumedReceivedQty = consumedReceived,
-            UnproducedQty = unproducedQty
-        };
+            _logger.LogDebug("SourceReadyTime 不产生：源厂侧无已排 Task（或完成时间为空）");
+            return null;
+        }
+
+        var max = valid.Max();
+        _logger.LogDebug("SourceReadyTime = {SourceReadyTime}（{TaskCount} 个源厂完成时间取 max）", max, valid.Count);
+        return max;
     }
 
     /// <summary>
-    /// 计算跨厂 Supply 的下游可用时间
+    /// 计算跨厂 Supply 的下游可用时间 = SourceReadyTime + 跨厂 LT。
     ///
-    /// PM 冻结口径：
-    /// - 已存在的 Transit/Received：直接使用 5号位提供的 AvailableTime
-    /// - 本次 Solver 刚排出的源厂新增生产：1号位 FinalTask 完成时间 + 跨厂 LT = 下游 AvailableTime
-    /// 跨厂 LT = Transport + Inspection + Transfer 三元组（由 5号位跨厂事实提供，经 CrossFactoryLeadTime 传入）。
+    /// PM v1.0 口径：SH AvailableTime = SourceReadyTime + CrossFactoryLT。
+    /// 跨厂 LT = Transport + Inspection + Transfer 三元组（由 CrossFactoryLeadTime 传入；
+    /// LT 参数归属 5号位/3号位仍待 PM 终裁，代码口径不绑定归属）。
     /// </summary>
     public DateTime CalculateDownstreamAvailableTime(
-        DateTime upstreamCompletionTime,
+        DateTime sourceReadyTime,
         CrossFactoryLeadTime leadTime)
     {
         var totalLeadTimeDays = leadTime.TransportDays + leadTime.InspectionDays + leadTime.TransferDays;
-        return upstreamCompletionTime.AddDays(totalLeadTimeDays);
-    }
-
-    /// <summary>
-    /// 去重检查（防止 Transit 和 Received 重复计数）
-    ///
-    /// PM 冻结口径：
-    /// - Transit/Received 自身按 SourceKey + MaterialId + FactoryId 去重
-    /// - 防止一批货到货后同时还留在 Transit 里
-    /// - 同一物理批次优先取 Received（已到货），其次 Transit（在途）
-    /// </summary>
-    public List<SupplyFact> DeduplicateCrossFactorySupplies(IEnumerable<SupplyFact> supplies)
-    {
-        var deduplicated = supplies
-            .GroupBy(s => new
-            {
-                s.SourceKey,
-                s.MaterialId,
-                s.FactoryId,
-                PhysicalKey = $"{s.SourceKey}_{s.MaterialId}_{s.FactoryId}"
-            })
-            .Select(g =>
-            {
-                // 优先取 Received（已到货），其次 Transit（在途）
-                var received = g.FirstOrDefault(s => s.SupplyType?.Contains("RECEIVED", StringComparison.OrdinalIgnoreCase) == true);
-                if (received != null)
-                {
-                    return received;
-                }
-
-                var transit = g.FirstOrDefault(s => s.SupplyType?.Contains("TRANSIT", StringComparison.OrdinalIgnoreCase) == true);
-                if (transit != null)
-                {
-                    return transit;
-                }
-
-                return g.First();
-            })
-            .ToList();
-
-        if (deduplicated.Count < supplies.Count())
-        {
-            _logger.LogInformation(
-                "Deduplicated cross-factory supplies: {Original} → {Deduplicated}",
-                supplies.Count(), deduplicated.Count);
-        }
-
-        return deduplicated;
+        return sourceReadyTime.AddDays(totalLeadTimeDays);
     }
 }
 
 /// <summary>
-/// 厂间出荷（Inter-factory Shipment）履行消费结果
-/// </summary>
-public sealed class InterFactoryShipmentConsumption
-{
-    public string ShipmentNo { get; init; } = default!;
-    public decimal TotalRemainingQty { get; init; }
-    public decimal ConsumedTransitQty { get; init; }
-    public decimal ConsumedReceivedQty { get; init; }
-    public decimal UnproducedQty { get; init; }
-}
-
-/// <summary>
-/// 跨厂前置期（Transport/Inspection/Transfer 三元组，由 5号位跨厂事实提供）
+/// 跨厂前置期（Transport/Inspection/Transfer 三元组）。
+/// 归属待 PM 终裁（v1.0 §十二「3号位治理跨厂运输提前期」 vs 旧注释「5号位提供」）。
 /// </summary>
 public sealed class CrossFactoryLeadTime
 {

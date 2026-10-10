@@ -21,6 +21,8 @@ public sealed class FrozenStrategySnapshot
     public ProcurementBlock Procurement { get; set; } = new();          // ④ 采购/良率参数（含 PlanningYield，C2-5）
     public SolverStrategyBlock SolverStrategy { get; set; } = new();    // ⑤ Solver 策略
     public CandidateGuardrailBlock CandidateGuardrail { get; set; } = new(); // ⑥ Candidate 技术 Guardrail
+    public List<SetupTransitionRuleSnapshot> SetupTransitionRules { get; set; } = []; // ⑦ 产品转换换型规则本 Run 冻结内容（v1.2 §九/§十；0号位 裁决项2）
+    public List<BatchPolicyRuleSnapshot> BatchPolicy { get; set; } = []; // ⑧ 批量策略（Batch Policy）本 Run 冻结内容（0号位 2026-10-07 裁决：本轮落码；Material+ProductionDepartment 粒度）
 }
 
 /// <summary>
@@ -190,18 +192,25 @@ public sealed class PlanningYieldRule
 /// </summary>
 public sealed class SolverStrategyBlock
 {
-    public SolverStrategyMode Mode { get; set; }          // FORWARD / BACKWARD / MIXED（冻结 E1）
+    public SolverStrategyMode Mode { get; set; }          // AUTO / FORWARD / BACKWARD / MIXED（冻结 E1；AUTO=1号位按求解上下文决定最终方向，0号位 2026-10-07 裁决）
     public bool AllowMerge { get; set; } = false;         // 是否允许合批（1号位 PhaseTwoInitialScheduler.cs:158 消费；3号位 2026-09-04 补源）
-    public int MaxIterations { get; set; } = 1000;        // 求解迭代上限（3号位 2026-09-04 补源）
-    public DynamicBottleneckMode BottleneckMode { get; set; }
+    public DynamicBottleneckMode BottleneckMode { get; set; }   // 选「哪个资源当瓶颈锚点」的枚举（Auto/PreferAnchor/ForceAnchor/NotAnchor）
+    public string? AnchorResourceCode { get; set; }        // 锚点资源编码（业务编码，非 int ResourceId）；BottleneckMode=PreferAnchor/ForceAnchor/NotAnchor 时生效，Auto 忽略；空=未指定→等价 Auto。P1-02 归 3号位 冻结、2号位 传入、1号位 消费
     public OnTimeTargetParams OnTimeTarget { get; set; } = new();
     public SplitParams Split { get; set; } = new();
     public SetupParams Setup { get; set; } = new();
     public StageOverlapParams StageOverlap { get; set; } = new();
 
+    // P1-02 补充（2026-09-14，2号位 出字段 / 3号位 冻结参数值 / 1号位 换读）：
+    // BottleneckMode 只定「选哪个锚点」，不覆盖「利用率超多少判瓶颈」的百分比阈值——这是两个可调旋钮。
+    // 0.85 判瓶颈资源（1号位 PhaseThreeDiagnostics.cs:92，填 BottleneckResourceIds，影响展示）；
+    // 0.90 判延期根因 RESOURCE_CAPACITY_SHORTAGE（PhaseThreeDiagnostics.cs:170，影响产能短缺责任归属）。
+    // 拆两个独立阈值（目标不同、可单独调）。归 3号位 冻结。
+    public decimal BottleneckUtilizationThreshold { get; set; } = 0.85m;           // 利用率 > 此值 → 判瓶颈资源
+    public decimal CapacityShortageUtilizationThreshold { get; set; } = 0.90m;     // 利用率 > 此值 → 判延期根因产能短缺
 }
 
-public enum SolverStrategyMode { Forward, Backward, Mixed }
+public enum SolverStrategyMode { Forward, Backward, Mixed, Auto }
 public enum DynamicBottleneckMode { Auto, PreferAnchor, ForceAnchor, NotAnchor }
 
 public sealed class OnTimeTargetParams
@@ -215,15 +224,19 @@ public sealed class SplitParams
 {
     public int MaxOptimizationSplitCount { get; set; } = 3;   // 如 3（清单 31）
     public bool LimitMandatorySplit { get; set; }
-    public decimal MinBatchQty { get; set; }                  // 不限无限拆分
+    public decimal MinBatchQty { get; set; } = 0.1m;          // 拆分下限（每批最小数量）；P1-02 由 0→0.1
 }
 
 public sealed class SetupParams
 {
-    /// <summary>冻结换型维度：Mold / Tool / Material / Color（清单 32；不做全局 TSP 权重矩阵平台）</summary>
-    public IReadOnlyList<string> Dimensions { get; set; } = [];
-    public double DefaultSetupMinutes { get; set; } = 30;
-    public int SetupLookAheadSize { get; set; } = 5;
+    // 2026-09-16 v1.2 废止属性式换型维度（Mold/Tool/Material/Color，原 Dimensions 字段）：
+    // 换型规则改走 RuleSetVersion 的 SetupTransitionRule（EXACT/DEFAULT），本块不再承载换型维度。
+    // 原 DefaultSetupMinutes / SetupLookAheadSize 两个旧锚已于 2026-09-20 退役（2号位删字段，生产零读者）。
+
+    // 预算参数（2026-09-20 1号位 提值，3号位 落 ParameterSetVersion 治理槽位）：
+    // 均为「次数」量纲，非毫秒——保证输入+同种子 → 同搜索轨迹 → 结果可重放（审计/回归依赖确定性）。
+    public int SetupSearchBudget { get; set; } = 500;              // 有界搜索预算：单「可移动段」邻域算子总尝试次数上限，允许范围 [100, 5000]
+    public int SetupMaxNeighborhoodTries { get; set; } = 50;       // 最大邻域尝试次数：连续无改善（Level 3 目标未下降）上限，活跃改善即清零重计，允许范围 [10, 500]
 }
 
 public sealed class StageOverlapParams
@@ -247,4 +260,50 @@ public sealed class CandidateGuardrailBlock
     public int SplitAlternatives { get; set; } = 3;
     /// <summary>红线（清单 35）：MaxImpactedOrders 超阈值仅 Warning + 人工确认，不得停止传播返回伪可行结果</summary>
     public bool WarnOnlyOnMaxImpacted { get; set; } = true;
+}
+
+/// <summary>
+/// ⑦ 产品转换换型规则快照（SetupTransitionRuleSnapshot）——本 Run 冻结内容（v1.2 §九/§十）
+/// 由 2号位 从 RuleSetVersion 已发布的 SetupTransitionRule 投影填充（3号位 出字段，2号位 接投影）；
+/// 2号位 按 Domain（ProductionDepartmentId + StageCode）裁剪建内存索引，1号位 DomainSolveRequest 消费。
+/// 仅业务键 + 分钟 + 类型，不含审计字段（Id/Created/Updated/IsActive——装载时只取有效规则）。
+/// 红线：Solver 不得运行中逐 Task 查 3号位规则库（0号位 裁决项2）。
+/// </summary>
+public sealed class SetupTransitionRuleSnapshot
+{
+    public int ProductionDepartmentId { get; set; }         // 生产部门（业务范围）
+    public string StageCode { get; set; } = "";              // 大工艺阶段码
+    public string OperationCode { get; set; } = "";          // 当前小工序
+    public int ResourceId { get; set; }                      // 当前设备
+    public int? FromMaterialId { get; set; }                 // 前产品（EXACT 明确；DEFAULT 为 null）
+    public int? ToMaterialId { get; set; }                   // 后产品（EXACT 明确；DEFAULT 为 null）
+    public string RuleType { get; set; } = "DEFAULT";       // "EXACT" / "DEFAULT"（v1.2 §九）
+    public decimal SetupMinutes { get; set; }                // 换型分钟（真实资源占用，非负）
+}
+
+/// <summary>
+/// ⑧ 批量策略（Batch Policy）规则快照——本 Run 冻结内容（0号位 2026-10-07 裁决：本轮落码）。
+/// 粒度：Material + ProductionDepartment（MaterialId NOT NULL；ProductionDepartmentId 正式业务键须明确，NULL 仅历史兼容，
+/// v5.1.10 收口④：NULL 部门历史记录不默认为所有部门生效，投影端已按 HasValue 排除）。
+/// 来源：TaskSplitRuleConfig 物理表 active + 生效区间内规则，由 FrozenStrategySnapshotProvider 装配时投影。
+/// 缺策略（某 Material+Dept 无命中规则）由消费侧 fail-closed（BATCH_POLICY_MISSING），本块不承载信号位。
+/// 仅业务键 + 参数，不含审计字段（Id/Created/Updated/IsActive——投影时只取有效规则）。
+/// v5.1.10 收口①②（2026-10-09 生效）：MaxOptimizationSplitCount / MaxBatchCandidates / BottleneckSplitStrategy / NonBottleneckStrategy
+/// 投影恒 null、主链不得消费（Solver 技术预算归 1号位 版本化安全默认；策略列仅追溯）。字段保留仅为兼容旧快照反序列化与 1号位 消费侧类型，
+/// 不构成有效预算/拆合批倾向来源。
+/// </summary>
+public sealed class BatchPolicyRuleSnapshot
+{
+    public int MaterialId { get; set; }                         // 物料（正式业务键）
+    public int? ProductionDepartmentId { get; set; }            // 生产部门（正式命中须明确；可空仅历史兼容，不默认为所有部门生效）
+
+    public decimal? MinExecutionBatchQty { get; set; }          // 硬最小批量
+    public decimal? MaxExecutionBatchQty { get; set; }          // 硬最大批量（NULL=无硬上限）
+    public decimal? PreferredBatchQty { get; set; }             // 软偏好切点（业务生效必填且 >0、处于硬 Min/Max 内，由治理发布校验）
+    public bool AllowSplit { get; set; }                        // 是否允许拆分
+    public bool AllowMerge { get; set; }                        // 是否允许合并
+    public int? MaxOptimizationSplitCount { get; set; }         // v5.1.10 收口①：恒 null 不投（1号位 Solver 技术预算）；仅类型兼容
+    public int? MaxBatchCandidates { get; set; }                // v5.1.10 收口①：恒 null 不投（1号位 Solver 技术预算）；仅类型兼容
+    public string? BottleneckSplitStrategy { get; set; }        // v5.1.10 收口②：恒 null 不投（历史兼容列，V1 不得消费拆/合批倾向）；仅类型兼容
+    public string? NonBottleneckStrategy { get; set; }          // v5.1.10 收口②：恒 null 不投（历史兼容列，V1 不得消费拆/合批倾向）；仅类型兼容
 }

@@ -19,10 +19,10 @@ namespace LPS.APS.Core.Interfaces;
 public interface IGovernanceVersionService
 {
     /// <summary>发布规则集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）。G10：changeReason 记录于审计日志（版本表无 Remarks 列）。</summary>
-    Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
+    Task PublishRuleSetVersionAsync(long ruleSetVersionId, string? publishedBy, int actorUserId, CancellationToken ct = default, string? changeReason = null);
 
     /// <summary>发布参数集版本（DRAFT/SUBMITTED/APPROVED → PUBLISHED；已 PUBLISHED 拒绝）。G10：changeReason 记录于审计日志（版本表无 Remarks 列）。</summary>
-    Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
+    Task PublishParameterSetVersionAsync(long parameterSetVersionId, string? publishedBy, int actorUserId, CancellationToken ct = default, string? changeReason = null);
 
     /// <summary>对比两个规则集版本的差异（阶段 A-8：版本溯源）</summary>
     Task<VersionDiffResult> CompareRuleSetVersionsAsync(long sourceVersionId, long targetVersionId, CancellationToken ct = default);
@@ -52,18 +52,18 @@ public interface IGovernanceVersionService
     /// IsDefault=1 时：先清同 Profile 其他默认（ClearDefaultFlagAsync）再置位，避免 UQ_StrategyProfileVersion_DefaultPublished 冲突。
     /// G10：changeReason 记录于审计日志（版本表无 Remarks 列）。
     /// </summary>
-    Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, CancellationToken ct = default, string? changeReason = null);
+    Task PublishStrategyProfileVersionAsync(long strategyProfileVersionId, string? publishedBy, int actorUserId, CancellationToken ct = default, string? changeReason = null);
 
     // ==================== G2：版本停用（3-4联调；Retired↔DISABLED 语义映射 §8.4） ====================
 
     /// <summary>停用规则集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
-    Task DisableRuleSetVersionAsync(long ruleSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
+    Task DisableRuleSetVersionAsync(long ruleSetVersionId, string? operatedBy, int actorUserId, string? reason = null, CancellationToken ct = default);
 
     /// <summary>停用参数集版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
-    Task DisableParameterSetVersionAsync(long parameterSetVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
+    Task DisableParameterSetVersionAsync(long parameterSetVersionId, string? operatedBy, int actorUserId, string? reason = null, CancellationToken ct = default);
 
     /// <summary>停用策略包版本（SUBMITTED/APPROVED/PUBLISHED → DISABLED；DISABLED/ARCHIVED 拒绝；DRAFT 不可停用）。reason 记录于审计日志。</summary>
-    Task DisableStrategyProfileVersionAsync(long strategyProfileVersionId, string? operatedBy, string? reason = null, CancellationToken ct = default);
+    Task DisableStrategyProfileVersionAsync(long strategyProfileVersionId, string? operatedBy, int actorUserId, string? reason = null, CancellationToken ct = default);
 
     /// <summary>
     /// 解析当前有效默认 PUBLISHED 策略包版本（P0-06：跨号位冻结语义，C2-3）
@@ -94,31 +94,33 @@ public interface IGovernanceVersionService
     /// 状态只能经 Submit/Approve/Publish 流转，Create 不可直提 PUBLISHED）。
     /// P0-01：DRAFT 阶段编辑的 DemandPriorityJson（内存/API 字段）由服务层归一化写入 ContentSnapshotJson，
     /// 真实持久化载体唯一为 ContentSnapshotJson；治理字段（Published/Approved）一律置空，由后续流转写入。
+    /// P1-04：Create 写审计（ActionCode=Create）并前置审计预检（fail-before-write）。
     /// </summary>
-    Task<RuleSetVersion> CreateRuleSetVersionAsync(RuleSetVersion version, string? createdBy, CancellationToken ct = default);
+    Task<RuleSetVersion> CreateRuleSetVersionAsync(RuleSetVersion version, string? createdBy, int actorUserId, CancellationToken ct = default);
 
     /// <summary>
     /// 更新规则集版本（P0-02：状态机约束——已 PUBLISHED 不可原地修改抛异常；DISABLED/ARCHIVED 不可改；
     /// 入参 Status/治理字段一律被忽略，保持现有记录值，禁止越权改状态）。
     /// P0-01：DRAFT 编辑内容统一归一化到 ContentSnapshotJson 后持久化。
+    /// P1-04：Update 写审计（ActionCode=Update）并前置审计预检（fail-before-write）。
     /// </summary>
-    Task UpdateRuleSetVersionAsync(long ruleSetVersionId, RuleSetVersion version, CancellationToken ct = default);
+    Task UpdateRuleSetVersionAsync(long ruleSetVersionId, RuleSetVersion version, int actorUserId, CancellationToken ct = default);
 
     /// <summary>获取规则集版本详情（P0-01：从 ContentSnapshotJson 投影回 DemandPriorityJson 内存字段，前端 API 兼容）</summary>
     Task<RuleSetVersion?> GetRuleSetVersionAsync(long ruleSetVersionId, CancellationToken ct = default);
 
-    /// <summary>创建参数集版本（P0-02：强制 DRAFT；P0-01：五主题 JSON 归一化到 ContentSnapshotJson 持久化）</summary>
-    Task<ParameterSetVersion> CreateParameterSetVersionAsync(ParameterSetVersion version, string? createdBy, CancellationToken ct = default);
+    /// <summary>创建参数集版本（P0-02：强制 DRAFT；P0-01：五主题 JSON 归一化到 ContentSnapshotJson 持久化；P1-04：Create 审计+预检）</summary>
+    Task<ParameterSetVersion> CreateParameterSetVersionAsync(ParameterSetVersion version, string? createdBy, int actorUserId, CancellationToken ct = default);
 
-    /// <summary>更新参数集版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结；P0-01：内容归一化）</summary>
-    Task UpdateParameterSetVersionAsync(long parameterSetVersionId, ParameterSetVersion version, CancellationToken ct = default);
+    /// <summary>更新参数集版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结；P0-01：内容归一化；P1-04：Update 审计+预检）</summary>
+    Task UpdateParameterSetVersionAsync(long parameterSetVersionId, ParameterSetVersion version, int actorUserId, CancellationToken ct = default);
 
     /// <summary>获取参数集版本详情（P0-01：ContentSnapshotJson 五子块投影回五主题 JSON 内存字段）</summary>
     Task<ParameterSetVersion?> GetParameterSetVersionAsync(long parameterSetVersionId, CancellationToken ct = default);
 
-    /// <summary>创建策略包版本（P0-02：强制 DRAFT；治理字段置空）</summary>
-    Task<StrategyProfileVersion> CreateStrategyProfileVersionAsync(StrategyProfileVersion version, string? createdBy, CancellationToken ct = default);
+    /// <summary>创建策略包版本（P0-02：强制 DRAFT；治理字段置空；P1-04：Create 审计+预检）</summary>
+    Task<StrategyProfileVersion> CreateStrategyProfileVersionAsync(StrategyProfileVersion version, string? createdBy, int actorUserId, CancellationToken ct = default);
 
-    /// <summary>更新策略包版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结）</summary>
-    Task UpdateStrategyProfileVersionAsync(long strategyProfileVersionId, StrategyProfileVersion version, CancellationToken ct = default);
+    /// <summary>更新策略包版本（P0-02：PUBLISHED/DISABLED/ARCHIVED 拒绝；Status/治理字段冻结；P1-04：Update 审计+预检）</summary>
+    Task UpdateStrategyProfileVersionAsync(long strategyProfileVersionId, StrategyProfileVersion version, int actorUserId, CancellationToken ct = default);
 }

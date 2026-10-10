@@ -38,9 +38,15 @@ public class ManualEtaMetadataTests
     public async Task F_META_01_QueryAsync_WithNoFilters_CallsRepository()
     {
         // Arrange
-        var expected = new List<ProcurementManualEtaOverride>
+        var expected = new PageResult<ProcurementManualEtaOverride>
         {
-            new ProcurementManualEtaOverride { PONo = "PO001", LineNo = 1, MaterialId = 100, IsActive = true }
+            Items = new List<ProcurementManualEtaOverride>
+            {
+                new ProcurementManualEtaOverride { PONo = "PO001", LineNo = 1, MaterialId = 100, IsActive = true }
+            },
+            Total = 1,
+            Page = 1,
+            PageSize = 20
         };
         _mockRepo.Setup(r => r.QueryAsync(
                 It.IsAny<List<int>?>(), It.IsAny<List<string>?>(), It.IsAny<List<string>?>(),
@@ -53,8 +59,9 @@ public class ManualEtaMetadataTests
         var result = await _service.QueryAsync();
 
         // Assert
-        Assert.That(result.Count, Is.EqualTo(1));
-        Assert.That(result[0].PONo, Is.EqualTo("PO001"));
+        Assert.That(result.Items.Count, Is.EqualTo(1));
+        Assert.That(result.Items[0].PONo, Is.EqualTo("PO001"));
+        Assert.That(result.Total, Is.EqualTo(1));
     }
 
     [Test]

@@ -19,7 +19,8 @@ public interface IPeggingTraceRepository
         string? supplyDocumentNo = null,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 
     /// <summary>
     /// 按订单查询Pegging分配

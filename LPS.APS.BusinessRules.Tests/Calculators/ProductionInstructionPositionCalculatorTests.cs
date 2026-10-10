@@ -34,21 +34,21 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 80m,
+                    GoodCompletedQty = 80m,
                     SnapshotId = 1
                 },
                 new StageProgressFact
                 {
                     StageCode = "S20",
                     StageSequence = 2,
-                    CumulativeCompletedQty = 50m,
+                    GoodCompletedQty = 50m,
                     SnapshotId = 2
                 },
                 new StageProgressFact
                 {
                     StageCode = "S30",
                     StageSequence = 3,
-                    CumulativeCompletedQty = 20m,
+                    GoodCompletedQty = 20m,
                     SnapshotId = 3
                 }
             }
@@ -89,14 +89,14 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 60m,
+                    GoodCompletedQty = 60m,
                     SnapshotId = 1
                 },
                 new StageProgressFact
                 {
                     StageCode = "S20",
                     StageSequence = 2,
-                    CumulativeCompletedQty = 80m,
+                    GoodCompletedQty = 80m,
                     SnapshotId = 2
                 }
             }
@@ -128,14 +128,14 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 80m,
+                    GoodCompletedQty = 80m,
                     SnapshotId = 1
                 },
                 new StageProgressFact
                 {
                     StageCode = "S30",
                     StageSequence = 3,
-                    CumulativeCompletedQty = 30m,
+                    GoodCompletedQty = 30m,
                     SnapshotId = 3
                 }
             }
@@ -169,14 +169,14 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 80m,
+                    GoodCompletedQty = 80m,
                     SnapshotId = 1
                 },
                 new StageProgressFact
                 {
                     StageCode = "S20",
                     StageSequence = 2,
-                    CumulativeCompletedQty = 30m,
+                    GoodCompletedQty = 30m,
                     SnapshotId = 2
                 }
             },
@@ -222,7 +222,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 60m,
+                    GoodCompletedQty = 60m,
                     SnapshotId = 1
                 }
             },
@@ -253,11 +253,11 @@ public class ProductionInstructionPositionCalculatorTests
         var stagePosition = result.Positions.First(p => p.PositionType == PositionType.STAGE_WAITING);
         Assert.That(stagePosition.Quantity, Is.EqualTo(35m), "Transit should be deducted from Stage (60 - 25 = 35)");
 
-        // 剩余15应该进入UNLOCATED
+        // 剩余40应该进入UNLOCATED（Stage 60被Transit 25扣除后=35，100-35-25=40）
         var unlocatedPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.UNLOCATED);
         if (unlocatedPosition != null)
         {
-            Assert.That(unlocatedPosition.Quantity, Is.EqualTo(15m));
+            Assert.That(unlocatedPosition.Quantity, Is.EqualTo(40m));
         }
     }
 
@@ -276,7 +276,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 85m,
+                    GoodCompletedQty = 85m,
                     SnapshotId = 1
                 }
             }
@@ -310,14 +310,14 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 80m,
+                    GoodCompletedQty = 80m,
                     SnapshotId = 1
                 },
                 new StageProgressFact
                 {
                     StageCode = "S20",
                     StageSequence = 2,
-                    CumulativeCompletedQty = 40m,
+                    GoodCompletedQty = 40m,
                     SnapshotId = 2
                 }
             },
@@ -328,7 +328,8 @@ public class ProductionInstructionPositionCalculatorTests
                     RelatedStageCode = "S10",
                     Quantity = 30m,
                     ReceivedAt = DateTime.Now,
-                    DocumentNo = "RECEIVED-001"
+                    DocumentNo = "PI-F07-001",
+                    DocumentType = "PI"
                 }
             }
         };
@@ -363,7 +364,7 @@ public class ProductionInstructionPositionCalculatorTests
                     {
                         StageCode = "S10",
                         StageSequence = 1,
-                        CumulativeCompletedQty = 80m,
+                        GoodCompletedQty = 80m,
                         SnapshotId = 1
                     }
                 }
@@ -380,7 +381,7 @@ public class ProductionInstructionPositionCalculatorTests
                     {
                         StageCode = "S10",
                         StageSequence = 1,
-                        CumulativeCompletedQty = 30m,
+                        GoodCompletedQty = 30m,
                         SnapshotId = 2
                     }
                 }
@@ -431,7 +432,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 50m,
+                    GoodCompletedQty = 50m,
                     SnapshotId = 1
                 }
             },
@@ -459,9 +460,14 @@ public class ProductionInstructionPositionCalculatorTests
         Assert.That(transitPosition, Is.Not.Null);
         Assert.That(transitPosition.Quantity, Is.EqualTo(50m));
 
+        // Transit(50) 与 Stage(50) 去重后，Stage 被完全扣除
         var stagePosition = result.Positions.FirstOrDefault(p => p.StageCode == "S10");
-        Assert.That(stagePosition, Is.Not.Null);
-        Assert.That(stagePosition.Quantity, Is.EqualTo(50m));
+        Assert.That(stagePosition, Is.Null, "Stage fully consumed by Transit deduction should be removed");
+
+        // 剩余50进入UNLOCATED
+        var unlocatedPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.UNLOCATED);
+        Assert.That(unlocatedPosition, Is.Not.Null);
+        Assert.That(unlocatedPosition.Quantity, Is.EqualTo(50m));
     }
 
     [Test]
@@ -503,7 +509,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 30m,
+                    GoodCompletedQty = 30m,
                     SnapshotId = 1
                 }
             }
@@ -515,19 +521,23 @@ public class ProductionInstructionPositionCalculatorTests
         Assert.That(result.IsSuccess, Is.True);
         Assert.That(result.Positions.Sum(p => p.Quantity), Is.EqualTo(100m));
 
-        // Transit 60 - Received 30 = 30剩余在途
+        // SH DocumentType 被 PI Position Calculator 拒绝（RECEIVED_SHIPPING_IN_PI_POSITION）
+        // Transit(60) 完整保留，Stage(30) 被 Transit 完全扣除
         var transitPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.INTERPLANT_TRANSIT);
         Assert.That(transitPosition, Is.Not.Null);
-        Assert.That(transitPosition.Quantity, Is.EqualTo(30m));
+        Assert.That(transitPosition.Quantity, Is.EqualTo(60m), "Transit preserved - SH Received rejected by PI Position Calculator");
 
-        // Stage 30被Received校正后变为0，被移除
+        // Stage(30) 被 Transit 完全扣除移除
         var stagePosition = result.Positions.FirstOrDefault(p => p.StageCode == "S10");
-        Assert.That(stagePosition == null || stagePosition.Quantity < 0.01m, Is.True);
+        Assert.That(stagePosition, Is.Null, "Stage fully consumed by Transit deduction");
 
-        // 差额70进入UNLOCATED
+        // 差额40进入UNLOCATED（Stage 30被Transit 60完全扣除，100-60=40）
         var unlocatedPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.UNLOCATED);
         Assert.That(unlocatedPosition, Is.Not.Null);
-        Assert.That(unlocatedPosition.Quantity, Is.EqualTo(70m));
+        Assert.That(unlocatedPosition.Quantity, Is.EqualTo(40m));
+
+        // 验证 RECEIVED_SHIPPING_IN_PI_POSITION Issue 已生成
+        Assert.That(result.Issues.Any(i => i.IssueType == "RECEIVED_SHIPPING_IN_PI_POSITION"), Is.True);
     }
 
     [Test]
@@ -578,7 +588,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 40m,
+                    GoodCompletedQty = 40m,
                     SnapshotId = 1
                 }
             }
@@ -590,14 +600,18 @@ public class ProductionInstructionPositionCalculatorTests
         Assert.That(result.IsSuccess, Is.True);
         Assert.That(result.Positions.Sum(p => p.Quantity), Is.EqualTo(100m));
 
-        // Transit-003B完全保留（不同SH不串用）
-        var transitPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.INTERPLANT_TRANSIT);
-        Assert.That(transitPosition, Is.Not.Null);
-        Assert.That(transitPosition.Quantity, Is.EqualTo(60m));
+        // SH DocumentType 被 PI Position Calculator 拒绝
+        // 两笔 Transit(40+60=100) 完整保留，Stage(40) 被 Transit 去重完全扣除
+        var transitPositions = result.Positions.Where(p => p.PositionType == PositionType.INTERPLANT_TRANSIT).ToList();
+        Assert.That(transitPositions.Count, Is.EqualTo(2), "Both Transit facts preserved");
+        Assert.That(transitPositions.Sum(t => t.Quantity), Is.EqualTo(100m));
 
-        // Stage 40被Received完全消耗后变为0
+        // Stage(40) 被 Transit 去重完全扣除
         var stagePosition = result.Positions.FirstOrDefault(p => p.StageCode == "S10");
-        Assert.That(stagePosition == null || stagePosition.Quantity < 0.01m, Is.True);
+        Assert.That(stagePosition, Is.Null, "Stage fully consumed by Transit deduction");
+
+        // 验证 RECEIVED_SHIPPING_IN_PI_POSITION Issue
+        Assert.That(result.Issues.Any(i => i.IssueType == "RECEIVED_SHIPPING_IN_PI_POSITION"), Is.True);
     }
 
     [Test]
@@ -639,7 +653,7 @@ public class ProductionInstructionPositionCalculatorTests
                 {
                     StageCode = "S10",
                     StageSequence = 1,
-                    CumulativeCompletedQty = 50m,
+                    GoodCompletedQty = 50m,
                     SnapshotId = 1
                 }
             }
@@ -651,18 +665,23 @@ public class ProductionInstructionPositionCalculatorTests
         Assert.That(result.IsSuccess, Is.True);
         Assert.That(result.Positions.Sum(p => p.Quantity), Is.EqualTo(100m));
 
-        // Transit已完全Received，不再计入Position
+        // SH DocumentType 被 PI Position Calculator 拒绝（RECEIVED_SHIPPING_IN_PI_POSITION）
+        // Transit(50) 完整保留，Stage(50) 被 Transit 去重完全扣除
         var transitPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.INTERPLANT_TRANSIT);
-        Assert.That(transitPosition == null || transitPosition.Quantity < 0.01m, Is.True);
+        Assert.That(transitPosition, Is.Not.Null, "Transit preserved - SH Received rejected");
+        Assert.That(transitPosition.Quantity, Is.EqualTo(50m));
 
-        // Stage 50被Received完全消耗后变为0
+        // Stage(50) 被 Transit 去重完全扣除
         var stagePosition = result.Positions.FirstOrDefault(p => p.StageCode == "S10");
-        Assert.That(stagePosition == null || stagePosition.Quantity < 0.01m, Is.True);
+        Assert.That(stagePosition, Is.Null, "Stage fully consumed by Transit deduction");
 
-        // 差额100进入UNLOCATED
+        // 差额50进入UNLOCATED
         var unlocatedPosition = result.Positions.FirstOrDefault(p => p.PositionType == PositionType.UNLOCATED);
         Assert.That(unlocatedPosition, Is.Not.Null);
-        Assert.That(unlocatedPosition.Quantity, Is.EqualTo(100m));
+        Assert.That(unlocatedPosition.Quantity, Is.EqualTo(50m));
+
+        // 验证 RECEIVED_SHIPPING_IN_PI_POSITION Issue
+        Assert.That(result.Issues.Any(i => i.IssueType == "RECEIVED_SHIPPING_IN_PI_POSITION"), Is.True);
     }
 }
 

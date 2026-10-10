@@ -1,5 +1,7 @@
 using Dapper;
 using DomainDefinition = LPS.APS.Core.Entities.APS.DomainDefinition;
+using ProductFamily = LPS.APS.Core.Entities.APS.ProductFamily;
+using Factory = LPS.APS.Core.Entities.APS.Factory;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Engine.Data;
 
@@ -122,5 +124,19 @@ public class DomainDefinitionRepository : IDomainDefinitionRepository
         var count = await _connectionManager.QueryFirstOrDefaultAsync<int>(
             sql, new { Id = factoryId }, db: DatabaseId.APS);
         return count > 0;
+    }
+
+    public async Task<IReadOnlyList<ProductFamily>> GetProductFamiliesAsync(CancellationToken ct = default)
+    {
+        const string sql = "SELECT * FROM [dbo].[ProductFamily] ORDER BY [Code]";
+        var results = await _connectionManager.QueryAsync<ProductFamily>(sql, null, db: DatabaseId.APS);
+        return results.ToList();
+    }
+
+    public async Task<IReadOnlyList<Factory>> GetFactoriesAsync(CancellationToken ct = default)
+    {
+        const string sql = "SELECT * FROM [dbo].[Factory] ORDER BY [Code]";
+        var results = await _connectionManager.QueryAsync<Factory>(sql, null, db: DatabaseId.APS);
+        return results.ToList();
     }
 }

@@ -7,6 +7,10 @@ public sealed class OrderListItemDto
 {
     public long Id { get; init; }
     public int PlanVersionId { get; init; }
+
+    /// <summary>订单规范化 ID（v5.0.34；跨 PlanVersion/Domain 稳定，EXPEDITE §10A.1 D00 需求订单标识，B4 补齐透传）</summary>
+    public long? OrderCanonicalId { get; init; }
+
     public string OrderNo { get; init; } = string.Empty;
     public string OrderType { get; init; } = string.Empty;
     public string MaterialCode { get; init; } = string.Empty;

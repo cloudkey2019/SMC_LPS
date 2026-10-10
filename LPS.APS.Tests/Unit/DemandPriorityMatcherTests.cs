@@ -55,7 +55,7 @@ public class DemandPriorityMatcherTests
 
         var demand = new DemandRecord
         {
-            DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow,
+            DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now,
             DelayStatus = "DELAYED", CustomerTier = "VIP", RemainingTimeHours = 10
         };
 
@@ -91,10 +91,10 @@ public class DemandPriorityMatcherTests
 
         var demands = new List<DemandRecord>
         {
-            new DemandRecord { DemandId = "D001", OrderId = "O003", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "A", RemainingTimeHours = 20 },
-            new DemandRecord { DemandId = "D002", OrderId = "O001", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 30 },
-            new DemandRecord { DemandId = "D003", OrderId = "O002", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 10 },
-            new DemandRecord { DemandId = "D004", OrderId = "O004", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "A", RemainingTimeHours = 10 }
+            new DemandRecord { DemandId = "D001", OrderId = "O003", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "A", RemainingTimeHours = 20 },
+            new DemandRecord { DemandId = "D002", OrderId = "O001", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 30 },
+            new DemandRecord { DemandId = "D003", OrderId = "O002", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 10 },
+            new DemandRecord { DemandId = "D004", OrderId = "O004", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "A", RemainingTimeHours = 10 }
         };
 
         var sorted = _matcher.SortDemands(demands, priorityBlock);
@@ -142,10 +142,10 @@ public class DemandPriorityMatcherTests
 
         var demands = new List<DemandRecord>
         {
-            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "A", OrderType = "SO" },
-            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", RemainingTimeHours = 5, OrderType = "WO" },
-            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "VIP", OrderType = "Transfer" },
-            new DemandRecord { DemandId = "D004", OrderId = "O004", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", RemainingTimeHours = 2, OrderType = "SO" }
+            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "A", OrderType = "SO" },
+            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", RemainingTimeHours = 5, OrderType = "WO" },
+            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "VIP", OrderType = "Transfer" },
+            new DemandRecord { DemandId = "D004", OrderId = "O004", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", RemainingTimeHours = 2, OrderType = "SO" }
         };
 
         var sorted = _matcher.SortDemands(demands, priorityBlock);
@@ -170,8 +170,8 @@ public class DemandPriorityMatcherTests
             }
         };
 
-        var demandMatch = new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "VIP" };
-        var demandNoMatch = new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "A" };
+        var demandMatch = new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "VIP" };
+        var demandNoMatch = new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "A" };
 
         _matcher.IsSegmentMatch(demandMatch, segment).Should().BeTrue();
         _matcher.IsSegmentMatch(demandNoMatch, segment).Should().BeFalse();
@@ -218,9 +218,9 @@ public class DemandPriorityMatcherTests
 
         var demands = new List<DemandRecord>
         {
-            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "A", RemainingTimeHours = 5 },
-            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 20 },
-            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "VIP", RemainingTimeHours = 2 }
+            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "A", RemainingTimeHours = 5 },
+            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 20 },
+            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "VIP", RemainingTimeHours = 2 }
         };
 
         var sorted = _matcher.SortDemands(demands, priorityBlock);
@@ -316,12 +316,12 @@ public class DemandPriorityMatcherTests
 
         var dueSoon = new DemandRecord
         {
-            DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow,
+            DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now,
             DueDate = new DateTime(2026, 8, 25)
         };
         var dueLate = new DemandRecord
         {
-            DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow,
+            DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now,
             DueDate = new DateTime(2026, 9, 30)
         };
 
@@ -357,9 +357,9 @@ public class DemandPriorityMatcherTests
 
         var demands = new List<DemandRecord>
         {
-            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow, OrderType = "SO", IssueDate = new DateTime(2026, 8, 20) },
-            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow, OrderType = "SO", IssueDate = null },
-            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.UtcNow, OrderType = "SO", IssueDate = new DateTime(2026, 8, 18) }
+            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now, OrderType = "SO", IssueDate = new DateTime(2026, 8, 20) },
+            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now, OrderType = "SO", IssueDate = null },
+            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.Now, OrderType = "SO", IssueDate = new DateTime(2026, 8, 18) }
         };
 
         // Act

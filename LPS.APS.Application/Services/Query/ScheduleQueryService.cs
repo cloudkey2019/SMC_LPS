@@ -102,8 +102,8 @@ public class ScheduleQueryService : IScheduleQueryService
         }
 
         // 2. 资源行（仅返回该版本里被 Task 使用到的资源，减少前端噪声）
-        //    G2-b 档①：DomainKey = 'FACTORY_{FactoryId}'（单工厂域，与 LogicalProductionDemand 一致）
-        //              factoryName / productionDepartmentName / stage 由域主数据 JOIN 投影
+        //    F-G4：资源 DomainKey 不再以 FACTORY_{id} 命名规则推导，改用 PlanVersion.DomainKey（版本唯一权威域）
+        //    factoryName / productionDepartmentName / stage 由域主数据 JOIN 投影
         var resources = await _connectionManager.QueryAsync<GanttResourceDto>(
             @"SELECT DISTINCT
                 r.Id AS ResourceId,
@@ -111,7 +111,7 @@ public class ScheduleQueryService : IScheduleQueryService
                 r.ResourceName,
                 r.FactoryId,
                 r.ProductionDepartmentId,
-                'FACTORY_' + CAST(r.FactoryId AS NVARCHAR(10)) AS DomainKey,
+                @DomainKey AS DomainKey,
                 f.Name AS FactoryName,
                 pd.DeptName AS ProductionDepartmentName,
                 pd.StageCode AS Stage
@@ -121,7 +121,7 @@ public class ScheduleQueryService : IScheduleQueryService
               LEFT JOIN ProductionDepartment pd ON pd.Id = r.ProductionDepartmentId
               WHERE t.PlanVersionId = @Id
               ORDER BY r.FactoryId, r.ProductionDepartmentId, r.ResourceCode",
-            new { Id = planVersionId },
+            new { Id = planVersionId, DomainKey = version.DomainKey },
             db: DatabaseId.APS);
 
         // 3. 任务条
@@ -146,6 +146,7 @@ public class ScheduleQueryService : IScheduleQueryService
                 t.PlannedStartTime,
                 t.PlannedEndTime,
                 t.Status,
+                t.SetupSource                 AS SetupSource,
                 CAST(CASE
                     WHEN t.PlannedEndTime IS NOT NULL
                      AND o.CustomerDueDate IS NOT NULL
@@ -400,6 +401,128 @@ public class ScheduleQueryService : IScheduleQueryService
         };
     }
 
+    /// <inheritdoc />
+    public async Task<CandidateSummaryDto> GetCandidateSummaryAsync(
+        int userId,
+        int candidateRunId,
+        CancellationToken cancellationToken = default)
+    {
+        var allowed = await ResolveAllowedDomainKeysAsync(userId, cancellationToken);
+
+        var run = await _connectionManager.QueryFirstOrDefaultAsync<(int Id, string Status)>(
+            "SELECT Id, Status FROM ScheduleRun WHERE Id = @Id",
+            new { Id = candidateRunId },
+            db: DatabaseId.APS);
+
+        if (run.Id == 0)
+            throw new KeyNotFoundException($"候选运行不存在：{candidateRunId}");
+
+        var pv = await _connectionManager.QueryFirstOrDefaultAsync<(int Id, string DomainKey, string CreatedBy, DateTime CreatedAt)>(
+            @"SELECT Id, DomainKey, CreatedBy, CreatedAt
+              FROM PlanVersion
+              WHERE SourceScheduleRunId = @RunId AND VersionCategory = 'CANDIDATE'",
+            new { RunId = candidateRunId },
+            db: DatabaseId.APS);
+
+        if (pv.Id == 0 || !IsDomainAllowed(allowed, pv.DomainKey))
+            throw new KeyNotFoundException($"候选运行不存在或超出当前用户业务范围：{candidateRunId}");
+
+        var counts = await _connectionManager.QueryFirstOrDefaultAsync<(int OrderCount, int TaskCount)>(
+            @"SELECT
+                (SELECT COUNT(*) FROM [Order] WHERE PlanVersionId = @PvId) AS OrderCount,
+                (SELECT COUNT(*) FROM [Task] WHERE PlanVersionId = @PvId) AS TaskCount",
+            new { PvId = pv.Id },
+            db: DatabaseId.APS);
+
+        return new CandidateSummaryDto
+        {
+            CandidateId = candidateRunId,
+            RunStatus = run.Status,
+            OrderCount = counts.OrderCount,
+            TaskCount = counts.TaskCount,
+            CreatedBy = pv.CreatedBy,
+            CreatedAt = pv.CreatedAt
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<CandidateDiffDto> GetCandidateDiffAsync(
+        int userId,
+        int candidateRunId,
+        CancellationToken cancellationToken = default)
+    {
+        var allowed = await ResolveAllowedDomainKeysAsync(userId, cancellationToken);
+
+        var run = await _connectionManager.QueryFirstOrDefaultAsync<(int Id, int? BasePlanVersionId)>(
+            "SELECT Id, BasePlanVersionId FROM ScheduleRun WHERE Id = @Id",
+            new { Id = candidateRunId },
+            db: DatabaseId.APS);
+
+        if (run.Id == 0)
+            throw new KeyNotFoundException($"候选运行不存在：{candidateRunId}");
+
+        var pv = await _connectionManager.QueryFirstOrDefaultAsync<(int Id, string DomainKey)>(
+            "SELECT Id, DomainKey FROM PlanVersion WHERE SourceScheduleRunId = @RunId AND VersionCategory = 'CANDIDATE'",
+            new { RunId = candidateRunId },
+            db: DatabaseId.APS);
+
+        if (pv.Id == 0 || !IsDomainAllowed(allowed, pv.DomainKey))
+            throw new KeyNotFoundException($"候选运行不存在或超出当前用户业务范围：{candidateRunId}");
+
+        if (run.BasePlanVersionId is not int baseId)
+            throw new InvalidOperationException($"候选运行 {candidateRunId} 无基础计划版本（BasePlanVersionId 为空）");
+
+        var parameters = new { CandidateId = pv.Id, BaseId = baseId };
+
+        var addedOrders = (await _connectionManager.QueryAsync<int?>(
+            $@"SELECT DISTINCT t_c.OrderId
+               FROM [Task] t_c
+               WHERE t_c.PlanVersionId = @CandidateId
+                 AND NOT EXISTS (
+                   SELECT 1 FROM [Task] t_b
+                   WHERE t_b.PlanVersionId = @BaseId{TaskKeyMatchFragment})",
+            parameters, db: DatabaseId.APS))
+            .Where(x => x.HasValue).Select(x => x!.Value).ToList();
+
+        var removedOrders = (await _connectionManager.QueryAsync<int?>(
+            $@"SELECT DISTINCT t_b.OrderId
+               FROM [Task] t_b
+               WHERE t_b.PlanVersionId = @BaseId
+                 AND NOT EXISTS (
+                   SELECT 1 FROM [Task] t_c
+                   WHERE t_c.PlanVersionId = @CandidateId{TaskKeyMatchFragment})",
+            parameters, db: DatabaseId.APS))
+            .Where(x => x.HasValue).Select(x => x!.Value).ToList();
+
+        var changedTasks = (await _connectionManager.QueryAsync<ChangedTaskDto>(
+            $@"SELECT
+                 t_c.OrderId, t_c.MaterialId, t_c.OperationSeq, t_c.OperationCode,
+                 t_c.RouteCode, t_c.PathId, t_c.ResourceId,
+                 t_c.PlannedStartTime, t_c.PlannedEndTime
+               FROM [Task] t_c
+               WHERE t_c.PlanVersionId = @CandidateId
+                 AND EXISTS (
+                   SELECT 1 FROM [Task] t_b
+                   WHERE t_b.PlanVersionId = @BaseId{TaskKeyMatchFragment}
+                     AND (
+                       (t_c.PlannedStartTime IS NULL) <> (t_b.PlannedStartTime IS NULL)
+                       OR t_c.PlannedStartTime <> t_b.PlannedStartTime
+                       OR (t_c.PlannedEndTime IS NULL) <> (t_b.PlannedEndTime IS NULL)
+                       OR t_c.PlannedEndTime <> t_b.PlannedEndTime
+                       OR (t_c.ResourceId IS NULL) <> (t_b.ResourceId IS NULL)
+                       OR t_c.ResourceId <> t_b.ResourceId))",
+            parameters, db: DatabaseId.APS)).ToList();
+
+        return new CandidateDiffDto
+        {
+            BasePlanVersionId = baseId,
+            CandidatePlanVersionId = pv.Id,
+            AddedOrders = addedOrders,
+            RemovedOrders = removedOrders,
+            ChangedTasks = changedTasks
+        };
+    }
+
     /// <summary>跨版本 Task 自然主键匹配片段（H1 差集判定：OrderId+MaterialId+OperationSeq+OperationCode+RouteCode+PathId）</summary>
     private const string TaskKeyMatchFragment = @"
         AND t_b.OrderId       = t_c.OrderId
@@ -412,8 +535,11 @@ public class ScheduleQueryService : IScheduleQueryService
     /// <summary>
     /// 解析当前用户有效范围并映射为可落 SQL 的 DomainKey 约束（F-G4）。
     /// 返回 null=全局放行；空集合=拒绝全部；否则 DomainKey ∈ 集合。
-    /// 仅 Domain/Factory 维度可映射到 PlanVersion.DomainKey（Factory 依 G2-b 档① 'FACTORY_{id}' 单工厂域约定）；
-    /// 仅授权 ProductFamily/Department 等无法在版本列表直接表达的维度时按拒绝处理（安全默认，待对齐）。
+    /// 仅 Domain 维度可无损映射到 PlanVersion.DomainKey（DomainDefinition 为唯一权威映射源）。
+    /// Factory / ProductFamily / Department 等维度不得靠命名规则（如 FACTORY_{id}）推导权威 DomainKey
+    /// （0号位 2026-09-07 F-G4 裁决：Business Scope ≠ Domain Scope 别名）。
+    /// 仅授权这些维度而无 Domain 授权时按拒绝处理（fail-closed 安全默认）；
+    /// 其正式查询闭环随普通查询迁 5号位 后由 5→2 依据 DomainDefinition / ProductionDepartment 真值落地。
     /// </summary>
     private async Task<IReadOnlySet<string>?> ResolveAllowedDomainKeysAsync(int userId, CancellationToken cancellationToken)
         => ResolveAllowedDomainKeys(await _dataScopeService.ResolveScopeAsync(userId, cancellationToken));
@@ -425,23 +551,12 @@ public class ScheduleQueryService : IScheduleQueryService
         if (scope.IsEmpty)
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        HashSet<string>? allowed = null;
-
         var domain = scope.GetValues(DataScopeTypes.Domain);
         if (domain is { Count: > 0 })
-            allowed = new HashSet<string>(domain, StringComparer.OrdinalIgnoreCase);
+            return new HashSet<string>(domain, StringComparer.OrdinalIgnoreCase);
 
-        var factory = scope.GetValues(DataScopeTypes.Factory);
-        if (factory is { Count: > 0 })
-        {
-            var factoryKeys = factory.Select(f => $"FACTORY_{f}").ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (allowed == null)
-                allowed = factoryKeys;
-            else
-                allowed.IntersectWith(factoryKeys);
-        }
-
-        return allowed ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Factory / ProductFamily / Department 无法直接映射为权威 DomainKey（F-G4）——拒绝全部（fail-closed）
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsDomainAllowed(IReadOnlySet<string>? allowed, string domainKey)

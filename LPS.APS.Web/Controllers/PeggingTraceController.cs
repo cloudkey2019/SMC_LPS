@@ -1,3 +1,7 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+using LPS.APS.Core.Authorization;
+using LPS.APS.Core.Interfaces;
 using LPS.APS.BusinessRules.Services;
 using LPS.APS.Core.Dto;
 using LPS.APS.Shared.Models;
@@ -17,20 +21,28 @@ namespace LPS.APS.Web.Controllers;
 /// - 5号位提供只读查询接口，直接读取PeggingSupplyAllocation表
 /// - 不重算Allocation，不修改分配结果
 /// </summary>
+[Authorize(Policy = PermissionCodes.PlanView)]
 [ApiController]
 [Route("api/pegging-trace")]
 public class PeggingTraceController : ControllerBase
 {
     private readonly PeggingTraceService _service;
+    private readonly IDataScopeService _dataScopeService;
     private readonly ILogger<PeggingTraceController> _logger;
 
     public PeggingTraceController(
         PeggingTraceService service,
+        IDataScopeService dataScopeService,
         ILogger<PeggingTraceController> logger)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
+        _dataScopeService = dataScopeService ?? throw new ArgumentNullException(nameof(dataScopeService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
+
+    /// <summary>解析当前登录用户 Id（无效返回 0 → 范围解析为拒绝全部，安全默认）</summary>
+    private int GetCurrentUserId()
+        => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
 
     /// <summary>
     /// 查询Pegging分配列表
@@ -49,9 +61,16 @@ public class PeggingTraceController : ControllerBase
     {
         try
         {
+            var scope = await _dataScopeService.ResolveScopeAsync(GetCurrentUserId(), cancellationToken);
+
+            // 过滤：Pegging Trace 主对象 = Demand，Factory Scope = DemandFactoryCode（31-0 Q2 裁决）。
+            // 空参按授权范围收窄结果集，避免越权返回全域数据。
+            var allowedFactories = scope.GetValues(DataScopeTypes.Factory);
+
             var result = await _service.QueryAsync(
                 planVersionId, materialCode, supplyType, commitmentStatus,
-                orderNo, supplyDocumentNo, skip, take, cancellationToken);
+                orderNo, supplyDocumentNo, skip, take, cancellationToken,
+                allowedFactories);
 
             return ApiResponse<List<PeggingTraceDto>>.Success(result);
         }

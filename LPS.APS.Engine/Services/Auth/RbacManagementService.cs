@@ -14,15 +14,15 @@ namespace LPS.APS.Engine.Services.Auth;
 /// 提供 User/Role/Permission/UserRole/RolePermission/DataScopePolicy 的增删改与分配能力。
 /// 仅访问 APS_Auth 库（Dapper 直连，与 AuthService 一致，不引入 EF 跟踪开销）。
 /// 密码哈希：PBKDF2-SHA256（见 <see cref="PasswordHasher"/>），与 <see cref="AuthService"/> 登录校验一致。
-/// 变更审计：写入 <see cref="GovernanceAuditLog"/>（复用既有审计表，best-effort，失败不阻断主流程）。
+/// 变更审计：写入 <see cref="AuditLog"/>（复用既有审计表，P1-05 fail-closed：审计失败即抛，不静默吞掉）。
 /// </summary>
 public class RbacManagementService : IRbacManagementService
 {
     private readonly DatabaseConnectionManager _connectionManager;
-    private readonly IGovernanceAuditLogRepository _auditRepository;
+    private readonly IAuditLogRepository _auditRepository;
     private readonly ILogger<RbacManagementService> _logger;
 
-    /// <summary>合法业务范围维度（DDL v1.1 CK_DataScope_Type）</summary>
+    /// <summary>合法业务范围维度（DDL v1.3 CK_DataScope_Type）</summary>
     private static readonly HashSet<string> ScopeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         DataScopeTypes.Factory, DataScopeTypes.ProductFamily, DataScopeTypes.Department,
@@ -37,7 +37,7 @@ public class RbacManagementService : IRbacManagementService
 
     public RbacManagementService(
         DatabaseConnectionManager connectionManager,
-        IGovernanceAuditLogRepository auditRepository,
+        IAuditLogRepository auditRepository,
         ILogger<RbacManagementService> logger)
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
@@ -48,17 +48,38 @@ public class RbacManagementService : IRbacManagementService
     // ==================== 用户 ====================
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<UserSummaryDto>> GetUsersAsync(CancellationToken cancellationToken = default)
+    public async Task<PageResult<UserSummaryDto>> GetUsersPagedAsync(int page, int pageSize, string? keyword, string? status, CancellationToken cancellationToken = default)
     {
-        var rows = await _connectionManager.QueryAsync<UserSummaryDto>(
-            @"SELECT Id, UserCode, UserName, Email, PhoneNumber, FactoryId, DepartmentId,
-                     Status, LastLoginTime, CreatedAt
-              FROM [User]
-              WHERE Status <> 'Deleted'
-              ORDER BY Id",
-            db: DatabaseId.Auth);
+        var conditions = new List<string>();
+        var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
 
-        return rows.ToList();
+        if (normalizedStatus is null)
+            conditions.Add("IsDeleted = 0");                                   // 默认不含已删除
+        else if (normalizedStatus.Equals("Active", StringComparison.OrdinalIgnoreCase))
+            conditions.Add("IsDeleted = 0 AND IsEnabled = 1");
+        else if (normalizedStatus.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+            conditions.Add("IsDeleted = 0 AND IsEnabled = 0");
+        else if (normalizedStatus.Equals("Deleted", StringComparison.OrdinalIgnoreCase))
+            conditions.Add("IsDeleted = 1");
+        else
+            conditions.Add("IsDeleted = 0");                                   // 未知状态值宽容回退
+
+        var parameters = new DynamicParameters();
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            conditions.Add("(LoginName LIKE @Keyword OR DisplayName LIKE @Keyword OR Email LIKE @Keyword)");
+            parameters.Add("@Keyword", $"%{keyword.Trim()}%");
+        }
+
+        var where = "WHERE " + string.Join(" AND ", conditions);
+
+        return await QueryPagedAsync<UserSummaryDto>(
+            @"Id, LoginName AS UserCode, DisplayName AS UserName, Email, PhoneNumber,
+              CASE WHEN IsDeleted = 1 THEN 'Deleted'
+                   WHEN IsEnabled = 0 THEN 'Disabled'
+                   ELSE 'Active' END AS Status,
+              LastLoginAt AS LastLoginTime, CreatedAt",
+            $"FROM [User] {where}", "Id", page, pageSize, parameters);
     }
 
     /// <inheritdoc />
@@ -76,25 +97,23 @@ public class RbacManagementService : IRbacManagementService
             throw new InvalidOperationException("密码不得与用户编码相同");
 
         await EnsureUniqueAsync(
-            "SELECT COUNT(*) FROM [User] WHERE UserCode = @UserCode",
+            "SELECT COUNT(*) FROM [User] WHERE LoginName = @UserCode",
             new { request.UserCode },
             $"用户编码已存在：{request.UserCode}");
 
         var newId = await _connectionManager.QueryFirstOrDefaultAsync<int>(
             @"INSERT INTO [User]
-                (UserCode, UserName, PasswordHash, Email, PhoneNumber, FactoryId, DepartmentId, Status, CreatedAt, UpdatedAt)
+                (LoginName, DisplayName, PasswordHash, Email, PhoneNumber, IsEnabled, IsDeleted, CreatedAt, UpdatedAt)
               OUTPUT INSERTED.Id
               VALUES
-                (@UserCode, @UserName, @PasswordHash, @Email, @PhoneNumber, @FactoryId, @DepartmentId, 'Active', GETDATE(), GETDATE())",
+                (@UserCode, @UserName, @PasswordHash, @Email, @PhoneNumber, 1, 0, GETDATE(), GETDATE())",
             new
             {
                 request.UserCode,
                 request.UserName,
                 PasswordHash = PasswordHasher.Hash(request.Password),
                 request.Email,
-                request.PhoneNumber,
-                request.FactoryId,
-                request.DepartmentId
+                request.PhoneNumber
             },
             db: DatabaseId.Auth);
 
@@ -109,8 +128,6 @@ public class RbacManagementService : IRbacManagementService
             UserName = request.UserName,
             Email = request.Email,
             PhoneNumber = request.PhoneNumber,
-            FactoryId = request.FactoryId,
-            DepartmentId = request.DepartmentId,
             Status = "Active",
             CreatedAt = DateTime.Now
         };
@@ -131,9 +148,12 @@ public class RbacManagementService : IRbacManagementService
 
         await _connectionManager.ExecuteAsync(
             @"UPDATE [User] SET
-                UserName = @UserName, Email = @Email, PhoneNumber = @PhoneNumber,
-                FactoryId = @FactoryId, DepartmentId = @DepartmentId,
-                Status = @Status, UpdatedAt = GETDATE()
+                DisplayName = @UserName, Email = @Email, PhoneNumber = @PhoneNumber,
+                IsEnabled = CASE WHEN @Status = 'Active' THEN 1 ELSE 0 END,
+                IsDeleted = CASE WHEN @Status = 'Deleted' THEN 1 ELSE 0 END,
+                RefreshToken = CASE WHEN @Status = 'Active' THEN RefreshToken ELSE NULL END,
+                RefreshTokenExpiry = CASE WHEN @Status = 'Active' THEN RefreshTokenExpiry ELSE NULL END,
+                UpdatedAt = GETDATE()
               WHERE Id = @Id",
             new
             {
@@ -141,8 +161,6 @@ public class RbacManagementService : IRbacManagementService
                 request.UserName,
                 request.Email,
                 request.PhoneNumber,
-                request.FactoryId,
-                request.DepartmentId,
                 request.Status
             },
             db: DatabaseId.Auth);
@@ -161,7 +179,7 @@ public class RbacManagementService : IRbacManagementService
             throw new InvalidOperationException("不能删除最后一名持有 auth.manage 权限的用户");
 
         await _connectionManager.ExecuteAsync(
-            "UPDATE [User] SET Status = 'Deleted', UpdatedAt = GETDATE() WHERE Id = @Id",
+            "UPDATE [User] SET IsDeleted = 1, IsEnabled = 0, RefreshToken = NULL, RefreshTokenExpiry = NULL, UpdatedAt = GETDATE() WHERE Id = @Id",
             new { Id = userId },
             db: DatabaseId.Auth);
 
@@ -173,7 +191,7 @@ public class RbacManagementService : IRbacManagementService
     /// <inheritdoc />
     public async Task AssignUserRolesAsync(int userId, IReadOnlyList<int> roleIds, int operatorId, CancellationToken cancellationToken = default)
     {
-        await EnsureExistsAsync("SELECT COUNT(*) FROM [User] WHERE Id = @Id AND Status <> 'Deleted'", userId, "用户不存在");
+        await EnsureExistsAsync("SELECT COUNT(*) FROM [User] WHERE Id = @Id AND IsDeleted = 0", userId, "用户不存在");
         var ids = await EnsureIdsExistAsync(
             "SELECT COUNT(*) FROM [Role] WHERE Id IN @Ids AND IsActive = 1",
             roleIds, "存在无效或已停用的角色 Id");
@@ -184,7 +202,7 @@ public class RbacManagementService : IRbacManagementService
             foreach (var roleId in ids)
             {
                 await conn.ExecuteAsync(
-                    "INSERT INTO UserRole (UserId, RoleId, AssignedBy) VALUES (@UserId, @RoleId, @OperatorId)",
+                    "INSERT INTO UserRole (UserId, RoleId, AssignedAt, AssignedBy) VALUES (@UserId, @RoleId, GETDATE(), @OperatorId)",
                     new { UserId = userId, RoleId = roleId, OperatorId = operatorId }, tx);
             }
             return true;
@@ -198,15 +216,27 @@ public class RbacManagementService : IRbacManagementService
     // ==================== 角色 ====================
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<RoleSummaryDto>> GetRolesAsync(CancellationToken cancellationToken = default)
+    public async Task<PageResult<RoleSummaryDto>> GetRolesPagedAsync(int page, int pageSize, string? keyword, bool? isSystem, CancellationToken cancellationToken = default)
     {
-        var rows = await _connectionManager.QueryAsync<RoleSummaryDto>(
-            @"SELECT Id, RoleCode, RoleName, Description, IsSystemRole, IsActive, CreatedAt
-              FROM [Role]
-              ORDER BY Id",
-            db: DatabaseId.Auth);
+        var conditions = new List<string>();
+        var parameters = new DynamicParameters();
 
-        return rows.ToList();
+        if (isSystem.HasValue)
+        {
+            conditions.Add("IsSystemRole = @IsSystemRole");
+            parameters.Add("@IsSystemRole", isSystem.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            conditions.Add("(RoleCode LIKE @Keyword OR RoleName LIKE @Keyword)");
+            parameters.Add("@Keyword", $"%{keyword.Trim()}%");
+        }
+
+        var where = conditions.Count == 0 ? "WHERE 1 = 1" : "WHERE " + string.Join(" AND ", conditions);
+
+        return await QueryPagedAsync<RoleSummaryDto>(
+            "Id, RoleCode, RoleName, Description, IsSystemRole, IsActive, CreatedAt",
+            $"FROM [Role] {where}", "Id", page, pageSize, parameters);
     }
 
     /// <inheritdoc />
@@ -267,7 +297,7 @@ public class RbacManagementService : IRbacManagementService
     /// <inheritdoc />
     public async Task DeleteRoleAsync(int roleId, int operatorId, CancellationToken cancellationToken = default)
     {
-        await EnsureExistsAsync("SELECT COUNT(*) FROM [Role] WHERE Id = @Id", roleId, "角色不存在");
+        await EnsureRoleDeletableAsync(roleId);
 
         await _connectionManager.ExecuteAsync(
             "UPDATE [Role] SET IsActive = 0, UpdatedAt = GETDATE() WHERE Id = @Id",
@@ -293,7 +323,7 @@ public class RbacManagementService : IRbacManagementService
             foreach (var permissionId in ids)
             {
                 await conn.ExecuteAsync(
-                    "INSERT INTO RolePermission (RoleId, PermissionId) VALUES (@RoleId, @PermissionId)",
+                    "INSERT INTO RolePermission (RoleId, PermissionId, AssignedAt) VALUES (@RoleId, @PermissionId, GETDATE())",
                     new { RoleId = roleId, PermissionId = permissionId }, tx);
             }
             return true;
@@ -307,15 +337,32 @@ public class RbacManagementService : IRbacManagementService
     // ==================== 权限 ====================
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PermissionSummaryDto>> GetPermissionsAsync(CancellationToken cancellationToken = default)
+    public async Task<PageResult<PermissionSummaryDto>> GetPermissionsPagedAsync(int page, int pageSize, string? module, string? actionType, string? keyword, CancellationToken cancellationToken = default)
     {
-        var rows = await _connectionManager.QueryAsync<PermissionSummaryDto>(
-            @"SELECT Id, PermissionCode, PermissionName, Description, Module, Category, IsActive, CreatedAt
-              FROM [Permission]
-              ORDER BY Id",
-            db: DatabaseId.Auth);
+        var conditions = new List<string>();
+        var parameters = new DynamicParameters();
 
-        return rows.ToList();
+        if (!string.IsNullOrWhiteSpace(module))
+        {
+            conditions.Add("Module = @Module");
+            parameters.Add("@Module", module.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(actionType))
+        {
+            conditions.Add("ActionType = @ActionType");
+            parameters.Add("@ActionType", actionType.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            conditions.Add("(PermissionCode LIKE @Keyword OR PermissionName LIKE @Keyword)");
+            parameters.Add("@Keyword", $"%{keyword.Trim()}%");
+        }
+
+        var where = conditions.Count == 0 ? "WHERE 1 = 1" : "WHERE " + string.Join(" AND ", conditions);
+
+        return await QueryPagedAsync<PermissionSummaryDto>(
+            "Id, PermissionCode, PermissionName, Description, Module, ActionType, IsActive, CreatedAt",
+            $"FROM [Permission] {where}", "Module, Id", page, pageSize, parameters);
     }
 
     /// <inheritdoc />
@@ -333,16 +380,16 @@ public class RbacManagementService : IRbacManagementService
 
         var newId = await _connectionManager.QueryFirstOrDefaultAsync<int>(
             @"INSERT INTO [Permission]
-                (PermissionCode, PermissionName, Description, Module, Category, IsActive, CreatedAt, UpdatedAt)
+                (PermissionCode, PermissionName, Description, Module, ActionType, IsActive, CreatedAt, UpdatedAt)
               OUTPUT INSERTED.Id
-              VALUES (@PermissionCode, @PermissionName, @Description, @Module, @Category, 1, GETDATE(), GETDATE())",
+              VALUES (@PermissionCode, @PermissionName, @Description, @Module, @ActionType, 1, GETDATE(), GETDATE())",
             new
             {
                 request.PermissionCode,
                 request.PermissionName,
                 request.Description,
                 request.Module,
-                request.Category
+                request.ActionType
             },
             db: DatabaseId.Auth);
 
@@ -357,7 +404,7 @@ public class RbacManagementService : IRbacManagementService
             PermissionName = request.PermissionName,
             Description = request.Description,
             Module = request.Module,
-            Category = request.Category,
+            ActionType = request.ActionType,
             IsActive = true,
             CreatedAt = DateTime.Now
         };
@@ -366,15 +413,27 @@ public class RbacManagementService : IRbacManagementService
     // ==================== 业务范围策略 ====================
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<DataScopePolicyDto>> GetDataScopePoliciesAsync(CancellationToken cancellationToken = default)
+    public async Task<PageResult<DataScopePolicyDto>> GetScopesPagedAsync(int page, int pageSize, string? scopeType, string? keyword, CancellationToken cancellationToken = default)
     {
-        var rows = await _connectionManager.QueryAsync<DataScopePolicyDto>(
-            @"SELECT Id, ScopeType, ScopeValue, Description, CreatedAt
-              FROM DataScopePolicy
-              ORDER BY ScopeType, Id",
-            db: DatabaseId.Auth);
+        var conditions = new List<string> { "IsEnabled = 1" };
+        var parameters = new DynamicParameters();
 
-        return rows.ToList();
+        if (!string.IsNullOrWhiteSpace(scopeType))
+        {
+            conditions.Add("ScopeType = @ScopeType");
+            parameters.Add("@ScopeType", scopeType.Trim());
+        }
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            conditions.Add("(ScopeValue LIKE @Keyword OR Description LIKE @Keyword)");
+            parameters.Add("@Keyword", $"%{keyword.Trim()}%");
+        }
+
+        var where = "WHERE " + string.Join(" AND ", conditions);
+
+        return await QueryPagedAsync<DataScopePolicyDto>(
+            "Id, ScopeType, ScopeValue, Description, CreatedAt",
+            $"FROM DataScopePolicy {where}", "Id", page, pageSize, parameters);
     }
 
     /// <inheritdoc />
@@ -393,9 +452,9 @@ public class RbacManagementService : IRbacManagementService
             $"业务范围策略已存在：{request.ScopeType}/{request.ScopeValue}");
 
         var newId = await _connectionManager.QueryFirstOrDefaultAsync<int>(
-            @"INSERT INTO DataScopePolicy (ScopeType, ScopeValue, Description, CreatedAt)
+            @"INSERT INTO DataScopePolicy (ScopeType, ScopeValue, Description, IsEnabled, CreatedAt, UpdatedAt)
               OUTPUT INSERTED.Id
-              VALUES (@ScopeType, @ScopeValue, @Description, GETDATE())",
+              VALUES (@ScopeType, @ScopeValue, @Description, 1, GETDATE(), GETDATE())",
             new { request.ScopeType, request.ScopeValue, request.Description },
             db: DatabaseId.Auth);
 
@@ -419,7 +478,7 @@ public class RbacManagementService : IRbacManagementService
         await EnsureExistsAsync("SELECT COUNT(*) FROM DataScopePolicy WHERE Id = @Id", policyId, "业务范围策略不存在");
 
         await _connectionManager.ExecuteAsync(
-            "UPDATE DataScopePolicy SET Description = @Description WHERE Id = @Id",
+            "UPDATE DataScopePolicy SET Description = @Description, UpdatedAt = GETDATE() WHERE Id = @Id",
             new { Id = policyId, Description = description },
             db: DatabaseId.Auth);
 
@@ -433,22 +492,23 @@ public class RbacManagementService : IRbacManagementService
     {
         await EnsureExistsAsync("SELECT COUNT(*) FROM DataScopePolicy WHERE Id = @Id", policyId, "业务范围策略不存在");
 
-        // 先清引用（UserDataScope / RoleDataScope 有 ON DELETE CASCADE，但显式清理更可控）
-        await _connectionManager.ExecuteAsync("DELETE FROM UserDataScope WHERE ScopePolicyId = @Id", new { Id = policyId }, db: DatabaseId.Auth);
-        await _connectionManager.ExecuteAsync("DELETE FROM RoleDataScope WHERE ScopePolicyId = @Id", new { Id = policyId }, db: DatabaseId.Auth);
-        await _connectionManager.ExecuteAsync("DELETE FROM DataScopePolicy WHERE Id = @Id", new { Id = policyId }, db: DatabaseId.Auth);
+        // D-2 裁决：正式「删除」收敛为「停用」，不物理删除、不级联清理引用，
+        // 保留 UserDataScope / RoleDataScope 关联与历史，停用后不再参与分配与授权。
+        await _connectionManager.ExecuteAsync(
+            "UPDATE DataScopePolicy SET IsEnabled = 0, UpdatedAt = GETDATE() WHERE Id = @Id",
+            new { Id = policyId }, db: DatabaseId.Auth);
 
-        _logger.LogInformation("删除业务范围策略成功: Id={Id}", policyId);
+        _logger.LogInformation("停用业务范围策略成功: Id={Id}", policyId);
 
-        await WriteAuditAsync("Delete", "DataScopePolicy", policyId, operatorId);
+        await WriteAuditAsync("Disable", "DataScopePolicy", policyId, operatorId, afterStatus: "Inactive");
     }
 
     /// <inheritdoc />
     public async Task AssignUserScopesAsync(int userId, IReadOnlyList<int> policyIds, int operatorId, CancellationToken cancellationToken = default)
     {
-        await EnsureExistsAsync("SELECT COUNT(*) FROM [User] WHERE Id = @Id AND Status <> 'Deleted'", userId, "用户不存在");
+        await EnsureExistsAsync("SELECT COUNT(*) FROM [User] WHERE Id = @Id AND IsDeleted = 0", userId, "用户不存在");
         var ids = await EnsureIdsExistAsync(
-            "SELECT COUNT(*) FROM DataScopePolicy WHERE Id IN @Ids",
+            "SELECT COUNT(*) FROM DataScopePolicy WHERE Id IN @Ids AND IsEnabled = 1",
             policyIds, "存在无效的业务范围策略 Id");
 
         await _connectionManager.ExecuteInTransactionAsync(async (conn, tx) =>
@@ -457,7 +517,7 @@ public class RbacManagementService : IRbacManagementService
             foreach (var policyId in ids)
             {
                 await conn.ExecuteAsync(
-                    "INSERT INTO UserDataScope (UserId, ScopePolicyId, AssignedBy) VALUES (@UserId, @PolicyId, @OperatorId)",
+                    "INSERT INTO UserDataScope (UserId, ScopePolicyId, AssignedAt, AssignedBy) VALUES (@UserId, @PolicyId, GETDATE(), @OperatorId)",
                     new { UserId = userId, PolicyId = policyId, OperatorId = operatorId }, tx);
             }
             return true;
@@ -473,7 +533,7 @@ public class RbacManagementService : IRbacManagementService
     {
         await EnsureExistsAsync("SELECT COUNT(*) FROM [Role] WHERE Id = @Id", roleId, "角色不存在");
         var ids = await EnsureIdsExistAsync(
-            "SELECT COUNT(*) FROM DataScopePolicy WHERE Id IN @Ids",
+            "SELECT COUNT(*) FROM DataScopePolicy WHERE Id IN @Ids AND IsEnabled = 1",
             policyIds, "存在无效的业务范围策略 Id");
 
         await _connectionManager.ExecuteInTransactionAsync(async (conn, tx) =>
@@ -482,7 +542,7 @@ public class RbacManagementService : IRbacManagementService
             foreach (var policyId in ids)
             {
                 await conn.ExecuteAsync(
-                    "INSERT INTO RoleDataScope (RoleId, ScopePolicyId) VALUES (@RoleId, @PolicyId)",
+                    "INSERT INTO RoleDataScope (RoleId, ScopePolicyId, AssignedAt) VALUES (@RoleId, @PolicyId, GETDATE())",
                     new { RoleId = roleId, PolicyId = policyId }, tx);
             }
             return true;
@@ -493,7 +553,238 @@ public class RbacManagementService : IRbacManagementService
         await WriteAuditAsync("AssignScopes", "Role", roleId, operatorId, remarks: $"分配业务范围 {ids.Count} 项");
     }
 
+    // ==================== 读回当前分配 ====================
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RoleSummaryDto>> GetUserRolesAsync(int userId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _connectionManager.QueryAsync<RoleSummaryDto>(
+            @"SELECT r.Id, r.RoleCode, r.RoleName, r.Description, r.IsSystemRole, r.IsActive, r.CreatedAt
+              FROM [Role] r
+              INNER JOIN UserRole ur ON ur.RoleId = r.Id
+              WHERE ur.UserId = @UserId AND r.IsActive = 1
+              ORDER BY r.Id",
+            new { UserId = userId }, db: DatabaseId.Auth);
+
+        return rows.ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<DataScopePolicyDto>> GetUserScopesAsync(int userId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _connectionManager.QueryAsync<DataScopePolicyDto>(
+            @"SELECT p.Id, p.ScopeType, p.ScopeValue, p.Description, p.CreatedAt
+              FROM DataScopePolicy p
+              INNER JOIN UserDataScope uds ON uds.ScopePolicyId = p.Id
+              WHERE uds.UserId = @UserId AND p.IsEnabled = 1
+              ORDER BY p.ScopeType, p.Id",
+            new { UserId = userId }, db: DatabaseId.Auth);
+
+        return rows.ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PermissionSummaryDto>> GetRolePermissionsAsync(int roleId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _connectionManager.QueryAsync<PermissionSummaryDto>(
+            @"SELECT p.Id, p.PermissionCode, p.PermissionName, p.Description, p.Module, p.ActionType, p.IsActive, p.CreatedAt
+              FROM [Permission] p
+              INNER JOIN RolePermission rp ON rp.PermissionId = p.Id
+              WHERE rp.RoleId = @RoleId AND p.IsActive = 1
+              ORDER BY p.Id",
+            new { RoleId = roleId }, db: DatabaseId.Auth);
+
+        return rows.ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<DataScopePolicyDto>> GetRoleScopesAsync(int roleId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _connectionManager.QueryAsync<DataScopePolicyDto>(
+            @"SELECT p.Id, p.ScopeType, p.ScopeValue, p.Description, p.CreatedAt
+              FROM DataScopePolicy p
+              INNER JOIN RoleDataScope rds ON rds.ScopePolicyId = p.Id
+              WHERE rds.RoleId = @RoleId AND p.IsEnabled = 1
+              ORDER BY p.ScopeType, p.Id",
+            new { RoleId = roleId }, db: DatabaseId.Auth);
+
+        return rows.ToList();
+    }
+
+    // ==================== 测试数据清理与批量删除（R1 / R4） ====================
+
+    /// <inheritdoc />
+    public async Task<TestDataCleanupResult> CleanupTestDataAsync(int operatorId, CancellationToken cancellationToken = default)
+    {
+        // R1 方案 a：仅按命名规则软删/停用 verify 残留，不带任意 id 列表（fail-closed）。
+        var users = await _connectionManager.ExecuteAsync(
+            @"UPDATE [User] SET IsDeleted = 1, IsEnabled = 0, UpdatedAt = GETDATE()
+              WHERE IsDeleted = 0
+                AND Id <> @OperatorId
+                AND (LoginName LIKE 'TEST-USER-%' OR LoginName LIKE 'aps.auth.negate.%')",
+            new { OperatorId = operatorId },
+            db: DatabaseId.Auth);
+
+        var roles = await _connectionManager.ExecuteAsync(
+            "UPDATE [Role] SET IsActive = 0, UpdatedAt = GETDATE() WHERE IsActive = 1 AND RoleCode LIKE 'aps.verify.role.%'",
+            db: DatabaseId.Auth);
+
+        var permissions = await _connectionManager.ExecuteAsync(
+            "UPDATE [Permission] SET IsActive = 0, UpdatedAt = GETDATE() WHERE IsActive = 1 AND PermissionCode LIKE 'aps.verify.%'",
+            db: DatabaseId.Auth);
+
+        _logger.LogInformation(
+            "清理测试数据完成: 用户={Users}, 角色={Roles}, 权限={Permissions}",
+            users, roles, permissions);
+
+        await WriteAuditAsync("CleanupTestData", "TestData", 0, operatorId,
+            remarks: $"users={users}, roles={roles}, permissions={permissions}");
+
+        return new TestDataCleanupResult
+        {
+            Users = users,
+            Roles = roles,
+            Permissions = permissions,
+            Failed = Array.Empty<TestDataCleanupFailure>()
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<BatchDeleteResult> DeleteUsersBatchAsync(IReadOnlyList<int> userIds, int operatorId, CancellationToken cancellationToken = default)
+    {
+        var succeeded = new List<int>();
+        var failed = new List<BatchDeleteFailure>();
+
+        foreach (var userId in userIds.Distinct())
+        {
+            try
+            {
+                await DeleteUserAsync(userId, operatorId, cancellationToken);
+                succeeded.Add(userId);
+            }
+            catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+            {
+                failed.Add(new BatchDeleteFailure("user", userId, ex.Message));
+            }
+        }
+
+        return new BatchDeleteResult { Succeeded = succeeded, Failed = failed };
+    }
+
+    /// <inheritdoc />
+    public async Task<BatchDeleteResult> DeleteRolesBatchAsync(IReadOnlyList<int> roleIds, int operatorId, CancellationToken cancellationToken = default)
+    {
+        var succeeded = new List<int>();
+        var failed = new List<BatchDeleteFailure>();
+
+        foreach (var roleId in roleIds.Distinct())
+        {
+            try
+            {
+                // 复用单删（含系统角色保护，单删/批量已收敛）
+                await DeleteRoleAsync(roleId, operatorId, cancellationToken);
+                succeeded.Add(roleId);
+            }
+            catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+            {
+                failed.Add(new BatchDeleteFailure("role", roleId, ex.Message));
+            }
+        }
+
+        return new BatchDeleteResult { Succeeded = succeeded, Failed = failed };
+    }
+
+    /// <inheritdoc />
+    public async Task<BatchDeleteResult> DeletePermissionsBatchAsync(IReadOnlyList<int> permissionIds, int operatorId, CancellationToken cancellationToken = default)
+    {
+        var succeeded = new List<int>();
+        var failed = new List<BatchDeleteFailure>();
+
+        // 内置权限码保护：V1 功能权限码（PermissionCodes.All，43 码）不可停用，防止功能授权失效/管理员自锁。
+        var builtIns = new HashSet<string>(PermissionCodes.All, StringComparer.OrdinalIgnoreCase);
+
+        // 权限批量删除 = 停用（IsActive=false，保留 RolePermission 关联，不解绑），与 R1 清理语义一致。
+        foreach (var permissionId in permissionIds.Distinct())
+        {
+            try
+            {
+                var code = await _connectionManager.QueryFirstOrDefaultAsync<string?>(
+                    "SELECT PermissionCode FROM [Permission] WHERE Id = @Id", new { Id = permissionId }, db: DatabaseId.Auth);
+                if (code is null)
+                    throw new KeyNotFoundException("权限不存在");
+                if (builtIns.Contains(code))
+                    throw new InvalidOperationException($"内置权限码不可停用：{code}");
+
+                await _connectionManager.ExecuteAsync(
+                    "UPDATE [Permission] SET IsActive = 0, UpdatedAt = GETDATE() WHERE Id = @Id",
+                    new { Id = permissionId }, db: DatabaseId.Auth);
+                await WriteAuditAsync("Disable", "Permission", permissionId, operatorId, afterStatus: "Inactive");
+                succeeded.Add(permissionId);
+            }
+            catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+            {
+                failed.Add(new BatchDeleteFailure("permission", permissionId, ex.Message));
+            }
+        }
+
+        return new BatchDeleteResult { Succeeded = succeeded, Failed = failed };
+    }
+
+    /// <inheritdoc />
+    public async Task<BatchDeleteResult> DeleteScopesBatchAsync(IReadOnlyList<int> policyIds, int operatorId, CancellationToken cancellationToken = default)
+    {
+        var succeeded = new List<int>();
+        var failed = new List<BatchDeleteFailure>();
+
+        foreach (var policyId in policyIds.Distinct())
+        {
+            try
+            {
+                await DeleteDataScopePolicyAsync(policyId, operatorId, cancellationToken);
+                succeeded.Add(policyId);
+            }
+            catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+            {
+                failed.Add(new BatchDeleteFailure("scope", policyId, ex.Message));
+            }
+        }
+
+        return new BatchDeleteResult { Succeeded = succeeded, Failed = failed };
+    }
+
     // ==================== 私有辅助 ====================
+
+    /// <summary>通用分页查询：COUNT 总数 + OFFSET/FETCH 取当前页（R2 契约，pageSize 上限 200）。</summary>
+    private async Task<PageResult<T>> QueryPagedAsync<T>(
+        string columnList,
+        string fromClause,
+        string orderBy,
+        int page,
+        int pageSize,
+        DynamicParameters parameters)
+    {
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        var offset = (page - 1) * pageSize;
+
+        parameters.Add("@Offset", offset);
+        parameters.Add("@PageSize", pageSize);
+
+        var total = await _connectionManager.QueryFirstOrDefaultAsync<int?>(
+            $"SELECT COUNT(*) {fromClause}", parameters, db: DatabaseId.Auth) ?? 0;
+
+        var rows = await _connectionManager.QueryAsync<T>(
+            $"SELECT {columnList} {fromClause} ORDER BY {orderBy} OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY",
+            parameters, db: DatabaseId.Auth);
+
+        return new PageResult<T>
+        {
+            Items = rows.ToList(),
+            Total = total,
+            Page = page,
+            PageSize = pageSize
+        };
+    }
 
     /// <summary>校验主键存在性，不存在抛 <see cref="KeyNotFoundException"/>。</summary>
     private async Task EnsureExistsAsync(string countSql, int id, string notFoundMessage)
@@ -501,6 +792,17 @@ public class RbacManagementService : IRbacManagementService
         var count = await _connectionManager.QueryFirstOrDefaultAsync<int?>(countSql, new { Id = id }, db: DatabaseId.Auth) ?? 0;
         if (count == 0)
             throw new KeyNotFoundException(notFoundMessage);
+    }
+
+    /// <summary>校验角色可停用：不存在抛 <see cref="KeyNotFoundException"/>，系统角色抛 <see cref="InvalidOperationException"/>（单删与批量共用，收敛分叉）。</summary>
+    private async Task EnsureRoleDeletableAsync(int roleId)
+    {
+        var isSystem = await _connectionManager.QueryFirstOrDefaultAsync<bool?>(
+            "SELECT IsSystemRole FROM [Role] WHERE Id = @Id", new { Id = roleId }, db: DatabaseId.Auth);
+        if (isSystem is null)
+            throw new KeyNotFoundException("角色不存在");
+        if (isSystem.Value)
+            throw new InvalidOperationException($"系统角色不可停用：Id={roleId}");
     }
 
     /// <summary>校验字段唯一性，已存在抛 <see cref="InvalidOperationException"/>。</summary>
@@ -536,7 +838,7 @@ public class RbacManagementService : IRbacManagementService
               JOIN Role r ON r.Id = ur.RoleId AND r.IsActive = 1
               JOIN RolePermission rp ON rp.RoleId = r.Id
               JOIN Permission p ON p.Id = rp.PermissionId AND p.IsActive = 1
-              WHERE u.Id = @UserId AND u.Status = 'Active' AND p.PermissionCode = @AuthManage",
+              WHERE u.Id = @UserId AND u.IsEnabled = 1 AND u.IsDeleted = 0 AND p.PermissionCode = @AuthManage",
             new { UserId = userId, AuthManage = PermissionCodes.AuthManage }, db: DatabaseId.Auth) ?? 0;
 
         if (holds == 0)
@@ -548,14 +850,14 @@ public class RbacManagementService : IRbacManagementService
               JOIN Role r ON r.Id = ur.RoleId AND r.IsActive = 1
               JOIN RolePermission rp ON rp.RoleId = r.Id
               JOIN Permission p ON p.Id = rp.PermissionId AND p.IsActive = 1
-              WHERE u.Status = 'Active' AND p.PermissionCode = @AuthManage",
+              WHERE u.IsEnabled = 1 AND u.IsDeleted = 0 AND p.PermissionCode = @AuthManage",
             new { AuthManage = PermissionCodes.AuthManage }, db: DatabaseId.Auth) ?? 0;
 
         return total <= 1;
     }
 
     /// <summary>
-    /// 写审计（复用 GovernanceAuditLog，best-effort：表不可用时仅告警不阻断主流程）。
+    /// 写审计（复用 AuditLog，P1-05 fail-closed：审计失败即抛，保证权限变更可追溯）。
     /// </summary>
     private async Task WriteAuditAsync(
         string operationType,
@@ -568,23 +870,25 @@ public class RbacManagementService : IRbacManagementService
     {
         try
         {
-            await _auditRepository.AddAsync(new GovernanceAuditLog
+            await _auditRepository.AddAsync(new AuditLog
             {
-                OperationType = operationType,
+                ActionCode = operationType,
                 EntityType = entityType,
-                EntityId = entityId,
+                EntityId = entityId.ToString(),
                 VersionCode = versionCode,
-                AfterStatus = afterStatus,
-                OperatedBy = operatorId.ToString(),
-                OperatedAt = DateTime.Now,
-                Remarks = remarks
+                NewValue = afterStatus,
+                UserId = operatorId,
+                UserCode = operatorId.ToString(),
+                OccurredAt = DateTime.Now,
+                Remark = remarks
             });
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
-                "RBAC 审计写入失败（GovernanceAuditLog 可能未就绪）：{OperationType} {EntityType} {EntityId}",
+            _logger.LogError(ex,
+                "RBAC 审计写入失败（AuditLog 可能未就绪）：{ActionCode} {EntityType} {EntityId}",
                 operationType, entityType, entityId);
+            throw;
         }
     }
 }

@@ -8,7 +8,7 @@ namespace LPS.APS.Engine.Repositories.Governance;
 
 /// <summary>
 /// ScheduleRun 治理仓储实现（Dapper + APS_Production）
-/// 对应表：APS_Production.dbo.ScheduleRun（冻结 DDL v5.1.2 §3.1）
+/// 对应表：APS_Production.dbo.ScheduleRun（冻结 DDL v5.1.7 §3.1）
 /// 边界：只读取冻结列；仅"FAILED 恢复新建"一条写入路径（IRunLifecycleService.RecoverFailedRunAsync 内部使用）；
 ///       不重写 2号位运行状态执行流转。
 /// </summary>
@@ -74,35 +74,86 @@ public class ScheduleRunRepository : IScheduleRunRepository
         return rows.ToList();
     }
 
-    public async Task<int> InsertForRecoveryAsync(ScheduleRunGov source, string triggeredBy, CancellationToken ct = default)
+    /// <inheritdoc />
+    public async Task<int> InsertForRecoveryWithShellsAsync(
+        ScheduleRunGov source,
+        IReadOnlyList<RecoveryShellSpec> shells,
+        string triggeredBy,
+        CancellationToken ct = default)
     {
-        const string sql = @"
-            INSERT INTO [dbo].[ScheduleRun]
-                ([RunType], [Status], [TriggeredBy], [DataCutoffTime],
-                 [StrategyProfileVersionId], [ExpectedDomainKeysJson], [StartedAt], [CreatedAt])
-            OUTPUT INSERTED.[Id]
-            VALUES (@RunType, 'RUNNING', @TriggeredBy, GETDATE(),
-                    @StrategyProfileVersionId, @ExpectedDomainKeysJson, GETDATE(), GETDATE())";
-
-        var id = await _connectionManager.QueryFirstOrDefaultAsync<int>(
-            sql,
-            new
-            {
-                source.RunType,
-                TriggeredBy = triggeredBy,
-                source.StrategyProfileVersionId,
-                source.ExpectedDomainKeysJson,
-            },
-            db: DatabaseId.APS);
-
-        if (id <= 0)
+        if (shells is null || shells.Count == 0)
         {
-            throw new InvalidOperationException($"FAILED 恢复新建 ScheduleRun 失败（源运行 {source.Id}）");
+            throw new InvalidOperationException("FAILED 恢复建壳列表为空（须至少一个预期 Domain 壳）");
         }
 
-        _logger.LogInformation("ScheduleRun 恢复新建成功：NewRunId={NewRunId}, SourceRunId={SourceRunId}, RunType={RunType}",
-            id, source.Id, source.RunType);
-        return id;
+        var now = DateTime.Now;
+        var ts = now.ToString("yyyyMMddHHmmss");
+
+        return await _connectionManager.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            const string insertRunSql = @"
+                INSERT INTO [dbo].[ScheduleRun]
+                    ([RunType], [Status], [TriggeredBy], [DataCutoffTime],
+                     [StrategyProfileVersionId], [ExpectedDomainKeysJson], [ScopeJson], [StartedAt], [CreatedAt])
+                OUTPUT INSERTED.[Id]
+                VALUES (@RunType, 'RUNNING', @TriggeredBy, GETDATE(),
+                        @StrategyProfileVersionId, @ExpectedDomainKeysJson, @ScopeJson, @StartedAt, @StartedAt)";
+
+            var runId = await connection.QueryFirstOrDefaultAsync<int>(insertRunSql,
+                new
+                {
+                    source.RunType,
+                    TriggeredBy = triggeredBy,
+                    source.StrategyProfileVersionId,
+                    source.ExpectedDomainKeysJson,
+                    ScopeJson = source.ScopeJson,
+                    StartedAt = now,
+                },
+                transaction);
+
+            if (runId <= 0)
+            {
+                throw new InvalidOperationException($"FAILED 恢复新建 ScheduleRun 失败（源运行 {source.Id}）");
+            }
+
+            const string insertShellSql = @"
+                INSERT INTO [dbo].[PlanVersion]
+                    ([VersionCode], [VersionCategory], [DomainKey],
+                     [PlanHorizonStart], [PlanHorizonEnd], [ComputeMode], [Status],
+                     [SourceScheduleRunId], [CreatedBy], [CreatedAt])
+                OUTPUT INSERTED.[Id]
+                VALUES (@VersionCode, 'RECOVERY', @DomainKey,
+                        @PlanHorizonStart, @PlanHorizonEnd, 'FULL', 'Created',
+                        @SourceScheduleRunId, @CreatedBy, @CreatedAt)";
+
+            foreach (var shell in shells)
+            {
+                var versionCode = $"RECOVERY_{ts}_{shell.DomainKey}";
+                var shellId = await connection.QueryFirstOrDefaultAsync<int>(insertShellSql,
+                    new
+                    {
+                        VersionCode = versionCode,
+                        shell.DomainKey,
+                        shell.PlanHorizonStart,
+                        shell.PlanHorizonEnd,
+                        SourceScheduleRunId = runId,
+                        CreatedBy = triggeredBy,
+                        CreatedAt = now,
+                    },
+                    transaction);
+
+                if (shellId <= 0)
+                {
+                    throw new InvalidOperationException($"FAILED 恢复建壳失败（RunId={runId}, VersionCode={versionCode}）");
+                }
+            }
+
+            _logger.LogInformation(
+                "ScheduleRun 恢复新建成功（含 {ShellCount} 个 RECOVERY 壳）：NewRunId={NewRunId}, SourceRunId={SourceRunId}, RunType={RunType}",
+                shells.Count, runId, source.Id, source.RunType);
+
+            return runId;
+        }, db: DatabaseId.APS);
     }
 
     public async Task<CandidateRunCreatedResult> CreateCandidateRunAsync(
@@ -113,8 +164,14 @@ public class ScheduleRunRepository : IScheduleRunRepository
     {
         // B-1 白天候选运行创建：ScheduleRun + Candidate 壳 单事务原子写（沿用 ReplaceActiveAsync 事务模式）。
         // 任一失败整体回滚，不产生孤立 RUNNING 运行；触发 2号位 主流程不在本方法内（契约接缝，IRunLifecycleService）。
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var expectedDomainKeysJson = System.Text.Json.JsonSerializer.Serialize(new[] { spec.DomainKey });
+        // A 口径（2号位 2026-09-21 回执定案）：ScopeJsonV2 序列化为契约字符串码
+        // （BusinessTriggerType/PriorityMode 类型级 EnumMemberJsonConverter 读 EnumMember，实测 STJ 内置 JsonStringEnumConverter 不读 EnumMember），
+        // null = 旧调用兼容不承载结构化范围
+        var scopeJson = spec.Scope is null
+            ? null
+            : System.Text.Json.JsonSerializer.Serialize(spec.Scope);
         var versionCode = $"CANDIDATE_{spec.DomainKey}_{now:yyyyMMddHHmmss}";
 
         return await _connectionManager.ExecuteInTransactionAsync(async (connection, transaction) =>
@@ -122,11 +179,11 @@ public class ScheduleRunRepository : IScheduleRunRepository
             const string insertRunSql = @"
                 INSERT INTO [dbo].[ScheduleRun]
                     ([RunType], [Status], [TriggeredBy], [DataCutoffTime],
-                     [BasePlanVersionId], [StrategyProfileVersionId], [ExpectedDomainKeysJson],
+                     [BasePlanVersionId], [StrategyProfileVersionId], [ExpectedDomainKeysJson], [ScopeJson],
                      [StartedAt], [CreatedAt])
                 OUTPUT INSERTED.[Id]
                 VALUES (@RunType, 'RUNNING', @TriggeredBy, @DataCutoffTime,
-                        @BasePlanVersionId, @StrategyProfileVersionId, @ExpectedDomainKeysJson,
+                        @BasePlanVersionId, @StrategyProfileVersionId, @ExpectedDomainKeysJson, @ScopeJson,
                         @StartedAt, @StartedAt)";
 
             var runId = await connection.QueryFirstOrDefaultAsync<int>(insertRunSql,
@@ -138,6 +195,7 @@ public class ScheduleRunRepository : IScheduleRunRepository
                     BasePlanVersionId = spec.BasePlanVersionId,
                     StrategyProfileVersionId = strategyProfileVersionId,
                     ExpectedDomainKeysJson = expectedDomainKeysJson,
+                    ScopeJson = scopeJson,
                     StartedAt = now,
                 },
                 transaction);

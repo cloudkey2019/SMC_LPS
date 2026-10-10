@@ -1,10 +1,10 @@
-﻿# APS 应用层API接口规范 v2.4
+﻿# APS 应用层API接口规范 v2.5
 
-**版本**：v2.4  
-**日期**：2026-05-13  
+**版本**：v2.5  
+**日期**：2026-09-21  
 **基于**：《APS数据架构与防腐层设计方案 v1.20》+ 《APS权限与审批系统实施方案 v1.0》+《APS_数据库字段说明文档 v5.0.25》+《APS DDL v5.0.25》  
 **技术栈**：ASP.NET Core Web API + RESTful + Swagger + JWT  
-**更新**：新增排程运行管理 API + PlanVersion 激活 API + 读模型查询 API（对齐 DDL v5.0.25 / 总表 v3.17）
+**更新**：新增排程运行管理 API + PlanVersion 激活 API + 读模型查询 API（对齐 DDL v5.0.25 / 总表 v3.17）；新增 Setup 主数据 Code→Id 下拉查询 API（附录D，2026-09-21）
 
 ---
 
@@ -2191,6 +2191,62 @@ Authorization: Bearer {token}
 
 ---
 
+## 附录D：Setup 主数据 Code→Id 下拉查询 API（2026-09-21 新增）
+
+供 4号位 Setup 三 Dialog（部门/设备/物料下拉）真实数据源，撤 mock 硬编码。
+
+**用户口径**：`masterId` = 表主键 Id（前端下拉 value 落 Id，后端业务字段均用 Id）；`code` = 编码（DeptCode / ResourceCode / MaterialCode，前端下拉 label 主源）。
+**红线 #4**：**始终返回列表**，code 命中多条由前端/优先级判定（无唯一性假设）；物料支持 `activeOnly=true` 仅返回活动（IsActive=1），活动优先排序。
+**实现**：3号位 直接读源表（APS_Production，Dapper），无 2号位/0号位 裁决；写侧为 `SetupRuleController`，统一 `ApiResponse<T>` 信封（`data` 数组）。
+**权限**：`aps.setup.view`。
+
+### D.1 部门下拉
+
+| 项目 | 说明 |
+|---|---|
+| 方法 | GET |
+| 路径 | `/api/governance/lookups/departments?search=` |
+| 查询参数 | `search`（可选，模糊匹配 DeptCode） |
+
+**响应 data**（合成示例）：
+```json
+[
+  { "masterId": 1, "code": "DEPT-01", "stageCode": "S1" }
+]
+```
+
+### D.2 设备下拉
+
+| 项目 | 说明 |
+|---|---|
+| 方法 | GET |
+| 路径 | `/api/governance/lookups/resources?search=` |
+| 查询参数 | `search`（可选，模糊匹配 ResourceCode / ResourceName） |
+
+**响应 data**（合成示例）：
+```json
+[
+  { "masterId": 12, "code": "RES-01", "name": "CNC-1", "productionDepartmentId": 1 }
+]
+```
+
+### D.3 物料下拉
+
+| 项目 | 说明 |
+|---|---|
+| 方法 | GET |
+| 路径 | `/api/governance/lookups/materials?search=&activeOnly=` |
+| 查询参数 | `search`（可选，模糊匹配 MaterialCode / MaterialName / Spec）；`activeOnly`（可选，默认 false；true 仅 IsActive=1，活动优先） |
+
+**响应 data**（合成示例）：
+```json
+[
+  { "masterId": 1001, "code": "MAT-01", "name": "原料A", "spec": "Φ10", "uom": "KG", "isActive": true }
+]
+```
+
+---
+
 ## 文档结束
 
 **编制人**：2号位（技术负责人）  
@@ -2198,6 +2254,7 @@ Authorization: Bearer {token}
 **批准日期**：2026年3月24日
 
 **版本历史**：
+- v2.5（2026-09-21）：新增 Setup 主数据 Code→Id 下拉查询 API（附录D）
 - v2.2（2026-03-24）：新增权限与审批相关API
 - v2.1（2026-03-19）：新增主数据同步API、补充Socket-Plug职责分工
 - v2.0（2026-03-10）：新增ODS API、快照API、物料映射API

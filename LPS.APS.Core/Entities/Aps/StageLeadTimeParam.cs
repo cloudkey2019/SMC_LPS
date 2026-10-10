@@ -9,12 +9,12 @@ namespace LPS.APS.Core.Entities.APS;
 /// 为无小工序的外协阶段、以及 Routing 数据不完整的阶段提供参数化提前期
 /// 1号位消费：读取 StageDetail 阶段顺序 → 对无 RoutingOperation 的阶段查此表生成标准 Task
 /// 
-/// 命中顺序（从细到粗降级）：
-/// 1. MaterialCode + FactoryCode + StageCode
-/// 2. ProductFamilyCode + FactoryCode + StageCode
-/// 3. ProductionDeptCode + FactoryCode + StageCode
-/// 4. FactoryCode + StageCode
-/// 5. 全局阶段默认值（IsDefault=1）
+/// 命中顺序（V1 正常匹配层级，v1.7 实施包「本轮新增治理项」+ 0号位 2026-09-29 裁决）：
+/// 1. DEPT_EXACT             —— ProductionDeptCode + FactoryCode + StageCode
+/// 2. FACTORY_STAGE_DEFAULT  —— FactoryCode + StageCode
+/// 3. GLOBAL_STAGE_DEFAULT   —— 全局阶段默认值（IsDefault=1）
+/// 旧 MaterialCode / ProductFamilyCode 层仅历史兼容，不参与 V1 正常匹配
+/// （1号位 消费侧 StageTimingNodeBuilder 仅认上述三级码，不再认 Material/ProductFamily 级）。
 /// </summary>
 [Table("StageLeadTimeParam")]
 public class StageLeadTimeParam
@@ -38,12 +38,12 @@ public class StageLeadTimeParam
     public string? ProductionDeptCode { get; set; }
 
     /// <summary>
-    /// 物料编码（可选，物料级精确匹配）
+    /// 物料编码（可选，旧层——仅历史兼容，不参与 V1 正常匹配）
     /// </summary>
     public string? MaterialCode { get; set; }
 
     /// <summary>
-    /// 产品族编码（可选，产品族级匹配）
+    /// 产品族编码（可选，旧层——仅历史兼容，不参与 V1 正常匹配）
     /// </summary>
     public string? ProductFamilyCode { get; set; }
 

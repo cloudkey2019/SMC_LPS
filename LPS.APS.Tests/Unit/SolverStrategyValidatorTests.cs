@@ -37,9 +37,22 @@ public class SolverStrategyValidatorTests
             Mode = SolverStrategyMode.Mixed,
             OnTimeTarget = new OnTimeTargetParams { TargetPercent = 95, IsPrimaryObjective = true },
             Split = new SplitParams { MaxOptimizationSplitCount = 3, LimitMandatorySplit = false, MinBatchQty = 1 },
-            Setup = new SetupParams { Dimensions = ["Mold", "Color"], DefaultSetupMinutes = 30, SetupLookAheadSize = 5 },
+            Setup = new SetupParams(),
             StageOverlap = new StageOverlapParams { AllowOverlap = false, TransferBatchQty = 10, ThresholdQty = 5, ThresholdPercent = 20 }
         };
+
+        // Act
+        var result = _validator.Validate(block);
+
+        // Assert
+        result.IsValid.Should().BeTrue(result.GetErrorMessage());
+    }
+
+    [Fact]
+    public void E4_Auto模式_校验通过()
+    {
+        // Arrange —— 0号位 2026-10-07 裁决：Mode=Auto 合法（1号位 按求解上下文决定最终方向）
+        var block = new SolverStrategyBlock { Mode = SolverStrategyMode.Auto };
 
         // Act
         var result = _validator.Validate(block);
@@ -94,21 +107,6 @@ public class SolverStrategyValidatorTests
     }
 
     [Fact]
-    public void E4_SetupDefaultSetupMinutes_非正_拒绝()
-    {
-        // Arrange
-        var block = new SolverStrategyBlock();
-        block.Setup.DefaultSetupMinutes = 0;
-
-        // Act
-        var result = _validator.Validate(block);
-
-        // Assert
-        result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.Contains("DefaultSetupMinutes"));
-    }
-
-    [Fact]
     public void E4_StageOverlapThresholdPercent_越界_拒绝()
     {
         // Arrange
@@ -139,18 +137,63 @@ public class SolverStrategyValidatorTests
     }
 
     [Fact]
-    public void E4_MaxIterations_非正_拒绝()
+    public void E4_SetupSearchBudget_低于100_拒绝()
     {
-        // Arrange —— 求解迭代上限必须为正（默认 1000）
+        // Arrange —— 有界搜索预算低于允许下限（1号位 2026-09-20 提值：[100, 5000]）
         var block = new SolverStrategyBlock();
-        block.MaxIterations = 0;
+        block.Setup.SetupSearchBudget = 99;
 
         // Act
         var result = _validator.Validate(block);
 
         // Assert
         result.IsValid.Should().BeFalse();
-        result.Errors.Should().Contain(e => e.Contains("MaxIterations"));
+        result.Errors.Should().Contain(e => e.Contains("SetupSearchBudget"));
+    }
+
+    [Fact]
+    public void E4_SetupSearchBudget_高于5000_拒绝()
+    {
+        // Arrange
+        var block = new SolverStrategyBlock();
+        block.Setup.SetupSearchBudget = 5001;
+
+        // Act
+        var result = _validator.Validate(block);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("SetupSearchBudget"));
+    }
+
+    [Fact]
+    public void E4_SetupMaxNeighborhoodTries_低于10_拒绝()
+    {
+        // Arrange —— 最大邻域尝试次数低于允许下限（[10, 500]）
+        var block = new SolverStrategyBlock();
+        block.Setup.SetupMaxNeighborhoodTries = 9;
+
+        // Act
+        var result = _validator.Validate(block);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("SetupMaxNeighborhoodTries"));
+    }
+
+    [Fact]
+    public void E4_SetupMaxNeighborhoodTries_高于500_拒绝()
+    {
+        // Arrange
+        var block = new SolverStrategyBlock();
+        block.Setup.SetupMaxNeighborhoodTries = 501;
+
+        // Act
+        var result = _validator.Validate(block);
+
+        // Assert
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.Contains("SetupMaxNeighborhoodTries"));
     }
 }
 

@@ -21,3 +21,4 @@ appsettings.Test.Local.json
 # SVN 冲突残留（.mine/.r<版本>/.working）
 *.mine
 *.r[0-9]*
+/LPS.APS.Web/Sql

@@ -3,6 +3,7 @@ using System.Text.Json;
 using LPS.APS.Core.Dto;
 using LPS.APS.Core.Enum;
 using LPS.APS.Core.Interfaces;
+using LPS.APS.Application.Models;
 
 namespace LPS.APS.Application.Services;
 
@@ -61,7 +62,7 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
         {
             var cachedSnapshot = JsonSerializer.Deserialize<FrozenStrategySnapshot>(cachedJson, JsonOptions)
                 ?? throw new InvalidOperationException($"策略包版本 {strategyProfileVersionId} 的缓存快照反序列化失败");
-            cachedSnapshot.FrozenAt = DateTime.UtcNow;
+            cachedSnapshot.FrozenAt = DateTime.Now;
             return cachedSnapshot;
         }
 
@@ -96,7 +97,7 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
             StrategyProfileVersionId = strategyProfileVersionId,
             RuleSetVersionId = ruleSetVersion.Id,
             ParameterSetVersionId = parameterSetVersion.Id,
-            FrozenAt = DateTime.UtcNow,
+            FrozenAt = DateTime.Now,
 
             // ① Demand Priority（来自 RuleSetVersion.ContentSnapshotJson.DemandPriority 子块）
             DemandPriority = DeserializeRuleSetBlock(ruleSetVersion, strategyProfileVersionId),
@@ -110,7 +111,16 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
             SolverStrategy = DeserializeParameterSetBlock<SolverStrategyBlock>(parameterSetVersion, "SolverStrategy", strategyProfileVersionId),
 
             // ⑥ Candidate Guardrail（P0-02 收口：真实来源，替代原空对象）
-            CandidateGuardrail = DeserializeParameterSetBlock<CandidateGuardrailBlock>(parameterSetVersion, "CandidateGuardrail", strategyProfileVersionId)
+            CandidateGuardrail = DeserializeParameterSetBlock<CandidateGuardrailBlock>(parameterSetVersion, "CandidateGuardrail", strategyProfileVersionId),
+
+            // ⑦ Setup 换型规则（重构方案 S-4：RuleSetVersion.ContentSnapshotJson.SetupTransitionRules 子块 → 第⑦块）
+            // 原由 PeggingOrchestrator.LoadSetupTransitionRulesAsync 从独立物理表装载；重构后随六块统一经快照通道，
+            // 缺子块/为空 = 无 Setup 规则（消费端三层命中按 0 分钟 + 追踪兜底，与旧空行语义一致，不 fail-closed）。
+            SetupTransitionRules = DeserializeSetupTransitionRules(ruleSetVersion),
+
+            // ⑧ 批量策略 Batch Policy（0号位 2026-10-07 裁决本轮落码）：ParameterSetVersion.ContentSnapshotJson.BatchPolicy 子块 → 第⑧块。
+            // fail-open：缺子块/为空/损坏 → 空列表（⑧ 为非必填块，与⑦ Setup 同轨；匹配终端 ④ fail-closed 属 1号位 消费侧）。
+            BatchPolicy = DeserializeBatchPolicy(parameterSetVersion)
         };
 
         // B-5：写入缓存（失败路径已在上述反序列化抛异常退出，不会写入坏快照）。
@@ -177,6 +187,29 @@ public class FrozenStrategySnapshotProvider : IFrozenStrategySnapshotProvider
         {
             throw new InvalidOperationException($"规则集版本 {version.Id} 的 ContentSnapshotJson 格式无效，Snapshot 装载失败", ex);
         }
+    }
+
+    /// <summary>
+    /// 从 RuleSetVersion.ContentSnapshotJson 反序列化 SetupTransitionRules 子块 → 第⑦块快照。
+    /// 语义：子块缺失/为空/JSON 损坏 → 空列表（fail-open，无 Setup 规则 = DEFAULT 兜底），
+    /// 与 DemandPriority 等六块 fail-closed 区分——Setup 规则非必填块（版本可不配置换型规则）。
+    /// 投影复用 <see cref="SetupTransitionRuleProjector.ProjectFromSnapshot"/>（S-8：并入反序列化，筛 IsActive=true、去审计字段）。
+    /// </summary>
+    private List<SetupTransitionRuleSnapshot> DeserializeSetupTransitionRules(
+        LPS.APS.Core.Entities.APS.RuleSetVersion version)
+    {
+        return SetupTransitionRuleProjector.ProjectFromSnapshot(version.ContentSnapshotJson);
+    }
+
+    /// <summary>
+    /// 从 ParameterSetVersion.ContentSnapshotJson 反序列化 BatchPolicy 子块 → 第⑧块快照。
+    /// fail-open：缺失/为空/损坏 → 空列表（⑧ 为非必填块，与⑦ Setup 同轨）。
+    /// 冻结 §十五「仍无规则 → Strategy Snapshot 校验失败」属匹配终端 ④，由 1号位 消费侧执行，装载端不承载信号位。
+    /// </summary>
+    private List<BatchPolicyRuleSnapshot> DeserializeBatchPolicy(
+        LPS.APS.Core.Entities.APS.ParameterSetVersion version)
+    {
+        return TaskSplitRuleConfigProjector.ProjectFromSnapshot(version.ContentSnapshotJson);
     }
 
     /// <summary>从 ParameterSetVersion.ContentSnapshotJson 反序列化指定子块（P0-02 六块统一失败）</summary>

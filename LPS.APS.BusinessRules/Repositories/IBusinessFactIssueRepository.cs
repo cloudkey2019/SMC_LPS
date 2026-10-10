@@ -18,7 +18,8 @@ public interface IBusinessFactIssueRepository
         string? reviewStatus = null,
         int skip = 0,
         int take = 50,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 
     /// <summary>
     /// 查询MaterialStageDeptContext Issues
@@ -30,7 +31,8 @@ public interface IBusinessFactIssueRepository
         string? reviewStatus = null,
         int skip = 0,
         int take = 50,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 
     /// <summary>
     /// 聚合查询所有ODS/复杂事实Issues
@@ -43,5 +45,6 @@ public interface IBusinessFactIssueRepository
         string? reviewStatus = null,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 }

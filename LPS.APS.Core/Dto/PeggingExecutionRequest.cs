@@ -82,9 +82,27 @@ public class PeggingExecutionRequest
     public int TimeoutSeconds { get; set; } = 300;
 
     /// <summary>
-    /// 执行模式：FULL_RUN | DRY_RUN | INCREMENTAL
+    /// 执行模式：FULL_RUN | DRY_RUN | INCREMENTAL | CANDIDATE
     /// </summary>
     public string ExecutionMode { get; set; } = "FULL_RUN";
+
+    /// <summary>
+    /// 是否为 Candidate 模式（编排层判定 sourcePlanVersionId != null，即本 Run 由 3号位 冻结了 BasePlanVersionId）。
+    /// PM 2026-09-07 P0-04：Candidate 由 3号位激活；2号位据此构造 DomainSolveRequest.CandidateContext（非 null）。
+    /// </summary>
+    public bool IsCandidate { get; set; }
+
+    /// <summary>
+    /// Base 稳定锚点 = ScheduleRun.BasePlanVersionId（Candidate 专用；FULL 为 null）。
+    /// 2号位运行期必须始终使用此值，不得中途再查「此刻最新 ACTIVE」替换基座。
+    /// </summary>
+    public int? BasePlanVersionId { get; set; }
+
+    /// <summary>
+    /// 其它 Domain 当前 ACTIVE 在共享 Resource 上的不可移动占用块（Candidate 专用；FULL 为 null）。
+    /// 透传至 DomainSolveRequest.CandidateContext.ExternalDomainResourceBlocks。
+    /// </summary>
+    public IReadOnlyList<ResourceBlock>? ExternalDomainResourceBlocks { get; set; }
 
     /// <summary>
     /// 排程沙盘上下文（包含Resources、Calendar等1号位所需数据）

@@ -39,8 +39,9 @@ public class GovernanceQueryService
     public async Task<List<DomainDependencyDto>> QueryDomainDependenciesAsync(
         string? domainCode = null,
         string? direction = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedDomains = null)
     {
-        return await _repository.QueryDomainDependenciesAsync(domainCode, direction, ct);
+        return await _repository.QueryDomainDependenciesAsync(domainCode, direction, ct, allowedDomains);
     }
 }

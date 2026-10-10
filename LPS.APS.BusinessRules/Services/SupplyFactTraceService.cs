@@ -31,12 +31,13 @@ public class SupplyFactTraceService
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
         if (take <= 0 || take > 500) take = 100;
 
         return await _repository.QueryAllAsync(
             sourceType, materialCode, materialId, factoryCode,
-            supplyType, sourceDocumentNo, activeOnly, skip, take, ct);
+            supplyType, sourceDocumentNo, activeOnly, skip, take, ct, allowedFactories);
     }
 }

@@ -3,7 +3,7 @@ namespace LPS.APS.Core.DTOs.Governance;
 /// <summary>
 /// 白天候选运行创建入参（B-1）
 /// 语义：3号位 创建白天候选 ScheduleRun（RUNNING，冻结 RunType × Purpose × 策略版本 × 预期 Domain）
-///       + 新建 Candidate PlanVersion 壳（BUILDING）；触发 2号位 主流程留契约接缝。
+///       + 新建 Candidate PlanVersion 壳（Created）；触发 2号位 主流程留契约接缝。
 /// 校验规则见 IRunLifecycleService.CreateCandidateRunAsync（任一失败抛 InvalidOperationException）。
 /// </summary>
 /// <remarks>开发者：3号位</remarks>
@@ -17,6 +17,9 @@ public sealed class CandidateRunCreateSpec
 
     /// <summary>目标 Domain（白天候选严格单 Domain；对应 PlanVersion.DomainKey 与 ExpectedDomainKeysJson）</summary>
     public string DomainKey { get; set; } = string.Empty;
+
+    /// <summary>局部重排范围载荷（ScopeJsonV2；承载 ScheduleRun.ScopeJson）。缺省 null = 不承载结构化范围（旧调用兼容）</summary>
+    public ScopeJsonV2? Scope { get; set; }
 
     /// <summary>所基于的当前 ACTIVE 计划版本（可选；缺省由服务按 DomainKey 解析当前 ACTIVE，无 ACTIVE 拒绝）</summary>
     public int? BasePlanVersionId { get; set; }

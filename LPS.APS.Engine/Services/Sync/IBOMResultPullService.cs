@@ -28,4 +28,12 @@ public interface IBOMResultPullService
     /// </summary>
     /// <returns>READY批次号，无则返回null</returns>
     Task<string?> FindReadyBatchAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 独立接货：查找最近 READY 批次并接货（与 NightlyBatchOrchestrator 解耦，供白天补接货 / 联调单独触发）。
+    /// 等价于 FindReadyBatchAsync → PullBOMResultFromODSAsync 的串联封装；无 READY 批次时返回空结果（不抛异常）。
+    /// </summary>
+    /// <param name="planVersionIds">本批全部 Domain 的 PlanVersionID 集合（供 OrderBomRequestLink 映射，禁止内部猜测）</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    Task<BOMIntakeResult> IntakeLatestReadyBatchAsync(IReadOnlyList<int> planVersionIds, CancellationToken cancellationToken = default);
 }

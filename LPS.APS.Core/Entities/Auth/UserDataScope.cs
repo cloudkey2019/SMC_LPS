@@ -2,7 +2,7 @@ namespace LPS.APS.Core.Entities.Auth;
 
 /// <summary>
 /// 用户直接业务范围关联表
-/// 对应 APS_Auth.UserDataScope（复合主键 UserId + ScopePolicyId，DDL v1.1）
+/// 对应 APS_Auth.UserDataScope（复合主键 UserId + ScopePolicyId，DDL v1.3）
 /// </summary>
 public class UserDataScope
 {

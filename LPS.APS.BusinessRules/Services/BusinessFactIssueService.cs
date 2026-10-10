@@ -29,12 +29,13 @@ public class BusinessFactIssueService
         string? reviewStatus = null,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
         if (take <= 0 || take > 500) take = 100;
 
         return await _repository.QueryAllAsync(
             source, materialCode, factoryCode, severity, reviewStatus,
-            skip, take, ct);
+            skip, take, ct, allowedFactories);
     }
 }

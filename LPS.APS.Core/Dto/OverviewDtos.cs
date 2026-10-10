@@ -109,7 +109,9 @@ public sealed class OverviewCandidateSummaryDto
 }
 
 /// <summary>
-/// Candidate简要信息
+/// Candidate简要信息（candidate-summary 列表项，仅候选元信息）
+/// 注意：Base vs Candidate 差集/Diff 统一由 3号位 ScheduleQueryService.GetCandidateComparisonAsync 提供，
+/// 5号位 Overview 列表示不重复计算，也不在列表项内承载 diff/平均完成时间等统计字段。
 /// </summary>
 public sealed class CandidateBriefDto
 {
@@ -127,4 +129,19 @@ public sealed class CandidateBriefDto
 
     /// <summary>创建人</summary>
     public string? CreatedByUserName { get; init; }
+
+    /// <summary>候选版本状态（PlanVersion.Status）</summary>
+    public string? Status { get; init; }
+
+    /// <summary>候选来源 ScheduleRunId</summary>
+    public int? SourceScheduleRunId { get; init; }
+
+    /// <summary>候选来源 RunType</summary>
+    public string? RunType { get; init; }
+
+    /// <summary>候选冻结的 Base 计划版本（P0-04：ScheduleRun.BasePlanVersionId 权威落盘）</summary>
+    public int? BasePlanVersionId { get; init; }
+
+    /// <summary>Base 是否仍为当前 Domain ACTIVE（§12.3 激活红线前置校验）</summary>
+    public bool CanActivate { get; init; }
 }

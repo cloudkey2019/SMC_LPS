@@ -26,8 +26,14 @@ public class PeggingTraceRepository : IPeggingTraceRepository
         string? supplyDocumentNo = null,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
+        // Dapper 列表参数只进 IN；@AllowedFactories IS NULL 标量判空会随列表一起扩成 (…) 导致 4145，用 Has 标志替代；空集 fail-closed 返空。
+        if (allowedFactories is { Count: 0 })
+            return new List<PeggingTraceDto>();
+        var hasFactories = allowedFactories is { Count: > 0 };
+
         var sql = @"
 SELECT
     Id,
@@ -68,6 +74,7 @@ WHERE PlanVersionId = @PlanVersionId
     AND (@CommitmentStatus IS NULL OR CommitmentStatus = @CommitmentStatus)
     AND (@OrderNo IS NULL OR RootOrderNo LIKE '%' + @OrderNo + '%' OR CurrentOrderNo LIKE '%' + @OrderNo + '%')
     AND (@SupplyDocumentNo IS NULL OR SupplyDocumentNo LIKE '%' + @SupplyDocumentNo + '%')
+    AND (@HasFactories = 0 OR DemandFactoryCode IN @AllowedFactories)
 ORDER BY AllocationSequence
 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 
@@ -79,6 +86,8 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
             CommitmentStatus = commitmentStatus,
             OrderNo = orderNo,
             SupplyDocumentNo = supplyDocumentNo,
+            HasFactories = hasFactories,
+            AllowedFactories = allowedFactories,
             Skip = skip,
             Take = take
         };

@@ -10,6 +10,6 @@ public sealed class CandidateRunCreatedResult
     /// <summary>新建 ScheduleRun.Id（RUNNING，冻结基线；待 2号位 按触发契约执行并收口）</summary>
     public int NewScheduleRunId { get; set; }
 
-    /// <summary>新建 Candidate PlanVersion 壳 Id（BUILDING）</summary>
+    /// <summary>新建 Candidate PlanVersion 壳 Id（Created）</summary>
     public int NewPlanVersionId { get; set; }
 }

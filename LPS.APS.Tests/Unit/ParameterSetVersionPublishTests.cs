@@ -25,7 +25,7 @@ public class ParameterSetVersionPublishTests
             _repo.Object,
             Mock.Of<IStrategyProfileRepository>(),
             Mock.Of<IStrategyProfileVersionRepository>(),
-            Mock.Of<IGovernanceAuditLogRepository>());
+            Mock.Of<IAuditLogRepository>());
     }
 
     /// <summary>构造合法五块参数 JSON（P0-05 + P0-02b：发布前强制校验，测试数据须含 SolverStrategy/CandidateGuardrail 合法内容）</summary>
@@ -92,7 +92,7 @@ public class ParameterSetVersionPublishTests
                 IsPrimaryObjective = true
             },
             Split = new LPS.APS.Core.Dto.SplitParams { MaxOptimizationSplitCount = 3, MinBatchQty = 1 },
-            Setup = new LPS.APS.Core.Dto.SetupParams { DefaultSetupMinutes = 30, SetupLookAheadSize = 5 },
+            Setup = new LPS.APS.Core.Dto.SetupParams(),
             StageOverlap = new LPS.APS.Core.Dto.StageOverlapParams { AllowOverlap = true, ThresholdPercent = 50 }
         });
 
@@ -132,7 +132,7 @@ public class ParameterSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        await _service.PublishParameterSetVersionAsync(1, "tester");
+        await _service.PublishParameterSetVersionAsync(1, "tester", 1001);
 
         // Assert
         version.Status.Should().Be(GovernanceVersionStatus.Published);
@@ -175,7 +175,7 @@ public class ParameterSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>())).ReturnsAsync(v2);
 
         // Act —— 发布 V2
-        await _service.PublishParameterSetVersionAsync(2, "tester");
+        await _service.PublishParameterSetVersionAsync(2, "tester", 1001);
 
         // Assert —— V2 成为新 PUBLISHED；V1 记录完全不变（旧 Run 引用 V1 不受影响）
         v2.Status.Should().Be(GovernanceVersionStatus.Published);
@@ -207,7 +207,7 @@ public class ParameterSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        var act = () => _service.PublishParameterSetVersionAsync(1, "tester");
+        var act = () => _service.PublishParameterSetVersionAsync(1, "tester", 1001);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -240,7 +240,7 @@ public class ParameterSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(3, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        var act = () => _service.PublishParameterSetVersionAsync(3, "tester");
+        var act = () => _service.PublishParameterSetVersionAsync(3, "tester", 1001);
 
         // Assert（P0-02b：Validator 拒绝路径——不得发布、不得落库）
         await act.Should().ThrowAsync<InvalidOperationException>()
@@ -275,7 +275,7 @@ public class ParameterSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(4, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        var act = () => _service.PublishParameterSetVersionAsync(4, "tester");
+        var act = () => _service.PublishParameterSetVersionAsync(4, "tester", 1001);
 
         // Assert（P0-02b：Validator 拒绝路径——不得发布、不得落库）
         await act.Should().ThrowAsync<InvalidOperationException>()

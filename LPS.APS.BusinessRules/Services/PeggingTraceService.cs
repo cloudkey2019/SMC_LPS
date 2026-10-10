@@ -30,14 +30,15 @@ public class PeggingTraceService
         string? supplyDocumentNo = null,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
         if (planVersionId <= 0) throw new ArgumentException("planVersionId is required");
         if (take <= 0 || take > 500) take = 100;
 
         return await _repository.QueryAsync(
             planVersionId, materialCode, supplyType, commitmentStatus,
-            orderNo, supplyDocumentNo, skip, take, ct);
+            orderNo, supplyDocumentNo, skip, take, ct, allowedFactories);
     }
 
     /// <summary>

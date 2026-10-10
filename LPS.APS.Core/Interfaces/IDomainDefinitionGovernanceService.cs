@@ -1,4 +1,6 @@
 using DomainDefinition = LPS.APS.Core.Entities.APS.DomainDefinition;
+using ProductFamily = LPS.APS.Core.Entities.APS.ProductFamily;
+using Factory = LPS.APS.Core.Entities.APS.Factory;
 
 namespace LPS.APS.Core.Interfaces;
 
@@ -19,12 +21,21 @@ public interface IDomainDefinitionGovernanceService
     /// <summary>查询当前有效（IsActive=1）域集合</summary>
     Task<IReadOnlyList<DomainDefinition>> GetActiveAsync(CancellationToken ct = default);
 
-    /// <summary>新建域定义（校验 + 审计；新建默认启用）</summary>
-    Task<DomainDefinition> CreateAsync(DomainDefinition input, string? operatedBy, CancellationToken ct = default);
+    /// <summary>产品族下拉列表（Domain 维护页数据源）</summary>
+    Task<IReadOnlyList<ProductFamily>> GetProductFamiliesAsync(CancellationToken ct = default);
 
-    /// <summary>编辑域定义（DomainKey 不可变更；校验 + 审计）</summary>
-    Task<DomainDefinition> UpdateAsync(int id, DomainDefinition input, string? operatedBy, CancellationToken ct = default);
+    /// <summary>工厂下拉列表（Domain 维护页数据源）</summary>
+    Task<IReadOnlyList<Factory>> GetFactoriesAsync(CancellationToken ct = default);
 
-    /// <summary>启用/停用域定义（校验 + 审计）</summary>
-    Task<DomainDefinition> SetActiveAsync(int id, bool isActive, string? operatedBy, CancellationToken ct = default);
+    /// <summary>新建域定义（校验 + 业务范围校验 + 审计；新建默认启用）</summary>
+    /// <param name="actorUserId">操作者用户 Id（来自 JWT，业务范围校验依据）</param>
+    Task<DomainDefinition> CreateAsync(DomainDefinition input, int actorUserId, string? operatedBy, CancellationToken ct = default);
+
+    /// <summary>编辑域定义（DomainKey 不可变更；校验 + 业务范围校验 + 审计）</summary>
+    /// <param name="actorUserId">操作者用户 Id（来自 JWT，业务范围校验依据）</param>
+    Task<DomainDefinition> UpdateAsync(int id, DomainDefinition input, int actorUserId, string? operatedBy, CancellationToken ct = default);
+
+    /// <summary>启用/停用域定义（校验 + 业务范围校验 + 审计）</summary>
+    /// <param name="actorUserId">操作者用户 Id（来自 JWT，业务范围校验依据）</param>
+    Task<DomainDefinition> SetActiveAsync(int id, bool isActive, int actorUserId, string? operatedBy, CancellationToken ct = default);
 }

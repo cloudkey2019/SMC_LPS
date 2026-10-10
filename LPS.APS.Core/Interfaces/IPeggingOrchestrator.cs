@@ -32,6 +32,22 @@ public interface IPeggingOrchestrator
         PeggingExecutionRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 阶段2 S2.3 双跑对照（不切主链）：同一 PlanVersion + Demand + 供给池，旧 DFS 与新 BFS 各跑一遍，
+    /// 产出 PM 0918-3 §八 7 项 + §六 I1-I4 报告。仅供验收/测试显式调用，不影响主链 ExecutePeggingWorkflowAsync。
+    /// </summary>
+    Task<DualRunReport> RunDualCompareAsync(
+        PeggingExecutionRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 主链 BFS 单跑（只读，不落库不 Solver）：仅跑 RunBfsLoop，验证新 BFS 展开耗时 + I1/I2 红线校验。
+    /// 用户 2026-09-18 裁决弃旧 DFS、主链切 BFS 后，作为快速验收入口（不触碰 Pegging/Task/PSA 落库）。
+    /// </summary>
+    Task<BfsRunReport> RunBfsOnlyAsync(
+        PeggingExecutionRequest request,
+        CancellationToken cancellationToken = default);
+
 }
 
 /// <summary>
@@ -108,4 +124,27 @@ public class PeggingOrchestrationResult
     /// 完成时间
     /// </summary>
     public DateTime CompletedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>主链 BFS 单跑报告（只读验收）：红线校验 + 展开统计 + 正确性侧面指标。</summary>
+public class BfsRunReport
+{
+    public int PlanVersionId { get; set; }
+    public int OrderCount { get; set; }
+
+    /// <summary>红线校验错误（ValidatePeggingResult 前 4 项：Demand 闭合 / SupplyBalance 非负 / 同物理不重复消费 / Allocation 合法）。</summary>
+    public IReadOnlyList<string> RedLineErrors { get; set; } = Array.Empty<string>();
+
+    public int LpdCount { get; set; }
+    public int AllocationCount { get; set; }
+    public int LineageCount { get; set; }
+    public decimal DemandQuantity { get; set; }
+    public decimal ShortageQuantity { get; set; }
+
+    public long TraversalVisits { get; set; }
+    public long UniqueNodes { get; set; }
+    public long DuplicateExpansions { get; set; }
+    public long ElapsedMs { get; set; }
+
+    public bool RedLinePass => RedLineErrors.Count == 0;
 }

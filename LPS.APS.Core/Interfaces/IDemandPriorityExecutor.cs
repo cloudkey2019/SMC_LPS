@@ -22,8 +22,10 @@ public interface IDemandPriorityExecutor
     /// <summary>
     /// 执行「单个计算层」的 Demand 排序（config 已由调用方收敛为当前层 Segments），
     /// 返回有序列表并已赋值 DemandSequence = 1, 2, 3...
+    /// S5（PM 0923）：expediteOrderCanonicalIds 非空时，命中的 Demand 作为 EXPEDITE 前置竞争层整体前置。
     /// </summary>
     List<UpstreamDemand> ExecutePrioritySort(
         IEnumerable<UpstreamDemand> demands,
-        DemandPriorityConfig config);
+        DemandPriorityConfig config,
+        IReadOnlySet<long>? expediteOrderCanonicalIds = null);
 }

@@ -8,8 +8,10 @@ namespace LPS.APS.Application.Services;
 /// 校验对象为 FrozenStrategySnapshot.SolverStrategyBlock（契约 v0.2 §二-⑤）。
 /// 红线校验：
 /// 1. On-time Target 必须在 0~100（DTO 注释"0~100（发布前校验）"）；
-/// 2. Split / Setup / StageOverlap 数值域合法（不允许负拆分、非正 Setup 时长的"隐形无效配置"）；
+/// 2. Split / StageOverlap 数值域合法（不允许负拆分等"隐形无效配置"）；
 /// 3. SolverStrategyMode 枚举合法（防御数字越界反序列化场景）。
+/// 注：换型（Setup）校验已迁至 <see cref="SetupTransitionRuleConflictValidator"/>（§十 产品转换规则唯一键冲突）；
+///     SolverStrategyBlock 不再承载换型规则校验。
 /// 与 <see cref="DemandPriorityValidator"/> 同款：无状态纯校验，Validate 返回 ValidationResult。
 /// 开发者：3号位
 /// </summary>
@@ -24,19 +26,19 @@ public sealed class SolverStrategyValidator
         ValidateMode(block, errors);
         ValidateOnTimeTarget(block, errors);
         ValidateSplit(block, errors);
-        ValidateSetup(block, errors);
         ValidateStageOverlap(block, errors);
-        ValidateMaxIterations(block, errors);
+        ValidateBottleneckUtilizationThresholds(block, errors);
+        ValidateSetupBudget(block, errors);
 
         return new ValidationResult(errors.Count == 0, errors, warnings);
     }
 
-    /// <summary>SolverStrategyMode 枚举合法性（Forward/Backward/Mixed；防御数字越界反序列化）</summary>
+    /// <summary>SolverStrategyMode 枚举合法性（Auto/Forward/Backward/Mixed；防御数字越界反序列化）</summary>
     private static void ValidateMode(SolverStrategyBlock block, List<string> errors)
     {
         if (!Enum.IsDefined(block.Mode))
         {
-            errors.Add($"SolverStrategyMode 必须为 Forward/Backward/Mixed 之一（当前值：{(int)block.Mode}）");
+            errors.Add($"SolverStrategyMode 必须为 Auto/Forward/Backward/Mixed 之一（当前值：{(int)block.Mode}）");
         }
     }
 
@@ -57,23 +59,9 @@ public sealed class SolverStrategyValidator
             errors.Add($"Split.MaxOptimizationSplitCount 不能为负（当前：{block.Split.MaxOptimizationSplitCount}）");
         }
 
-        if (block.Split.MinBatchQty < 0)
+        if (block.Split.MinBatchQty <= 0)
         {
-            errors.Add($"Split.MinBatchQty 不能为负（当前：{block.Split.MinBatchQty}）");
-        }
-    }
-
-    /// <summary>Setup：换型时长必须为正、LookAhead 非负（默认 30 / 5，DTO 注释）</summary>
-    private static void ValidateSetup(SolverStrategyBlock block, List<string> errors)
-    {
-        if (block.Setup.DefaultSetupMinutes <= 0)
-        {
-            errors.Add($"Setup.DefaultSetupMinutes 必须为正（当前：{block.Setup.DefaultSetupMinutes}）");
-        }
-
-        if (block.Setup.SetupLookAheadSize < 0)
-        {
-            errors.Add($"Setup.SetupLookAheadSize 不能为负（当前：{block.Setup.SetupLookAheadSize}）");
+            errors.Add($"Split.MinBatchQty 必须为正（当前：{block.Split.MinBatchQty}）");
         }
     }
 
@@ -96,12 +84,31 @@ public sealed class SolverStrategyValidator
         }
     }
 
-    /// <summary>MaxIterations：求解迭代上限必须为正（默认 1000，DTO 注释）</summary>
-    private static void ValidateMaxIterations(SolverStrategyBlock block, List<string> errors)
+    /// <summary>瓶颈利用率/产能短缺阈值：必须是 (0,1) 开区间比例（默认为 0.85 / 0.90，非 0~100 百分比）</summary>
+    private static void ValidateBottleneckUtilizationThresholds(SolverStrategyBlock block, List<string> errors)
     {
-        if (block.MaxIterations <= 0)
+        if (block.BottleneckUtilizationThreshold is <= 0 or > 1)
         {
-            errors.Add($"MaxIterations 必须为正（当前：{block.MaxIterations}）");
+            errors.Add($"BottleneckUtilizationThreshold 必须是 (0,1] 比例（当前：{block.BottleneckUtilizationThreshold}）");
+        }
+
+        if (block.CapacityShortageUtilizationThreshold is <= 0 or > 1)
+        {
+            errors.Add($"CapacityShortageUtilizationThreshold 必须是 (0,1] 比例（当前：{block.CapacityShortageUtilizationThreshold}）");
+        }
+    }
+
+    /// <summary>三预算参数（1号位 2026-09-20 提值）：有界搜索预算 [100,5000]、最大邻域尝试次数 [10,500]，均为正整数（次数量纲）</summary>
+    private static void ValidateSetupBudget(SolverStrategyBlock block, List<string> errors)
+    {
+        if (block.Setup.SetupSearchBudget is < 100 or > 5000)
+        {
+            errors.Add($"Setup.SetupSearchBudget 必须在 [100, 5000] 之间（当前：{block.Setup.SetupSearchBudget}）");
+        }
+
+        if (block.Setup.SetupMaxNeighborhoodTries is < 10 or > 500)
+        {
+            errors.Add($"Setup.SetupMaxNeighborhoodTries 必须在 [10, 500] 之间（当前：{block.Setup.SetupMaxNeighborhoodTries}）");
         }
     }
 }

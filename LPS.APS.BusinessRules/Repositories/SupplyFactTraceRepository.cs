@@ -26,8 +26,15 @@ public class SupplyFactTraceRepository : ISupplyFactTraceRepository
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
+        // Dapper 列表参数只能出现在 IN 内；@AllowedFactories IS NULL(标量) 会随 @AllowedFactories 一起扩成 (@p1,@p2)
+        // → "(@p1,@p2) IS NULL" 非法 SQL 4145。用 Has 标志替代标量判空；空集 fail-closed 返空，避免空集传入 IN ()。
+        if (allowedFactories is { Count: 0 })
+            return new List<SupplyFactTraceDto>();
+        var hasFactories = allowedFactories is { Count: > 0 };
+
         var sql = @"
 SELECT
     'SUPPLY_PIPELINE' AS SourceType,
@@ -57,6 +64,7 @@ WHERE 1=1
     AND (@FactoryCode IS NULL OR FactoryCode = @FactoryCode)
     AND (@SupplyType IS NULL OR SupplyType = @SupplyType)
     AND (@SourceDocumentNo IS NULL OR SourceDocumentNo = @SourceDocumentNo)
+    AND (@HasFactories = 0 OR FactoryCode IN @AllowedFactories)
 ORDER BY SyncedAt DESC
 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 
@@ -68,6 +76,8 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
             FactoryCode = factoryCode,
             SupplyType = supplyType,
             SourceDocumentNo = sourceDocumentNo,
+            HasFactories = hasFactories,
+            AllowedFactories = allowedFactories,
             Skip = skip,
             Take = take
         };
@@ -87,8 +97,14 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
+        // Dapper 列表参数只进 IN；@AllowedFactories IS NULL 标量判空会随列表一起扩成 (…) 导致 4145，用 Has 标志替代；空集 fail-closed 返空。
+        if (allowedFactories is { Count: 0 })
+            return new List<SupplyFactTraceDto>();
+        var hasFactories = allowedFactories is { Count: > 0 };
+
         // 从APS包装视图读取Received事实
         var sql = @"
 SELECT
@@ -119,6 +135,7 @@ WHERE 1=1
     AND (@FactoryCode IS NULL OR FactoryCode = @FactoryCode)
     AND (@DocumentType IS NULL OR DocumentType = @DocumentType)
     AND (@DocumentNo IS NULL OR DocumentNo = @DocumentNo)
+    AND (@HasFactories = 0 OR FactoryCode IN @AllowedFactories)
 ORDER BY LastReceivedAt DESC
 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 
@@ -130,6 +147,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
             FactoryCode = factoryCode,
             DocumentType = documentType,
             DocumentNo = documentNo,
+            AllowedFactories = allowedFactories,
             Skip = skip,
             Take = take
         };
@@ -150,7 +168,8 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
     {
         var allFacts = new List<SupplyFactTraceDto>();
 
@@ -159,7 +178,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
         {
             var pipelineFacts = await QueryPipelineAsync(
                 materialCode, materialId, factoryCode, supplyType, sourceDocumentNo,
-                activeOnly, take: take, ct: ct);
+                activeOnly, take: take, ct: ct, allowedFactories: allowedFactories);
             allFacts.AddRange(pipelineFacts);
         }
 
@@ -180,7 +199,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 
             var receivedFacts = await QueryReceivedAsync(
                 materialCode, materialId, factoryCode, documentType, sourceDocumentNo,
-                activeOnly, take: take, ct: ct);
+                activeOnly, take: take, ct: ct, allowedFactories: allowedFactories);
             allFacts.AddRange(receivedFacts);
         }
 

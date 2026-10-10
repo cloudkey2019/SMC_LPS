@@ -74,9 +74,9 @@ public class DemandPriorityIntegrationTests : IDisposable
 
         var demands = new List<DemandRecord>
         {
-            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "A", RemainingTimeHours = 5 },
-            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.UtcNow, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 20 },
-            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.UtcNow, DelayStatus = "DELAYED", CustomerTier = "VIP", RemainingTimeHours = 2 }
+            new DemandRecord { DemandId = "D001", OrderId = "O001", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "A", RemainingTimeHours = 5 },
+            new DemandRecord { DemandId = "D002", OrderId = "O002", CreatedAt = DateTime.Now, DelayStatus = "ONTRACK", CustomerTier = "VIP", RemainingTimeHours = 20 },
+            new DemandRecord { DemandId = "D003", OrderId = "O003", CreatedAt = DateTime.Now, DelayStatus = "DELAYED", CustomerTier = "VIP", RemainingTimeHours = 2 }
         };
 
         var sorted = _matcher.SortDemands(demands, priorityBlock!);
@@ -103,7 +103,7 @@ public class DemandPriorityIntegrationTests : IDisposable
 
     private async System.Threading.Tasks.Task SetupTestDataAsync()
     {
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var uniqueSuffix = $"{now:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}".Substring(0, 30);
 
         _testRuleSetId = await _connectionManager.QueryFirstOrDefaultAsync<long>(

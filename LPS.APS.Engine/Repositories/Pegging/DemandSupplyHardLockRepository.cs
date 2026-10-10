@@ -55,6 +55,23 @@ public class DemandSupplyHardLockRepository : IDemandSupplyHardLockRepository
             db: DatabaseId.APS);
     }
 
+    public async Task<IEnumerable<DemandSupplyHardLock>> GetLocksByIdsAsync(
+        IEnumerable<long> lockIds,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = lockIds.ToList();
+        if (ids.Count == 0) return Array.Empty<DemandSupplyHardLock>();
+
+        const string sql = @"
+            SELECT * FROM [dbo].[DemandSupplyHardLock]
+            WHERE [Id] IN @LockIds";
+
+        return await _connectionManager.QueryAsync<DemandSupplyHardLock>(
+            sql,
+            new { LockIds = ids },
+            db: DatabaseId.APS);
+    }
+
     public async Task<int> BulkInsertAsync(
         IEnumerable<DemandSupplyHardLock> locks,
         CancellationToken cancellationToken = default)

@@ -2,7 +2,7 @@ namespace LPS.APS.Core.Authorization;
 
 /// <summary>
 /// 业务范围维度标准值（F-G4）
-/// 对齐 APS_Auth.DataScopePolicy 的 CK_DataScope_Type 检查约束（DDL v1.1 冻结对齐版）。
+/// 对齐 APS_Auth.DataScopePolicy 的 CK_DataScope_Type 检查约束（DDL v1.3 冻结对齐版）。
 /// </summary>
 public static class DataScopeTypes
 {

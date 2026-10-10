@@ -18,6 +18,7 @@ public class ERPOrderStaging
     public string OrderType { get; set; } = string.Empty;
     public string MaterialCode { get; set; } = string.Empty;
     public string FactoryCode { get; set; } = string.Empty;
+    public string? SourceWarehouseProcessCode { get; set; }
     public decimal Quantity { get; set; }
     public string UOM { get; set; } = string.Empty;
     public DateTime DueDate { get; set; }

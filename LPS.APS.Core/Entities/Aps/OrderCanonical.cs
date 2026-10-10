@@ -27,6 +27,9 @@ public class OrderCanonical
     public string? FactoryCode { get; set; }
     public string? UOM { get; set; }
 
+    // v5.0.25+ 源厂工厂代码（ERP RevInstrProcCode 经 ext_MES_ProcessCode_View 翻译；无映射保留原值）
+    public string? SourceFactoryCode { get; set; }
+
     // v5.0.3 源事实字段
     public string? TransportMode { get; set; }
     public string? CustomerName { get; set; }

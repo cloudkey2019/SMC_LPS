@@ -6,7 +6,7 @@ namespace LPS.APS.Core.DTOs.Governance;
 /// Status 取值：
 ///   COMPLETED  - 该域 PlanVersion 已生成且 ACTIVE（成功）
 ///   CANDIDATE  - 该域 PlanVersion 为 CANDIDATE（待人工确认）
-///   RUNNING    - 该域 PlanVersion 仍 BUILDING / Run 未终态
+///   RUNNING    - 该域 PlanVersion 仍 Created（未执行完成）/ Run 未终态
 ///   FAILED     - 该域 PlanVersion 为 FAILED（失败根因域）
 ///   BLOCKED    - 因上游失败被阻断，本次未生成 PlanVersion（非根因）
 ///   NOT_STARTED- 无关 Domain 未参与本次（正常）

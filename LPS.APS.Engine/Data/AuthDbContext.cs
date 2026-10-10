@@ -26,7 +26,6 @@ public class AuthDbContext : DbContext
     public DbSet<ApprovalNode> ApprovalNodes { get; set; } = null!;
     public DbSet<ApprovalRecord> ApprovalRecords { get; set; } = null!;
     public DbSet<ApprovalRule> ApprovalRules { get; set; } = null!;
-    public DbSet<GovernanceAuditLog> GovernanceAuditLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -37,10 +36,10 @@ public class AuthDbContext : DbContext
         {
             entity.ToTable("User");
             entity.HasKey(e => e.Id);
-            entity.Property(e => e.UserName).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.Email).IsRequired().HasMaxLength(100);
-            entity.HasIndex(e => e.UserName).IsUnique();
-            entity.HasIndex(e => e.Email).IsUnique();
+            entity.Property(e => e.LoginName).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.DisplayName).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Email).HasMaxLength(100);
+            entity.HasIndex(e => e.LoginName).IsUnique();
         });
 
         // ==================== Role ====================
@@ -77,7 +76,7 @@ public class AuthDbContext : DbContext
             entity.HasKey(e => new { e.RoleId, e.PermissionId });
         });
 
-        // ==================== DataScopePolicy（DDL v1.1 冻结对齐） ====================
+        // ==================== DataScopePolicy（DDL v1.3 冻结对齐） ====================
         modelBuilder.Entity<DataScopePolicy>(entity =>
         {
             entity.ToTable("DataScopePolicy");
@@ -106,9 +105,10 @@ public class AuthDbContext : DbContext
         {
             entity.ToTable("AuditLog");
             entity.HasKey(e => e.Id);
-            entity.Property(e => e.ActionType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ActionCode).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Result).IsRequired().HasMaxLength(20);
             entity.HasIndex(e => e.UserId);
-            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.OccurredAt);
         });
 
         // ==================== ApprovalFlow ====================
@@ -145,18 +145,6 @@ public class AuthDbContext : DbContext
             entity.Property(e => e.RuleType).IsRequired().HasMaxLength(50);
             entity.HasIndex(e => e.FlowId);
         });
-
-        // ==================== GovernanceAuditLog（治理审计，3号位 A-7） ====================
-        modelBuilder.Entity<GovernanceAuditLog>(entity =>
-        {
-            entity.ToTable("GovernanceAuditLog");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.OperationType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.EntityType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.VersionCode).HasMaxLength(100);
-            entity.HasIndex(e => new { e.EntityType, e.EntityId });
-            entity.HasIndex(e => e.OperatedAt);
-        });
     }
 
     /// <summary>
@@ -173,19 +161,19 @@ public class AuthDbContext : DbContext
             {
                 if (entry.Entity is User user)
                 {
-                    user.CreatedAt = DateTime.UtcNow;
-                    user.UpdatedAt = DateTime.UtcNow;
+                    user.CreatedAt = DateTime.Now;
+                    user.UpdatedAt = DateTime.Now;
                 }
                 else if (entry.Entity is AuditLog log)
                 {
-                    log.CreatedAt = DateTime.UtcNow;
+                    log.OccurredAt = DateTime.Now;
                 }
             }
             else if (entry.State == EntityState.Modified)
             {
                 if (entry.Entity is User user)
                 {
-                    user.UpdatedAt = DateTime.UtcNow;
+                    user.UpdatedAt = DateTime.Now;
                 }
             }
         }

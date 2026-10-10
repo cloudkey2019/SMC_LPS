@@ -19,12 +19,16 @@ public static class PasswordHasher
     /// <summary>派生密钥长度（字节）。</summary>
     private const int KeySize = 32;
 
+    /// <summary>PBKDF2 迭代次数上限（防库中异常大值导致慢哈希 DoS）。</summary>
+    private const int MaxIterations = 1_000_000;
+
     /// <summary>PBKDF2 存储格式前缀。</summary>
     private const string Prefix = "PBKDF2$";
 
     /// <summary>生成带随机盐的 PBKDF2 哈希。</summary>
     public static string Hash(string password)
     {
+        ArgumentNullException.ThrowIfNullOrEmpty(password);
         var salt = RandomNumberGenerator.GetBytes(SaltSize);
         var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, Iterations, HashAlgorithmName.SHA256, KeySize);
         return $"{Prefix}{Iterations}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
@@ -48,7 +52,7 @@ public static class PasswordHasher
     private static bool VerifyPbkdf2(string password, string storedHash)
     {
         var parts = storedHash.Split('$');
-        if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations) || iterations <= 0)
+        if (parts.Length != 4 || !int.TryParse(parts[1], out var iterations) || iterations <= 0 || iterations > MaxIterations)
             return false;
 
         try

@@ -18,8 +18,12 @@ namespace LPS.APS.Tests.Unit;
 /// </summary>
 public class GovernanceVersionCrudTests
 {
+    /// <summary>操作人（P1-04 审计 UserId 断言基准）</summary>
+    private const int ActorUserId = 7;
+
     private readonly Mock<IRuleSetVersionRepository> _ruleSetRepo = new();
     private readonly Mock<IParameterSetVersionRepository> _paramRepo = new();
+    private readonly Mock<IAuditLogRepository> _auditRepo = new();
     private readonly GovernanceVersionService _service;
 
     public GovernanceVersionCrudTests()
@@ -29,7 +33,7 @@ public class GovernanceVersionCrudTests
             _paramRepo.Object,
             Mock.Of<IStrategyProfileRepository>(),
             Mock.Of<IStrategyProfileVersionRepository>(),
-            Mock.Of<IGovernanceAuditLogRepository>());
+            _auditRepo.Object);
     }
 
     // ==================== P0-02：CRUD 状态机绕过测试 ====================
@@ -43,14 +47,14 @@ public class GovernanceVersionCrudTests
             RuleSetId = 10,
             VersionCode = "V1",
             Status = GovernanceVersionStatus.Published,
-            PublishedAt = DateTime.UtcNow,   // 伪造治理字段
+            PublishedAt = DateTime.Now,   // 伪造治理字段
             DemandPriorityJson = ValidDemandPriorityJson()
         };
         _ruleSetRepo.Setup(r => r.AddAsync(It.IsAny<RuleSetVersion>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((RuleSetVersion v, CancellationToken _) => v);
 
         // Act
-        var created = await _service.CreateRuleSetVersionAsync(request, "creator");
+        var created = await _service.CreateRuleSetVersionAsync(request, "creator", ActorUserId);
 
         // Assert —— Create 不可直提 PUBLISHED，治理字段置空
         created.Status.Should().Be(GovernanceVersionStatus.Draft);
@@ -76,7 +80,7 @@ public class GovernanceVersionCrudTests
         var update = new RuleSetVersion { Id = 1, VersionCode = "V1-篡改" };
 
         // Act
-        var act = () => _service.UpdateRuleSetVersionAsync(1, update, default);
+        var act = () => _service.UpdateRuleSetVersionAsync(1, update, ActorUserId, default);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -111,7 +115,7 @@ public class GovernanceVersionCrudTests
         };
 
         // Act
-        await _service.UpdateRuleSetVersionAsync(1, update, default);
+        await _service.UpdateRuleSetVersionAsync(1, update, ActorUserId, default);
 
         // Assert —— 落库实体 Status/RuleSetId 均以现有记录为准
         captured.Should().NotBeNull();
@@ -128,7 +132,7 @@ public class GovernanceVersionCrudTests
         _ruleSetRepo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(existing);
 
         // Act
-        var act = () => _service.UpdateRuleSetVersionAsync(1, new RuleSetVersion { Id = 1 }, default);
+        var act = () => _service.UpdateRuleSetVersionAsync(1, new RuleSetVersion { Id = 1 }, ActorUserId, default);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -176,7 +180,7 @@ public class GovernanceVersionCrudTests
             .ReturnsAsync((ParameterSetVersion v, CancellationToken _) => { captured = v; return v; });
 
         // Act
-        var created = await _service.CreateParameterSetVersionAsync(request, "creator");
+        var created = await _service.CreateParameterSetVersionAsync(request, "creator", ActorUserId);
 
         // Assert —— 落库实体 ContentSnapshotJson 含五子块，Status 强制 DRAFT
         captured.Should().NotBeNull();
@@ -217,7 +221,7 @@ public class GovernanceVersionCrudTests
         };
 
         // Act
-        await _service.UpdateParameterSetVersionAsync(2, update, default);
+        await _service.UpdateParameterSetVersionAsync(2, update, ActorUserId, default);
 
         // Assert —— 补齐的 Supply 进入重建快照；Status 冻结
         captured.Should().NotBeNull();
@@ -258,6 +262,94 @@ public class GovernanceVersionCrudTests
         // Assert
         result.Should().NotBeNull();
         result!.DemandPriorityJson.Should().NotBeNullOrWhiteSpace();
+    }
+
+    // ==================== P1-04：Create/Update 审计覆盖（补审计+预检反证） ====================
+
+    [Fact]
+    public async Task CreateRuleSet_审计写入_ActionCode为Create_UserId为操作人()
+    {
+        // Arrange —— DRAFT 版本创建（P0-02 状态机同 CreateRuleSet_入参Status为PUBLISHED 首测装配）
+        var request = new RuleSetVersion
+        {
+            RuleSetId = 10,
+            VersionCode = "V1",
+            DemandPriorityJson = ValidDemandPriorityJson()
+        };
+        _ruleSetRepo.Setup(r => r.AddAsync(It.IsAny<RuleSetVersion>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RuleSetVersion v, CancellationToken _) => { v.Id = 100; return v; });
+        Core.Entities.Auth.AuditLog? captured = null;
+        _auditRepo.Setup(a => a.AddAsync(It.IsAny<Core.Entities.Auth.AuditLog>(), It.IsAny<CancellationToken>()))
+            .Callback<Core.Entities.Auth.AuditLog, CancellationToken>((l, _) => captured = l)
+            .ReturnsAsync(new Core.Entities.Auth.AuditLog());
+
+        // Act
+        await _service.CreateRuleSetVersionAsync(request, "creator", ActorUserId);
+
+        // Assert —— 审计记录 Create + 操作人 UserId
+        captured.Should().NotBeNull();
+        captured!.ActionCode.Should().Be("Create");
+        captured.EntityType.Should().Be("RuleSetVersion");
+        captured.EntityId.Should().Be("100");
+        captured.UserId.Should().Be(ActorUserId);
+        captured.UserCode.Should().Be("creator");
+    }
+
+    [Fact]
+    public async Task UpdateRuleSet_审计写入_ActionCode为Update_OldValue为旧版本码()
+    {
+        // Arrange —— DRAFT 现有版本 + 更新（快照基线）
+        var existing = new RuleSetVersion
+        {
+            Id = 1,
+            RuleSetId = 10,
+            VersionCode = "V1",
+            Status = GovernanceVersionStatus.Draft,
+            ContentSnapshotJson = SnapshotWithDemandPriority("基线")
+        };
+        _ruleSetRepo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(existing);
+        Core.Entities.Auth.AuditLog? captured = null;
+        _auditRepo.Setup(a => a.AddAsync(It.IsAny<Core.Entities.Auth.AuditLog>(), It.IsAny<CancellationToken>()))
+            .Callback<Core.Entities.Auth.AuditLog, CancellationToken>((l, _) => captured = l)
+            .ReturnsAsync(new Core.Entities.Auth.AuditLog());
+
+        var update = new RuleSetVersion { Id = 1, VersionCode = "V2", DemandPriorityJson = ValidDemandPriorityJson() };
+
+        // Act
+        await _service.UpdateRuleSetVersionAsync(1, update, ActorUserId);
+
+        // Assert —— 审计记录 Update + OldValue=旧版本码 + 操作人
+        captured.Should().NotBeNull();
+        captured!.ActionCode.Should().Be("Update");
+        captured.EntityType.Should().Be("RuleSetVersion");
+        captured.OldValue.Should().Be("V1");
+        captured.NewValue.Should().Be("V2");
+        captured.UserId.Should().Be(ActorUserId);
+    }
+
+    [Fact]
+    public async Task UpdateRuleSet_审计预检失败_业务零落库()
+    {
+        // Arrange —— EnsureWritableAsync 注入失败（P1-03 同模式：fail-before-write）
+        var existing = new RuleSetVersion
+        {
+            Id = 1,
+            RuleSetId = 10,
+            VersionCode = "V1",
+            Status = GovernanceVersionStatus.Draft,
+            ContentSnapshotJson = SnapshotWithDemandPriority("基线")
+        };
+        _ruleSetRepo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(existing);
+        _auditRepo.Setup(a => a.EnsureWritableAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("APS_Auth 审计库不可写（测试注入）"));
+        var update = new RuleSetVersion { Id = 1, VersionCode = "V2", DemandPriorityJson = ValidDemandPriorityJson() };
+
+        // Act
+        var act = () => _service.UpdateRuleSetVersionAsync(1, update, ActorUserId);
+
+        // Assert —— 预检失败 → 业务零落库（UpdateAsync Never）
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _ruleSetRepo.Verify(r => r.UpdateAsync(It.IsAny<RuleSetVersion>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ==================== 测试装配辅助 ====================

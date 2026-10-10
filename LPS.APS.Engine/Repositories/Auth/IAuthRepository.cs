@@ -43,12 +43,3 @@ public interface IPermissionRepository : IAuthRepository<Permission>
     Task<IEnumerable<Permission>> GetPermissionsByRoleAsync(int roleId, CancellationToken cancellationToken = default);
     Task<IEnumerable<Permission>> GetPermissionsByUserAsync(int userId, CancellationToken cancellationToken = default);
 }
-
-/// <summary>
-/// AuditLog 仓储接口
-/// </summary>
-public interface IAuditLogRepository : IAuthRepository<AuditLog>
-{
-    Task<IEnumerable<AuditLog>> GetLogsByUserAsync(int userId, int pageIndex, int pageSize, CancellationToken cancellationToken = default);
-    Task<IEnumerable<AuditLog>> GetLogsByDateRangeAsync(DateTime startDate, DateTime endDate, CancellationToken cancellationToken = default);
-}

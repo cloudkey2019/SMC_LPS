@@ -47,7 +47,8 @@ public sealed class DemandPriorityExecutor : IDemandPriorityExecutor
     /// </summary>
     public List<UpstreamDemand> ExecutePrioritySort(
         IEnumerable<UpstreamDemand> demands,
-        DemandPriorityConfig config)
+        DemandPriorityConfig config,
+        IReadOnlySet<long>? expediteOrderCanonicalIds = null)
     {
         var demandList = demands.ToList();
         if (demandList.Count == 0)
@@ -55,6 +56,37 @@ public sealed class DemandPriorityExecutor : IDemandPriorityExecutor
             return demandList;
         }
 
+        // S5（PM 0923）：EXPEDITE 前置竞争层 —— 命中 OrderTargets.OrderCanonicalId 的需求作为独立竞争层
+        // 整体前置（「可调整 Demand 排序前置竞争层」，非恒先、非新增 Task 优先级）；
+        // 层内仍按 3号位冻结 DemandPriorityConfig 正常竞争排序，不突破任何字段/规则。
+        if (expediteOrderCanonicalIds is { Count: > 0 })
+        {
+            static bool IsExpedite(UpstreamDemand d, IReadOnlySet<long> keys)
+                => d.OrderCanonicalId.HasValue && keys.Contains(d.OrderCanonicalId.Value);
+
+            if (demandList.Any(d => IsExpedite(d, expediteOrderCanonicalIds)))
+            {
+                var expediteBucket = demandList.Where(d => IsExpedite(d, expediteOrderCanonicalIds)).ToList();
+                var normalBucket   = demandList.Where(d => !IsExpedite(d, expediteOrderCanonicalIds)).ToList();
+
+                var combined = new List<UpstreamDemand>(demandList.Count);
+                combined.AddRange(SortSingleLayer(expediteBucket, config));
+                combined.AddRange(SortSingleLayer(normalBucket, config));
+                StampDemandSequence(combined);
+                return combined;
+            }
+        }
+
+        var sorted = SortSingleLayer(demandList, config);
+        StampDemandSequence(sorted);
+        return sorted;
+    }
+
+    /// <summary>
+    /// 单个竞争层的 Demand 排序（不打 DemandSequence，序号由外层统一赋值）。
+    /// </summary>
+    private List<UpstreamDemand> SortSingleLayer(List<UpstreamDemand> demandList, DemandPriorityConfig config)
+    {
         var segments = config.Segments
             .Where(s => s.IsEnabled)
             .OrderBy(s => s.SegmentOrder)
@@ -66,9 +98,7 @@ public sealed class DemandPriorityExecutor : IDemandPriorityExecutor
             _logger.LogWarning(
                 "DemandPriority 当前层无启用 Segment，按稳定 DemandKey ASC 兜底（共 {Count} 条）",
                 demandList.Count);
-            var fallback = demandList.OrderBy(d => d.DemandKey, StringComparer.Ordinal).ToList();
-            StampDemandSequence(fallback);
-            return fallback;
+            return demandList.OrderBy(d => d.DemandKey, StringComparer.Ordinal).ToList();
         }
 
         // P1-02：未知 FieldName 显式报错，不允许静默吞掉3号位拼写错误
@@ -114,7 +144,6 @@ public sealed class DemandPriorityExecutor : IDemandPriorityExecutor
             sortedDemands.AddRange(unmatched);
         }
 
-        StampDemandSequence(sortedDemands);
         return sortedDemands;
     }
 

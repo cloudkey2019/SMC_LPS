@@ -127,11 +127,22 @@ public class ScheduleRunService : IScheduleRunService
     /// <inheritdoc />
     public async Task CompleteAsync(int scheduleRunId, int durationSeconds, CancellationToken cancellationToken = default)
     {
+        // 【2026-09-29 修复】原 SQL **不写 `ErrorMessage`** ⇒ 失败过一次、后来重跑成功的 Run 会把
+        //   **上一次的失败原因留着**，形成自相矛盾的行：`Status='COMPLETED'` 但 `ErrorMessage='排程失败'`。
+        //   实测受害者 = `ScheduleRun 818`（`MANUAL_20260929_FAMILY_X`）：2026-09-29 首跑优雅失败
+        //   （当时 `ExecuteDomainAsync` 尚未设 ErrorMessage，回写兜底成「排程失败」），修完重跑成功后
+        //   状态转为 COMPLETED，但错误栏没被清。
+        //   为何必须在**成功**时清：COMPLETED 的语义就是「无错」；「成功但有瑕疵」另有
+        //   `PartialSuccessAsync` 那一态承载。留着陈旧值会让 `GetRunReferenceTraceAsync`（照搬
+        //   `run.ErrorMessage`）对运维显示「已完成 + 排程失败」，把人引向不存在的故障。
+        //   （另一处消费点 `RunLifecycleService` 的域级 `Reason` 有 `pv.Status == FAILED` 守卫，
+        //     不受影响 —— 这里修的是显示与语义，不是那个。）
         await _connectionManager.ExecuteAsync(
             @"UPDATE ScheduleRun
               SET Status          = 'COMPLETED',
                   CompletedAt     = GETDATE(),
-                  DurationSeconds = @DurationSeconds
+                  DurationSeconds = @DurationSeconds,
+                  ErrorMessage    = NULL
               WHERE Id = @Id",
             new { Id = scheduleRunId, DurationSeconds = durationSeconds },
             db: DatabaseId.APS);

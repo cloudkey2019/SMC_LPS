@@ -29,6 +29,11 @@ public class TimedSupplyFactLoader : ITimedSupplyFactLoader
         SupplyFactScope scope,
         CancellationToken ct)
     {
+        // Dapper 列表参数只进 IN；@X IS NULL 标量判空会随列表一起扩成 (@p1,@p2) → "(@p1,@p2) IS NULL" 非法 SQL 4145。
+        // 此加载器空集合语义 = 无该维度过滤（装载全部），故不做 fail-closed，仅用 Has 标志替代标量判空。
+        var hasMaterialIds = scope.MaterialIds is { Count: > 0 };
+        var hasFactoryIds = scope.FactoryIds is { Count: > 0 };
+
         var sql = @"
             SELECT
                 sfp.MaterialCode,
@@ -49,15 +54,18 @@ public class TimedSupplyFactLoader : ITimedSupplyFactLoader
             WHERE sfp.IsActive = 1
               AND sfp.Quantity > 0
               AND sfp.SupplyType IN ('PURCHASE_IN_TRANSIT', 'OPEN_PO_REMAINING',
-                                      'ARRIVED_NOT_RECEIVED')
-              AND (@MaterialIds IS NULL OR sfp.MaterialId IN @MaterialIds)
-              AND (@FactoryIds IS NULL OR sfp.FactoryId IN @FactoryIds)
+                                      'ARRIVED_NOT_RECEIVED', 'VMI_ONSITE',
+                                      'INTERPLANT_IN_TRANSIT')
+              AND (@HasMaterialIds = 0 OR sfp.MaterialId IN @MaterialIds)
+              AND (@HasFactoryIds = 0 OR sfp.FactoryId IN @FactoryIds)
             ORDER BY sfp.MaterialId, sfp.FactoryId, sfp.AvailableTime";
 
         var parameters = new
         {
-            MaterialIds = scope.MaterialIds?.Count > 0 ? scope.MaterialIds : null,
-            FactoryIds = scope.FactoryIds?.Count > 0 ? scope.FactoryIds : null
+            MaterialIds = hasMaterialIds ? scope.MaterialIds : null,
+            HasMaterialIds = hasMaterialIds,
+            FactoryIds = hasFactoryIds ? scope.FactoryIds : null,
+            HasFactoryIds = hasFactoryIds
         };
 
         var rows = await _connectionManager.QueryAsync<RawProcurementFact>(

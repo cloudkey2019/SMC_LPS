@@ -22,16 +22,40 @@ public class ERPOrderSyncService : IERPOrderSyncService
 {
     private readonly DatabaseConnectionManager _connectionManager;
     private readonly IOrderPromotionService _promotionService;
+    private readonly IOrderLoadingService _orderLoadingService;
     private readonly ILogger<ERPOrderSyncService> _logger;
 
     public ERPOrderSyncService(
         DatabaseConnectionManager connectionManager,
         IOrderPromotionService promotionService,
+        IOrderLoadingService orderLoadingService,
         ILogger<ERPOrderSyncService> logger)
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
         _promotionService = promotionService ?? throw new ArgumentNullException(nameof(promotionService));
+        _orderLoadingService = orderLoadingService ?? throw new ArgumentNullException(nameof(orderLoadingService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    /// <summary>
+    /// 【白天候选】订单池同步：把 Order_Canonical 的增量订单压进当前 ACTIVE PlanVersion 的 [Order]。
+    /// 用户从该订单池选单做插单试排（PM 0923「白天 2号位 自己写 [Order]」）。
+    /// 幂等（底层 SP 有 NOT EXISTS 保护）；**失败不阻断 ERP 订单同步主流程**（仅记日志）。
+    /// </summary>
+    private async Task SyncOrdersToActivePartitionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var inserted = await _orderLoadingService.LoadOrdersToActivePlanVersionsAsync(cancellationToken);
+            if (inserted > 0)
+            {
+                _logger.LogInformation("白天订单池同步：新增 {Inserted} 条订单压入 ACTIVE PlanVersion", inserted);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "白天订单池同步失败（不阻断订单同步主流程）");
+        }
     }
 
     /// <inheritdoc />
@@ -91,6 +115,8 @@ public class ERPOrderSyncService : IERPOrderSyncService
             if (orders.Count == 0)
             {
                 await UpdateSyncWatermarkAsync(DateTime.Now);
+                // 无增量订单也压一次（幂等补齐：首次上线 / 上次压单失败时）
+                await SyncOrdersToActivePartitionAsync(cancellationToken);
                 return;
             }
 
@@ -121,6 +147,9 @@ public class ERPOrderSyncService : IERPOrderSyncService
             {
                 await UpdateSyncWatermarkAsync(maxUpdatedAt);
             }
+
+            // 【白天候选】订单池同步：增量订单压进 ACTIVE PlanVersion 的 [Order]
+            await SyncOrdersToActivePartitionAsync(cancellationToken);
         }
         catch (Exception ex)
         {
@@ -146,6 +175,7 @@ public class ERPOrderSyncService : IERPOrderSyncService
                 MaterialCode,
                 BOMNO,
                 FactoryCode,
+                SourceWarehouseProcessCode,
                 Quantity,
                 UOM,
                 DueDate,
@@ -205,6 +235,7 @@ public class ERPOrderSyncService : IERPOrderSyncService
         dataTable.Columns.Add("OrderType", typeof(string));
         dataTable.Columns.Add("MaterialCode", typeof(string));
         dataTable.Columns.Add("FactoryCode", typeof(string));
+        dataTable.Columns.Add("SourceWarehouseProcessCode", typeof(string));
         dataTable.Columns.Add("Quantity", typeof(decimal));
         dataTable.Columns.Add("UOM", typeof(string));
         dataTable.Columns.Add("DueDate", typeof(DateTime));
@@ -237,6 +268,7 @@ public class ERPOrderSyncService : IERPOrderSyncService
                 order.OrderType,
                 order.MaterialCode,
                 order.FactoryCode,
+                order.SourceWarehouseProcessCode,
                 order.Quantity,
                 order.UOM,
                 order.DueDate,

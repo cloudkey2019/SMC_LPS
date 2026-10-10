@@ -1,4 +1,6 @@
 using DomainDefinition = LPS.APS.Core.Entities.APS.DomainDefinition;
+using ProductFamily = LPS.APS.Core.Entities.APS.ProductFamily;
+using Factory = LPS.APS.Core.Entities.APS.Factory;
 
 namespace LPS.APS.Core.Interfaces;
 
@@ -42,4 +44,10 @@ public interface IDomainDefinitionRepository
 
     /// <summary>工厂引用存在性检查（Factory.Id）</summary>
     Task<bool> FactoryExistsAsync(int factoryId, CancellationToken ct = default);
+
+    /// <summary>产品族下拉列表（Domain 维护页数据源，全量按 Code 稳定排序）</summary>
+    Task<IReadOnlyList<ProductFamily>> GetProductFamiliesAsync(CancellationToken ct = default);
+
+    /// <summary>工厂下拉列表（Domain 维护页数据源，全量按 Code 稳定排序）</summary>
+    Task<IReadOnlyList<Factory>> GetFactoriesAsync(CancellationToken ct = default);
 }

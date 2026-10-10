@@ -53,4 +53,22 @@ public interface IScheduleQueryService
         int candidatePlanVersionId,
         int basePlanVersionId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 候选运行摘要（E：api/candidate/{candidateId}/summary；candidateId = ScheduleRun.Id）。
+    /// 校验：候选 Run 不存在抛 KeyNotFoundException（404）；越权抛 KeyNotFoundException（404）。
+    /// </summary>
+    Task<CandidateSummaryDto> GetCandidateSummaryAsync(
+        int userId,
+        int candidateRunId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 候选 vs 基础差异（E：api/candidate/{candidateId}/comparison；最小集字段）。
+    /// 校验同摘要；Run 无 BasePlanVersionId 抛 InvalidOperationException（400）。
+    /// </summary>
+    Task<CandidateDiffDto> GetCandidateDiffAsync(
+        int userId,
+        int candidateRunId,
+        CancellationToken cancellationToken = default);
 }

@@ -3,7 +3,14 @@ namespace LPS.APS.Scheduling.Algorithms;
 /// <summary>
 /// 拓扑排序（Kahn 算法）
 /// 用于确定产品族域的执行顺序（哪个域先排、哪个域后排）
-/// 供3号位在调度时使用
+///
+/// 【真实调用方：3号位】本类由 3号位在 Application 层使用
+/// （LPS.APS.Application/Services/SchedulingOrchestrator.cs:931 调用 SortByLayers&lt;string&gt;），
+/// 用于域(domain)级别的拓扑分层，不属于 1号位五阶段流程的调用链。
+///
+/// ⚠️ 注意：1号位自己的跨物料时序 DAG 分层（父子物料，子先父后）**不使用**本类，
+/// 而是在 PhaseOneConstraintBuilder.BuildCrossMaterialDag（Line 230）内联实现了一份 Kahn。
+/// 两者用途不同：本类排"域"，1号位排"物料"，请勿混淆。
 /// </summary>
 public static class TopologicalSort
 {

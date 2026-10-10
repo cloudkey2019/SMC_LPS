@@ -19,7 +19,7 @@ public static class TestEnvironment
     private static bool? _authDbAvailable;
     private static bool? _scheduleRunHasExpectedDomainKeysColumn;
     private static bool? _hasContentSnapshotJsonColumn;
-    private static bool? _hasGovernanceAuditLogTable;
+    private static bool? _hasAuditLogTable;
 
     /// <summary>按 appsettings.Test.json 构造连接管理器（惰性单例，集成测试共用）</summary>
     public static DatabaseConnectionManager GetConnectionManager()
@@ -118,33 +118,33 @@ public static class TestEnvironment
     }
 
     /// <summary>
-    /// APS_Auth 库 GovernanceAuditLog 表是否已建（治理审计，3号位 A-7 配套 2号位 DDL）。
+    /// APS_Auth 库 AuditLog 表是否已建（治理审计，3号位 A-7 配套 2号位 DDL）。
     /// 语义：实体/仓储/DbSet 已由 3号位 交付，物理表需 2号位 Auth 库 DDL 补建并迁移测试库
     /// （红线 #6 DB 结构变更 2号位 专属）；建表前相关治理发布/确认/激活集成测试动态 Skip，
     /// 建表后自动转绿无需改测试代码。
     /// </summary>
-    public static bool HasGovernanceAuditLogTable()
+    public static bool HasAuditLogTable()
     {
-        if (_hasGovernanceAuditLogTable.HasValue)
+        if (_hasAuditLogTable.HasValue)
         {
-            return _hasGovernanceAuditLogTable.Value;
+            return _hasAuditLogTable.Value;
         }
 
         try
         {
             var count = GetConnectionManager().QueryFirstOrDefaultAsync<int>(
-                "SELECT COUNT(*) FROM sys.tables WHERE name = 'GovernanceAuditLog'",
+                "SELECT COUNT(*) FROM sys.tables WHERE name = 'AuditLog'",
                 null,
                 db: DatabaseId.Auth).GetAwaiter().GetResult();
 
-            _hasGovernanceAuditLogTable = count > 0;
+            _hasAuditLogTable = count > 0;
         }
         catch
         {
-            _hasGovernanceAuditLogTable = false;
+            _hasAuditLogTable = false;
         }
 
-        return _hasGovernanceAuditLogTable.Value;
+        return _hasAuditLogTable.Value;
     }
 
     /// <summary>清理测试数据（按 FK 依赖倒序 DELETE）</summary>

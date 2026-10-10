@@ -32,7 +32,9 @@ public class OrderQueryService
         string? status = null,
         int skip = 0,
         int take = 50,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null)
     {
         if (planVersionId <= 0) throw new ArgumentException("planVersionId is required");
         if (take <= 0 || take > 200) take = 50;
@@ -40,7 +42,7 @@ public class OrderQueryService
         return await _repository.QueryOrdersAsync(
             planVersionId, orderNo, materialCode, customerName,
             factoryCode, domainKey, delayStatus, status,
-            skip, take, ct);
+            skip, take, ct, allowedFactories, allowedDomains);
     }
 
     /// <summary>
@@ -55,5 +57,19 @@ public class OrderQueryService
         if (orderId <= 0) throw new ArgumentException("orderId is required");
 
         return await _repository.GetOrderDetailAsync(planVersionId, orderId, ct);
+    }
+
+    /// <summary>
+    /// 查询订单状态汇总（按 DelayStatus 聚合）
+    /// </summary>
+    public async Task<OrderSummaryDto> GetSummaryAsync(
+        int planVersionId,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null,
+        CancellationToken ct = default)
+    {
+        if (planVersionId <= 0) throw new ArgumentException("planVersionId is required");
+
+        return await _repository.GetSummaryAsync(planVersionId, allowedFactories, allowedDomains, ct);
     }
 }

@@ -21,7 +21,9 @@ public interface IOrderQueryRepository
         string? status = null,
         int skip = 0,
         int take = 50,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null);
 
     /// <summary>
     /// 查询订单详情（含Pegging和生产计划）
@@ -29,5 +31,14 @@ public interface IOrderQueryRepository
     Task<OrderDetailDto?> GetOrderDetailAsync(
         int planVersionId,
         long orderId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// 查询订单状态汇总（按 DelayStatus 聚合）
+    /// </summary>
+    Task<OrderSummaryDto> GetSummaryAsync(
+        int planVersionId,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null,
         CancellationToken ct = default);
 }

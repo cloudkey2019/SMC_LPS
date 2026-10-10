@@ -20,7 +20,8 @@ public interface ISupplyFactTraceRepository
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 
     /// <summary>
     /// 查询Received事实（SH/PI Received）
@@ -34,7 +35,8 @@ public interface ISupplyFactTraceRepository
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 
     /// <summary>
     /// 聚合查询所有供应事实
@@ -49,5 +51,6 @@ public interface ISupplyFactTraceRepository
         bool activeOnly = true,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 }

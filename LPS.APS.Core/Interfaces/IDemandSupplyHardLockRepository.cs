@@ -23,6 +23,13 @@ public interface IDemandSupplyHardLockRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 按 Id 列表查询 Lock 记录（不区分状态，供释放前校验）
+    /// </summary>
+    Task<IEnumerable<DemandSupplyHardLock>> GetLocksByIdsAsync(
+        IEnumerable<long> lockIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 批量插入 Lock 记录
     /// </summary>
     Task<int> BulkInsertAsync(

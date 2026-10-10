@@ -1,5 +1,6 @@
 using LPS.APS.BusinessRules.Loaders;
 using LPS.APS.BusinessRules.Models;
+using LPS.APS.BusinessRules.Tests.Helpers;
 using LPS.APS.Core.Dto;
 using LPS.APS.Engine.Data;
 using Moq;
@@ -11,13 +12,13 @@ namespace LPS.APS.BusinessRules.Tests.Loaders;
 [TestFixture]
 public class TimedSupplyFactLoaderTests
 {
-    private Mock<DatabaseConnectionManager> _mockConnectionManager;
+    private Mock<TestableDatabaseConnectionManager> _mockConnectionManager;
     private TimedSupplyFactLoader _loader;
 
     [SetUp]
     public void SetUp()
     {
-        _mockConnectionManager = new Mock<DatabaseConnectionManager>();
+        _mockConnectionManager = new Mock<TestableDatabaseConnectionManager>();
         _loader = new TimedSupplyFactLoader(_mockConnectionManager.Object);
     }
 

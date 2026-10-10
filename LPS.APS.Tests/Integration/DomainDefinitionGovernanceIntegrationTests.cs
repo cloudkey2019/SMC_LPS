@@ -1,5 +1,6 @@
 using FluentAssertions;
 using LPS.APS.Application.Services;
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Engine.Data;
 using LPS.APS.Engine.Repositories.Auth;
@@ -7,6 +8,7 @@ using LPS.APS.Engine.Repositories.Governance;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Moq;
 using Xunit;
 using DomainDefinition = LPS.APS.Core.Entities.APS.DomainDefinition;
 
@@ -20,14 +22,15 @@ namespace LPS.APS.Tests.Integration;
 ///   G-D03 ScopeType 合法性
 ///   G-D05 FACTORY_FAMILY 必须工厂 / FAMILY 不得工厂 / 引用合法性
 ///   G-D16 停用/启用 + 审计
-/// 依赖 APS_Auth.GovernanceAuditLog 表（审计），缺表时动态 Skip。
+/// 依赖 APS_Auth.AuditLog 表（审计），缺表时动态 Skip。
 /// </summary>
 /// <remarks>开发者：3号位</remarks>
 public class DomainDefinitionGovernanceIntegrationTests : IDisposable
 {
     private readonly DatabaseConnectionManager _cm;
     private readonly DomainDefinitionRepository _repo;
-    private readonly IGovernanceAuditLogRepository _auditRepo;
+    private readonly IAuditLogRepository _auditRepo;
+    private readonly Mock<IDataScopeService> _scopeService;
     private readonly DomainDefinitionGovernanceService _service;
     private readonly string _uniqueSuffix;
 
@@ -37,21 +40,26 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
 
     public DomainDefinitionGovernanceIntegrationTests()
     {
-        _uniqueSuffix = $"{DateTime.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}"[..30];
+        _uniqueSuffix = $"{DateTime.Now:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}".ToUpperInvariant()[..30];
 
         _cm = TestEnvironment.GetConnectionManager();
         var loggerFactory = LoggerFactory.Create(builder => { });
 
         _repo = new DomainDefinitionRepository(_cm);
         _auditRepo = CreateAuditRepository(loggerFactory);
+        _scopeService = new Mock<IDataScopeService>();
+        _scopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.Global);
         _service = new DomainDefinitionGovernanceService(
             _repo,
             _auditRepo,
+            _scopeService.Object,
             loggerFactory.CreateLogger<DomainDefinitionGovernanceService>());
     }
 
     /// <summary>构造审计仓储（Auth 库 EF Core）</summary>
-    private static IGovernanceAuditLogRepository CreateAuditRepository(ILoggerFactory loggerFactory)
+    private static IAuditLogRepository CreateAuditRepository(ILoggerFactory loggerFactory)
     {
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
@@ -63,9 +71,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         var options = new DbContextOptionsBuilder<AuthDbContext>()
             .UseSqlServer(authConn)
             .Options;
-        return new GovernanceAuditLogRepository(
-            new AuthDbContext(options),
-            loggerFactory.CreateLogger<GovernanceAuditLogRepository>());
+        return new AuditLogRepository(new AuthDbContext(options));
     }
 
     /// <summary>插入测试用 ProductFamily / Factory 主数据（唯一 Code，Dispose 清理）</summary>
@@ -93,17 +99,17 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
     };
 
     private string SkipReason =>
-        "测试环境缺 APS_Auth 库或 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位 部署后转绿";
+        "测试环境缺 APS_Auth 库或 AuditLog 表（审计 DDL 未迁移），需 2号位 部署后转绿";
 
     [SkippableFact]
     public async Task G_D01_新建FAMILY域_成功并审计_当前有效集合含新域()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
         var input = BuildFamilyInput();
 
-        var created = await _service.CreateAsync(input, _uniqueSuffix);
+        var created = await _service.CreateAsync(input, 1, _uniqueSuffix);
         _createdDomainIds.Add(created.Id);
 
         created.Id.Should().BeGreaterThan(0);
@@ -119,23 +125,23 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         var active = await _service.GetActiveAsync();
         active.Should().Contain(d => d.Id == created.Id);
 
-        var logs = await _auditRepo.GetByEntityAsync("DomainDefinition", created.Id);
+        var logs = await _auditRepo.GetByEntityAsync("DomainDefinition", created.Id.ToString());
         logs.Should().NotBeEmpty();
-        logs.First().OperationType.Should().Be("Create");
-        logs.First().AfterStatus.Should().Be("Active");
+        logs.First().ActionCode.Should().Be("Create");
+        logs.First().NewValue.Should().Be("Active");
     }
 
     [SkippableFact]
     public async Task G_D02_DomainKey重复_拒绝()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
         var input = BuildFamilyInput();
-        var created = await _service.CreateAsync(input, _uniqueSuffix);
+        var created = await _service.CreateAsync(input, 1, _uniqueSuffix);
         _createdDomainIds.Add(created.Id);
 
-        Func<Task> act = () => _service.CreateAsync(input, _uniqueSuffix);
+        Func<Task> act = () => _service.CreateAsync(input, 1, _uniqueSuffix);
         var ex = await act.Should().ThrowAsync<InvalidOperationException>();
         ex.WithMessage("*DomainKey*已存在*");
     }
@@ -143,13 +149,13 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task G_D03_ScopeType非法_拒绝()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
         var input = BuildFamilyInput();
         input.ScopeType = "CUSTOMER";
 
-        Func<Task> act = () => _service.CreateAsync(input, _uniqueSuffix);
+        Func<Task> act = () => _service.CreateAsync(input, 1, _uniqueSuffix);
         var ex = await act.Should().ThrowAsync<InvalidOperationException>();
         ex.WithMessage("*ScopeType*");
     }
@@ -157,7 +163,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task G_D05_FACTORY_FAMILY必须工厂_FAMILY不得工厂_引用合法性()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
 
@@ -170,7 +176,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
             ProductFamilyId = _testProductFamilyId,
             FactoryId = null
         };
-        Func<Task> actMissingFactory = () => _service.CreateAsync(missingFactory, _uniqueSuffix);
+        Func<Task> actMissingFactory = () => _service.CreateAsync(missingFactory, 1, _uniqueSuffix);
         (await actMissingFactory.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*必须指定 FactoryId*");
 
         // FACTORY_FAMILY 工厂不存在 → 拒绝
@@ -182,19 +188,19 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
             ProductFamilyId = _testProductFamilyId,
             FactoryId = 999999999
         };
-        Func<Task> actBadFactory = () => _service.CreateAsync(badFactory, _uniqueSuffix);
+        Func<Task> actBadFactory = () => _service.CreateAsync(badFactory, 1, _uniqueSuffix);
         (await actBadFactory.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*工厂不存在*");
 
         // FAMILY 指定工厂 → 拒绝
         var familyWithFactory = BuildFamilyInput();
         familyWithFactory.FactoryId = _testFactoryId;
-        Func<Task> actFamilyWithFactory = () => _service.CreateAsync(familyWithFactory, _uniqueSuffix);
+        Func<Task> actFamilyWithFactory = () => _service.CreateAsync(familyWithFactory, 1, _uniqueSuffix);
         (await actFamilyWithFactory.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*不得指定 FactoryId*");
 
         // 产品族不存在 → 拒绝
-        var badFamily = BuildFamilyInput("badfamily");
+        var badFamily = BuildFamilyInput("BADFAMILY");
         badFamily.ProductFamilyId = 999999999;
-        Func<Task> actBadFamily = () => _service.CreateAsync(badFamily, _uniqueSuffix);
+        Func<Task> actBadFamily = () => _service.CreateAsync(badFamily, 1, _uniqueSuffix);
         (await actBadFamily.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*产品族不存在*");
 
         // FACTORY_FAMILY 合法 → 成功
@@ -206,7 +212,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
             ProductFamilyId = _testProductFamilyId,
             FactoryId = _testFactoryId
         };
-        var created = await _service.CreateAsync(validFactoryFamily, _uniqueSuffix);
+        var created = await _service.CreateAsync(validFactoryFamily, 1, _uniqueSuffix);
         _createdDomainIds.Add(created.Id);
         created.FactoryId.Should().Be(_testFactoryId);
     }
@@ -214,21 +220,21 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task G_D04_编辑_DomainKey不可变更_其余字段可更新()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
-        var created = await _service.CreateAsync(BuildFamilyInput(), _uniqueSuffix);
+        var created = await _service.CreateAsync(BuildFamilyInput(), 1, _uniqueSuffix);
         _createdDomainIds.Add(created.Id);
 
         // 变更 DomainKey → 拒绝
-        var changedKey = BuildFamilyInput("changed");
-        Func<Task> act = () => _service.UpdateAsync(created.Id, changedKey, _uniqueSuffix);
+        var changedKey = BuildFamilyInput("CHANGED");
+        Func<Task> act = () => _service.UpdateAsync(created.Id, changedKey, 1, _uniqueSuffix);
         (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*不可变更*");
 
         // 同 Key 改 DomainName → 成功
         var renamed = BuildFamilyInput();
         renamed.DomainName = "改名后的测试域";
-        var updated = await _service.UpdateAsync(created.Id, renamed, _uniqueSuffix);
+        var updated = await _service.UpdateAsync(created.Id, renamed, 1, _uniqueSuffix);
         updated.DomainKey.Should().Be(created.DomainKey);
         updated.DomainName.Should().Be("改名后的测试域");
 
@@ -239,25 +245,45 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task G_D16_停用与启用_有效集合联动并审计()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(), SkipReason);
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
 
         await SetupMasterDataAsync();
-        var created = await _service.CreateAsync(BuildFamilyInput(), _uniqueSuffix);
+        var created = await _service.CreateAsync(BuildFamilyInput(), 1, _uniqueSuffix);
         _createdDomainIds.Add(created.Id);
 
         // 停用
-        var disabled = await _service.SetActiveAsync(created.Id, false, _uniqueSuffix);
+        var disabled = await _service.SetActiveAsync(created.Id, false, 1, _uniqueSuffix);
         disabled.IsActive.Should().BeFalse();
         (await _service.GetActiveAsync()).Should().NotContain(d => d.Id == created.Id);
 
         // 启用
-        var enabled = await _service.SetActiveAsync(created.Id, true, _uniqueSuffix);
+        var enabled = await _service.SetActiveAsync(created.Id, true, 1, _uniqueSuffix);
         enabled.IsActive.Should().BeTrue();
         (await _service.GetActiveAsync()).Should().Contain(d => d.Id == created.Id);
 
         // 审计：含 Disable + Enable
-        var logs = await _auditRepo.GetByEntityAsync("DomainDefinition", created.Id);
-        logs.Select(l => l.OperationType).Should().Contain(new[] { "Disable", "Enable" });
+        var logs = await _auditRepo.GetByEntityAsync("DomainDefinition", created.Id.ToString());
+        logs.Select(l => l.ActionCode).Should().Contain(new[] { "Disable", "Enable" });
+    }
+
+    [SkippableFact]
+    public async Task G_D17_业务范围未授权Domain_创建拒绝()
+    {
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(), SkipReason);
+
+        await SetupMasterDataAsync();
+
+        // 操作者仅授权 OTHER_DOMAIN，非目标域 → 业务范围校验 fail-closed 拒绝
+        _scopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Domain, "OTHER_DOMAIN") }));
+
+        var input = BuildFamilyInput();
+
+        var act = async () => await _service.CreateAsync(input, 1, _uniqueSuffix);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*无权操作*");
     }
 
     public void Dispose()
@@ -294,8 +320,8 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         try
         {
             _cm.ExecuteAsync(
-                "DELETE FROM [dbo].[GovernanceAuditLog] WHERE [EntityType] = 'DomainDefinition' AND [OperatedBy] = @OperatedBy",
-                new { OperatedBy = _uniqueSuffix },
+                "DELETE FROM [dbo].[AuditLog] WHERE [EntityType] = 'DomainDefinition' AND [UserCode] = @UserCode",
+                new { UserCode = _uniqueSuffix },
                 db: DatabaseId.Auth).GetAwaiter().GetResult();
         }
         catch { }

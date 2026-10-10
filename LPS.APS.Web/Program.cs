@@ -9,8 +9,12 @@ using LPS.APS.Scheduling.Extensions;
 using LPS.APS.Shared.Extensions;
 using LPS.APS.Web.Extensions;
 using LPS.APS.Web.Filters;
+using LPS.APS.Shared.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
@@ -32,7 +36,7 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     Log.Information("========================================");
-    Log.Information("LPS.APS 应用程序启动中...");
+    Log.Information("LPS.APS 应用程序启动中...");  
     Log.Information("========================================");
 
 var builder = WebApplication.CreateBuilder(args);
@@ -55,10 +59,10 @@ builder.Services.AddGovernanceRepositories();
 // 注册排程算法服务（1号位：纯内存计算引擎）
 builder.Services.AddSchedulingServices();
 
-// 注册业务规则服务（5号位：Pegging、LotSizing、Priority 等）
+// 注册业务规则服务（5号位：业务规则插件 + 原始供应事实；Pegging 的消费与 Quantity-Time 传播归 2号位）
 builder.Services.AddBusinessRuleServices();
 
-// 注册应用服务（3号位：用例编排）
+// 注册应用服务（3号位：治理/生命周期用例编排；Pegging 与排程计算类编排归 2号位）
 builder.Services.AddApplicationServices();
 
 // 注册Hangfire定时服务（使用APS库存储Job数据）
@@ -68,6 +72,20 @@ builder.Services.AddHangfireServices(builder.Configuration);
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<GlobalExceptionFilter>();
+})
+.ConfigureApiBehaviorOptions(options =>
+{
+    // [ApiController] 自动模型校验失败时，统一返回 422 + ApiResponse 信封（前端按 json.code 解析，替代默认 400 ProblemDetails）
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var firstError = context.ModelState
+            .Where(kv => kv.Value?.Errors.Count > 0)
+            .SelectMany(kv => kv.Value!.Errors.Select(e => e.ErrorMessage))
+            .FirstOrDefault() ?? "请求参数校验失败";
+
+        return new UnprocessableEntityObjectResult(
+            ApiResponse.Fail(422, firstError));
+    };
 })
 .AddJsonOptions(options =>
 {
@@ -214,6 +232,41 @@ builder.Services.AddResponseCompression(options =>
     options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
 });
 
+// ==================== M3 登录速率限制（3号位） ====================
+// IP 维度滑动窗口 + 未知IP 全局兜底，防暴力破解/用户枚举；
+// 阈值从 appsettings（Auth:LoginRateLimit:*）读取，缺省 1 分钟 5 次。
+var loginPermitLimit = builder.Configuration.GetValue<int>("Auth:LoginRateLimit:PermitLimit", 5);
+var loginWindowSeconds = builder.Configuration.GetValue<int>("Auth:LoginRateLimit:WindowSeconds", 60);
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json; charset=utf-8";
+        var body = System.Text.Json.JsonSerializer.Serialize(
+            ApiResponse.Fail(429, "登录尝试过于频繁，请稍后再试"),
+            new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
+        await context.HttpContext.Response.WriteAsync(body, ct);
+    };
+
+    options.AddPolicy("login", httpContext =>
+    {
+        // 优先客户端真实 IP；不可得时(反向代理未透传)统一落到 "unknown" 桶，充当全局限流兜底
+        var ip = httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()
+            ?? "unknown";
+
+        return RateLimitPartition.GetSlidingWindowLimiter(ip, _ => new SlidingWindowRateLimiterOptions
+        {
+            PermitLimit = loginPermitLimit,
+            Window = TimeSpan.FromSeconds(loginWindowSeconds),
+            QueueLimit = 0,
+            SegmentsPerWindow = loginWindowSeconds,
+        });
+    });
+});
+
 var app = builder.Build();
 
 // ==================== 请求管道 ====================
@@ -236,6 +289,9 @@ app.UseRequestLocalization();
 app.UseResponseCompression();
 app.UseCors(app.Environment.IsDevelopment() ? "AllowAll" : "Default");
 app.UseHttpsRedirection();
+
+// M3：登录速率限制中间件（须在 UseAuthentication 之前，作用于登录端点）
+app.UseRateLimiter();
 
 app.UseAuthentication();
 
@@ -280,7 +336,7 @@ app.UseAuthorization();
 app.MapControllers();
 
 // ==================== 启动种子（F-G5 收尾，3号位） ====================
-// 确保代码侧 13 个 V1 功能权限码已落库（幂等；APS_Auth 不可用时仅告警不阻断启动）
+// 确保代码侧 34 个 V1 功能权限码已落库（幂等；APS_Auth 不可用时仅告警不阻断启动）
 using (var scope = app.Services.CreateScope())
 {
     var seeder = scope.ServiceProvider.GetRequiredService<IPermissionSeedService>();

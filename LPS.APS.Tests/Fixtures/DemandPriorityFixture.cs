@@ -19,7 +19,7 @@ public static class DemandPriorityFixture
             StrategyProfileVersionId = 1001,
             RuleSetVersionId = 2001,
             ParameterSetVersionId = 3001,
-            FrozenAt = DateTime.UtcNow,
+            FrozenAt = DateTime.Now,
             DemandPriority = new DemandPriorityBlock
             {
                 Segments = new List<PrioritySegment>

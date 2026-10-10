@@ -95,7 +95,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
         snapshot.StrategyProfileVersionId.Should().Be(_testStrategyProfileVersionId);
         snapshot.RuleSetVersionId.Should().Be(_testRuleSetVersionId);
         snapshot.ParameterSetVersionId.Should().Be(_testParameterSetVersionId);
-        snapshot.FrozenAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
+        snapshot.FrozenAt.Should().BeCloseTo(DateTime.Now, TimeSpan.FromSeconds(10));
 
         snapshot.DemandPriority.Should().NotBeNull();
         snapshot.Lock.Should().NotBeNull();
@@ -144,7 +144,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
 
     private async System.Threading.Tasks.Task SetupTestDataAsync()
     {
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var uniqueSuffix = $"{now:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}".Substring(0, 30);
 
         // 通过 _connectionManager 的辅助方法创建父表记录，避免连接死锁
@@ -310,7 +310,7 @@ public class FrozenStrategySnapshotProviderIntegrationTests : IDisposable
         {
             Mode = SolverStrategyMode.Backward,
             OnTimeTarget = new OnTimeTargetParams { TargetPercent = 85 },
-            Setup = new SetupParams { DefaultSetupMinutes = 45, SetupLookAheadSize = 4 }
+            Setup = new SetupParams()
         });
 
         var candidateGuardrailJson = JsonSerializer.Serialize(new CandidateGuardrailBlock

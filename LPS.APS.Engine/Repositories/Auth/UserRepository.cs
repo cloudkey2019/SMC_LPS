@@ -24,7 +24,7 @@ public class UserRepository : IUserRepository
     public async Task<IEnumerable<User>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         return await _context.Users
-            .Where(u => u.Status != "Deleted")
+            .Where(u => !u.IsDeleted)
             .ToListAsync(cancellationToken);
     }
 
@@ -46,7 +46,7 @@ public class UserRepository : IUserRepository
         var user = await GetByIdAsync(id, cancellationToken);
         if (user != null)
         {
-            user.Status = "Deleted";
+            user.IsDeleted = true;
             await UpdateAsync(user, cancellationToken);
         }
     }
@@ -59,19 +59,19 @@ public class UserRepository : IUserRepository
     public async Task<User?> GetByUserNameAsync(string userName, CancellationToken cancellationToken = default)
     {
         return await _context.Users
-            .FirstOrDefaultAsync(u => u.UserName == userName && u.Status != "Deleted", cancellationToken);
+            .FirstOrDefaultAsync(u => u.LoginName == userName && !u.IsDeleted, cancellationToken);
     }
 
     public async Task<User?> GetByEmailAsync(string email, CancellationToken cancellationToken = default)
     {
         return await _context.Users
-            .FirstOrDefaultAsync(u => u.Email == email && u.Status != "Deleted", cancellationToken);
+            .FirstOrDefaultAsync(u => u.Email == email && !u.IsDeleted, cancellationToken);
     }
 
     public async Task<IEnumerable<User>> GetUsersByRoleAsync(int roleId, CancellationToken cancellationToken = default)
     {
         return await _context.Users
-            .Where(u => u.Status != "Deleted" && _context.UserRoles.Any(ur => ur.UserId == u.Id && ur.RoleId == roleId))
+            .Where(u => !u.IsDeleted && _context.UserRoles.Any(ur => ur.UserId == u.Id && ur.RoleId == roleId))
             .ToListAsync(cancellationToken);
     }
 }

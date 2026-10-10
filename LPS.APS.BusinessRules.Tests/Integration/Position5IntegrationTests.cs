@@ -2,6 +2,7 @@ using LPS.APS.BusinessRules.Calculators;
 using LPS.APS.BusinessRules.Loaders;
 using LPS.APS.BusinessRules.Models;
 using LPS.APS.BusinessRules.Services;
+using LPS.APS.BusinessRules.Tests.Helpers;
 using LPS.APS.BusinessRules.Tests.TestData;
 using LPS.APS.Core.Dto;
 using LPS.APS.Engine.Data;
@@ -15,12 +16,12 @@ namespace LPS.APS.BusinessRules.Tests.Integration;
 public class Position5IntegrationTests
 {
     private Position5SupplyService _service;
-    private Mock<DatabaseConnectionManager> _mockConnectionManager;
+    private Mock<TestableDatabaseConnectionManager> _mockConnectionManager;
 
     [SetUp]
     public void SetUp()
     {
-        _mockConnectionManager = new Mock<DatabaseConnectionManager>();
+        _mockConnectionManager = new Mock<TestableDatabaseConnectionManager>();
         var loader = new TimedSupplyFactLoader(_mockConnectionManager.Object);
         _service = new Position5SupplyService(loader);
     }
@@ -78,25 +79,18 @@ public class Position5IntegrationTests
 
         var result = await _service.LoadProcurementSupplyAsync(scope, new FrozenFactParameters(), CancellationToken.None);
 
+        // 【2026-08-25新基线】5号位不再做SupplyType/ETA校验，全部透传给2号位
         Assert.That(result.Success, Is.True);
         Assert.That(result.RawFactCount, Is.EqualTo(4));
-        Assert.That(result.ValidFactCount, Is.EqualTo(2));
-        Assert.That(result.InvalidFactCount, Is.EqualTo(2));
-        Assert.That(result.TimedSupplyFacts.Count, Is.EqualTo(2));
-        Assert.That(result.Issues.Count, Is.EqualTo(2));
+        Assert.That(result.ValidFactCount, Is.EqualTo(4), "All facts pass through - validation is 2号位 responsibility");
+        Assert.That(result.InvalidFactCount, Is.EqualTo(0));
+        Assert.That(result.TimedSupplyFacts.Count, Is.EqualTo(4));
+        Assert.That(result.Issues.Count, Is.EqualTo(0));
 
-        Assert.That(result.TimedSupplyFacts[0].PhysicalSourceKey, Is.EqualTo("PO-GOOD-001"));
-        Assert.That(result.TimedSupplyFacts[1].PhysicalSourceKey, Is.EqualTo("PO-GOOD-002"));
-
-        var f15Issue = result.Issues.FirstOrDefault(i => i.PhysicalSourceKey == "PO-BAD-F15-001");
-        Assert.That(f15Issue, Is.Not.Null);
-        Assert.That(f15Issue.IssueCode, Is.EqualTo("F21"));
-        Assert.That(f15Issue.Severity, Is.EqualTo("WARNING"));
-
-        var typeIssue = result.Issues.FirstOrDefault(i => i.PhysicalSourceKey == "PO-BAD-TYPE-001");
-        Assert.That(typeIssue, Is.Not.Null);
-        Assert.That(typeIssue.IssueCode, Is.EqualTo("F21"));
-        Assert.That(typeIssue.RawSupplyType, Is.EqualTo("INVALID_SUPPLY_TYPE"));
+        // 验证原始字段正确透传（包括INVALID_SUPPLY_TYPE也原样透传）
+        var badTypeFact = result.TimedSupplyFacts.FirstOrDefault(f => f.PhysicalSourceKey == "PO-BAD-TYPE-001");
+        Assert.That(badTypeFact, Is.Not.Null);
+        Assert.That(badTypeFact.SupplyType, Is.EqualTo("INVALID_SUPPLY_TYPE"), "Invalid type passed through for 2号位 to validate");
     }
 
     [Test]
@@ -153,14 +147,18 @@ public class Position5IntegrationTests
         Assert.That(result.Success, Is.True);
         Assert.That(result.ValidFactCount, Is.EqualTo(3));
 
+        // 【2026-08-25新基线】AvailableTime由2号位计算，5号位只透传原始ETA字段
         var manualFact = result.TimedSupplyFacts.First(f => f.MaterialCode == "MAT-MANUAL-ONLY");
-        Assert.That(manualFact.AvailableTime, Is.EqualTo(baseDate.AddDays(20)));
+        Assert.That(manualFact.AvailableTime, Is.Null, "AvailableTime is 2号位 responsibility");
+        Assert.That(manualFact.Eta, Is.EqualTo(baseDate.AddDays(15)));
 
         var erpFact = result.TimedSupplyFacts.First(f => f.MaterialCode == "MAT-ERP-ONLY");
-        Assert.That(erpFact.AvailableTime, Is.EqualTo(baseDate.AddDays(18)));
+        Assert.That(erpFact.AvailableTime, Is.Null);
+        Assert.That(erpFact.Eta, Is.EqualTo(baseDate.AddDays(18)));
 
         var releaseFact = result.TimedSupplyFacts.First(f => f.MaterialCode == "MAT-RELEASE-ONLY");
-        Assert.That(releaseFact.AvailableTime, Is.EqualTo(baseDate.AddDays(14)));
+        Assert.That(releaseFact.AvailableTime, Is.Null);
+        Assert.That(releaseFact.ReleaseDate, Is.EqualTo(baseDate.AddDays(14)));
     }
 
     [Test]
@@ -269,7 +267,8 @@ public class Position5IntegrationTests
         Assert.That(fact.FactoryId, Is.EqualTo(8888));
         Assert.That(fact.FactoryCode, Is.EqualTo("TEST"));
         Assert.That(fact.RemainingQty, Is.EqualTo(12345.67m));
-        Assert.That(fact.AvailableTime, Is.EqualTo(testDate.AddDays(10)));
+        Assert.That(fact.AvailableTime, Is.Null, "AvailableTime is 2号位 responsibility");
+        Assert.That(fact.Eta, Is.EqualTo(testDate.AddDays(15)), "Raw ERP Eta passed through");
         Assert.That(fact.WarehouseCode, Is.EqualTo("WH-TEST"));
         Assert.That(fact.CommitmentStatus, Is.EqualTo("TENTATIVE"));
         Assert.That(fact.Confidence, Is.EqualTo("MEDIUM"));

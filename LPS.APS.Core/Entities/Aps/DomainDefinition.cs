@@ -14,7 +14,7 @@ namespace LPS.APS.Core.Entities.APS;
 ///   - DomainKey 唯一性 + 稳定性（启用后不得变更）
 ///   - ScopeType 合法性（V1 仅 FAMILY / FACTORY_FAMILY）
 ///   - ProductFamily / Factory 引用合法性
-///   - 审计（APS_Auth.GovernanceAuditLog，EntityType=DomainDefinition）
+///   - 审计（APS_Auth.AuditLog，EntityType=DomainDefinition）
 ///
 /// 消费方（2号位只读，IDomainDefinitionService）：
 ///   SELECT DomainKey, ScopeType, ProductFamilyId, FactoryId

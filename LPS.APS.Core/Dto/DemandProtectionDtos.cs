@@ -79,3 +79,39 @@ public sealed class DemandProtectionSummaryDto
     /// <summary>记录列表</summary>
     public List<DemandProtectionDto> Items { get; init; } = new();
 }
+
+/// <summary>
+/// Demand Protection释放请求
+/// </summary>
+public sealed class DemandProtectionReleaseRequest
+{
+    /// <summary>要释放的Lock ID列表</summary>
+    public List<long> LockIds { get; init; } = new();
+
+    /// <summary>操作人</summary>
+    public string ReleasedBy { get; init; } = string.Empty;
+
+    /// <summary>释放原因（必填）</summary>
+    public string ReleaseReason { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Demand Protection 释放结果（逐 Lock 返回，与请求 lockIds 一一对应）
+///
+/// 每个 lockId 独立返回一条状态，便于前端逐条提示。
+/// Status：RELEASED=已释放 / FAILED=未释放（FailureReason 说明原因）。
+/// </summary>
+public sealed class DemandProtectionReleaseResult
+{
+    /// <summary>锁定 Id</summary>
+    public long LockId { get; init; }
+
+    /// <summary>需求标识（Lock 不存在时为空）</summary>
+    public string DemandKey { get; init; } = string.Empty;
+
+    /// <summary>状态：RELEASED / FAILED</summary>
+    public string Status { get; init; } = string.Empty;
+
+    /// <summary>失败原因（仅 Status=FAILED 时非空）</summary>
+    public string? FailureReason { get; init; }
+}

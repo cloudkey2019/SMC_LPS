@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Authorization;
+using LPS.APS.Core.Authorization;
 using LPS.APS.BusinessRules.Services;
 using LPS.APS.Core.Dto;
 using LPS.APS.Shared.Models;
@@ -17,6 +19,7 @@ namespace LPS.APS.Web.Controllers;
 /// - 不重新裁决延期原因
 /// - 数据来源：1号位产出，2号位落盘
 /// </summary>
+[Authorize(Policy = PermissionCodes.PlanView)]
 [ApiController]
 [Route("api/explanation")]
 public class ExplanationController : ControllerBase

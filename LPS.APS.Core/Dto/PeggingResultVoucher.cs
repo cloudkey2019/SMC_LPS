@@ -56,6 +56,25 @@ public class PeggingResult
     public long NextAllocationSequence { get; set; } = 1;
 
     /// <summary>
+    /// **需求物料 → 供给阈值 Stage** 映射（`RequiredStageCode` 的物料级真值）。
+    ///
+    /// 来源 = 本次 BOM 边的 `ChildRequiredStageCode`（主源）→ StagePath `EDGE + IsSupplyThreshold=1`（兜底），
+    /// 由 `PeggingOrchestrator.FillRequiredStageCodesAsync` **一次算好、两个消费者共用**：
+    ///   ① 运行输入 `LogicalProductionDemand.RequiredStageCode`（Solver 消费）；
+    ///   ② 追溯列 `PeggingSupplyAllocation.NextRequiredStageCode`（PM 2026-09-28
+    ///      《Stage、生产部门、Routing、Dependency、StageLeadTimeParam 接口裁决回复》§十一 第二处保留）。
+    ///
+    /// **为何必须按物料直查、而不能走 `LogicalProductionDemand.DemandKey` 中转**：
+    ///   `LogicalProductionDemand` **只为「有生产缺口」的需求生成**，纯供给承接（库存/在途直接接走）的需求
+    ///   根本不在其中 ⇒ 走 DemandKey 关联必然漏掉大部分承接行（实测 PlanVersionId=540：1,205 行只填出 40 行，
+    ///   而 BOM 侧有 30,652 个物料带阈值——缺的是取值路径，不是数据）。
+    ///
+    /// 注：`SupplyAllocationItem` 无需求物料字段，但 `ValidateEligibility` 红线1 保证
+    ///   `supply.MaterialId == demand.MaterialId` ⇒ 本映射可直接用落库行的 `MaterialId` 命中，无需扩 DTO。
+    /// </summary>
+    public Dictionary<int, string> RequiredStageByMaterialId { get; set; } = new();
+
+    /// <summary>
     /// 是否完全满足（true = 供应充足，false = 供应短缺）
     /// </summary>
     public bool IsFullyAllocated { get; set; }
@@ -81,6 +100,12 @@ public class PeggingResult
     /// 不持久化到数据库，仅运行时内存DTO
     /// </summary>
     public List<LogicalProductionDemand> LogicalProductionDemands { get; set; } = new();
+
+    /// <summary>
+    /// 多层 BOM「任务喂任务」血缘输入（PM 2026-09-10 裁决 R2）：父需求 → 子需求运行时关系。
+    /// PeggingLoop 遍历 BOM 时产出，随 LogicalProductionDemands 一起透传 1号位。
+    /// </summary>
+    public List<MaterialRequirementLink> MaterialRequirementLinks { get; set; } = new();
 
     /// <summary>
     /// 生成的 TaskDraft 列表（待1号位排程，SourceType = NEW_REQUIREMENT 的供给对应此列表）
@@ -141,6 +166,12 @@ public class SupplyAllocationItem
     /// 需求键（用于AllocationLineage关联LogicalProductionDemand）
     /// </summary>
     public string DemandKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 该分配对应的需求节点总需求量（DemandBalance.RequiredQty）。
+    /// 同一 DemandKey 被多笔供给拆分覆盖时，多行会重复该值；真实覆盖量以 AllocatedQuantity 为准。
+    /// </summary>
+    public decimal DemandQuantity { get; set; }
 
     public int SupplyMaterialId { get; set; }
     public long? SupplySourceId { get; set; }

@@ -1,0 +1,2 @@
+This software is covered by DHTMLX proprietary license
+You can get full text of the license at https://dhtmlx.com/clients

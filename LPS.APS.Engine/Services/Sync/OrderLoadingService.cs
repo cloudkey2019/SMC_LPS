@@ -61,6 +61,41 @@ public class OrderLoadingService : IOrderLoadingService
     }
 
     /// <inheritdoc />
+    public async Task<int> LoadOrdersToActivePlanVersionsAsync(CancellationToken cancellationToken = default)
+    {
+        // 白天候选的订单池 = 当前 ACTIVE PlanVersion（用户从这里选单做插单试排）。
+        var activeIds = (await _connectionManager.QueryAsync<int>(
+            "SELECT Id FROM PlanVersion WHERE Status = 'ACTIVE'",
+            db: DatabaseId.APS)).ToList();
+
+        if (activeIds.Count == 0)
+        {
+            _logger.LogWarning("白天订单装载：无 ACTIVE PlanVersion，跳过（候选插单依赖 ACTIVE 作为订单池；请先完成一次夜间 FULL 并激活）");
+            return 0;
+        }
+
+        var totalInserted = 0;
+        foreach (var pvId in activeIds)
+        {
+            try
+            {
+                totalInserted += await LoadOrdersToPartitionTableAsync(pvId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // 单 PV 失败（如 DomainKey 为空 / DomainDefinition 失效）不阻断其它 PV
+                _logger.LogError(ex, "白天订单装载失败：PlanVersionId={PlanVersionId}（跳过，继续其它 PV）", pvId);
+            }
+        }
+
+        _logger.LogInformation(
+            "白天订单装载完成：ACTIVE PlanVersion={PvCount} 个，本次新增订单 {Inserted} 条",
+            activeIds.Count, totalInserted);
+
+        return totalInserted;
+    }
+
+    /// <inheritdoc />
     public async Task<int> DetectUnassignedOrdersAsync(IReadOnlyList<int> planVersionIds, CancellationToken cancellationToken = default)
     {
         if (planVersionIds == null || planVersionIds.Count == 0)

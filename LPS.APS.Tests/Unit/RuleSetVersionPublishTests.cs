@@ -24,7 +24,7 @@ public class RuleSetVersionPublishTests
             Mock.Of<IParameterSetVersionRepository>(),
             Mock.Of<IStrategyProfileRepository>(),
             Mock.Of<IStrategyProfileVersionRepository>(),
-            Mock.Of<IGovernanceAuditLogRepository>());
+            Mock.Of<IAuditLogRepository>());
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public class RuleSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        await _service.PublishRuleSetVersionAsync(1, "tester");
+        await _service.PublishRuleSetVersionAsync(1, "tester", 1001);
 
         // Assert
         version.Status.Should().Be(GovernanceVersionStatus.Published);
@@ -124,7 +124,7 @@ public class RuleSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(1, It.IsAny<CancellationToken>())).ReturnsAsync(version);
 
         // Act
-        var act = () => _service.PublishRuleSetVersionAsync(1, "tester");
+        var act = () => _service.PublishRuleSetVersionAsync(1, "tester", 1001);
 
         // Assert —— 已发布版本不可再次发布
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -139,7 +139,7 @@ public class RuleSetVersionPublishTests
         _repo.Setup(r => r.GetByIdAsync(999, It.IsAny<CancellationToken>())).ReturnsAsync((RuleSetVersion?)null);
 
         // Act
-        var act = () => _service.PublishRuleSetVersionAsync(999, "tester");
+        var act = () => _service.PublishRuleSetVersionAsync(999, "tester", 1001);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();

@@ -21,6 +21,12 @@ public sealed class UpstreamDemand
     public string? ProtectionStatus { get; init; }
 
     /// <summary>
+    /// 订单规范 Id（EXPEDITE 前置竞争层身份键 = ScopeJsonV2.OrderTargets.OrderCanonicalId，S5/PM 0923）。
+    /// 普通 FULL 排程可空；EXPEDITE 触发时用于识别「提前」需求。
+    /// </summary>
+    public long? OrderCanonicalId { get; init; }
+
+    /// <summary>
     /// 排序后的业务顺序（1 起），由 IDemandPriorityExecutor.ExecutePrioritySort 赋值。
     /// </summary>
     public int DemandSequence { get; set; }

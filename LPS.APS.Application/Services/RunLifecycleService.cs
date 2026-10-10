@@ -1,7 +1,10 @@
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.DTOs.Governance;
+using LPS.APS.Core.DTOs.Scope;
 using LPS.APS.Core.Enum;
 using LPS.APS.Core.Interfaces;
-using GovernanceAuditLog = LPS.APS.Core.Entities.Auth.GovernanceAuditLog;
+using Microsoft.Extensions.Logging;
+using AuditLog = LPS.APS.Core.Entities.Auth.AuditLog;
 using PlanVersion = LPS.APS.Core.Entities.APS.PlanVersion;
 
 namespace LPS.APS.Application.Services;
@@ -75,7 +78,11 @@ public class RunLifecycleService : IRunLifecycleService
     private readonly IStrategyProfileVersionRepository _strategyProfileVersionRepo;
     private readonly IRuleSetVersionRepository _ruleSetVersionRepo;
     private readonly IParameterSetVersionRepository _parameterSetVersionRepo;
-    private readonly IGovernanceAuditLogRepository _auditLogRepository;
+    private readonly IAuditLogRepository _auditLogRepository;
+    private readonly IDataScopeService _dataScopeService;
+    private readonly ISchedulingOrchestrator _schedulingOrchestrator;
+    private readonly IScheduleRunService _scheduleRunService;
+    private readonly ILogger<RunLifecycleService> _logger;
 
     public RunLifecycleService(
         IScheduleRunRepository scheduleRunRepo,
@@ -83,7 +90,11 @@ public class RunLifecycleService : IRunLifecycleService
         IStrategyProfileVersionRepository strategyProfileVersionRepo,
         IRuleSetVersionRepository ruleSetVersionRepo,
         IParameterSetVersionRepository parameterSetVersionRepo,
-        IGovernanceAuditLogRepository auditLogRepository)
+        IAuditLogRepository auditLogRepository,
+        IDataScopeService dataScopeService,
+        ISchedulingOrchestrator schedulingOrchestrator,
+        IScheduleRunService scheduleRunService,
+        ILogger<RunLifecycleService> logger)
     {
         _scheduleRunRepo = scheduleRunRepo;
         _planVersionRepo = planVersionRepo;
@@ -91,15 +102,22 @@ public class RunLifecycleService : IRunLifecycleService
         _ruleSetVersionRepo = ruleSetVersionRepo;
         _parameterSetVersionRepo = parameterSetVersionRepo;
         _auditLogRepository = auditLogRepository;
+        _dataScopeService = dataScopeService;
+        _schedulingOrchestrator = schedulingOrchestrator;
+        _scheduleRunService = scheduleRunService;
+        _logger = logger;
     }
 
     /// <summary>校验 ScheduleRun.ExpectedDomainKeysJson 冻结规则（P0-08；配置错误抛异常，不静默降级）</summary>
-    public async Task ValidateExpectedDomainKeysAsync(int scheduleRunId, CancellationToken ct = default)
+    public async Task ValidateExpectedDomainKeysAsync(int scheduleRunId, int actorUserId, CancellationToken ct = default)
     {
         var run = await _scheduleRunRepo.GetByIdAsync(scheduleRunId, ct)
             ?? throw new InvalidOperationException($"ScheduleRun 不存在：{scheduleRunId}");
 
         ValidateDomainKeys(run.RunType, run.ExpectedDomainKeysJson, $"ScheduleRun {scheduleRunId}");
+
+        // B3：业务范围硬校验（F-G4 Domain 维度）—— 校验人仅可操作其授权 Domain 的 Run
+        await EnsureDomainsInScopeAsync(actorUserId, ParseExpectedDomainKeys(run.ExpectedDomainKeysJson, scheduleRunId), ct);
     }
 
     /// <summary>
@@ -162,7 +180,7 @@ public class RunLifecycleService : IRunLifecycleService
     ///       Base ACTIVE 存在时仍可正常确认。确认事实唯一落点是 ConfirmCandidate 审计记录，
     ///       ActivateCandidateAsync 以该审计作为"已完成最小人工确认"的硬前置。
     /// </summary>
-    public async Task ConfirmCandidateAsync(int planVersionId, string actor, string? remark, CancellationToken ct = default)
+    public async Task ConfirmCandidateAsync(int planVersionId, int actorUserId, string actor, string? remark, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(actor))
         {
@@ -174,18 +192,22 @@ public class RunLifecycleService : IRunLifecycleService
 
         EnsureCandidateConfirmable(version);
 
+        // 5e：业务范围校验（F-G4 Domain 维度）—— 确认人仅可操作其 DataScopePolicy 授权 Domain
+        await EnsureDomainInScopeAsync(actorUserId, version.DomainKey!, ct);
+
         // 仅记审计：Actor / ConfirmedAt / CandidatePlanVersionId(=planVersionId) / 必要 Remark
         // D7：审计状态记真实 Status（候选排程完成态 = Computed），不记旧 CANDIDATE 词表
-        await _auditLogRepository.AddAsync(new GovernanceAuditLog
+        await _auditLogRepository.AddAsync(new AuditLog
         {
-            OperationType = ConfirmCandidateOperation,
+            ActionCode = ConfirmCandidateOperation,
             EntityType = "PlanVersion",
-            EntityId = planVersionId,
-            BeforeStatus = PlanVersionComputedStatus,
-            AfterStatus = PlanVersionComputedStatus,
-            OperatedBy = actor,
-            OperatedAt = DateTime.UtcNow,
-            Remarks = $"确认候选版本（CandidatePlanVersionId={planVersionId}）"
+            EntityId = planVersionId.ToString(),
+            OldValue = PlanVersionComputedStatus,
+            NewValue = PlanVersionComputedStatus,
+            UserId = actorUserId,
+            UserCode = actor,
+            OccurredAt = DateTime.Now,
+            Remark = $"确认候选版本（CandidatePlanVersionId={planVersionId}）"
                 + (string.IsNullOrWhiteSpace(remark) ? string.Empty : $"：{remark}"),
         }, ct);
     }
@@ -200,7 +222,7 @@ public class RunLifecycleService : IRunLifecycleService
     /// 采用边界（二轮复审 P0-06）：原子替换——单事务内归档同域既有 ACTIVE（→ARCHIVED + ArchivedAt）
     ///       再将本 Candidate 置 ACTIVE；UQ_PlanVersion_OneActivePerDomain 红线保留，不删除。
     /// </summary>
-    public async Task ActivateCandidateAsync(int planVersionId, string actor, CancellationToken ct = default)
+    public async Task ActivateCandidateAsync(int planVersionId, int actorUserId, string actor, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(actor))
         {
@@ -212,38 +234,56 @@ public class RunLifecycleService : IRunLifecycleService
 
         EnsureCandidateConfirmable(version);
 
+        // 5e：业务范围校验（F-G4 Domain 维度）—— 激活人仅可操作其 DataScopePolicy 授权 Domain
+        await EnsureDomainInScopeAsync(actorUserId, version.DomainKey!, ct);
+
         // P0-04：已完成最小人工确认 —— 校验存在 ConfirmCandidate 审计记录
         await EnsureConfirmedAsync(planVersionId, ct);
 
         // P0-03：来源 Run 可激活 —— SourceScheduleRunId 非空 + RunType != INSERT_ORDER_WHATIF
         await EnsureSourceRunActivatableAsync(version, ct);
 
-        var activatedAt = DateTime.UtcNow;
+        var activatedAt = DateTime.Now;
         version.Status = PlanVersionActiveStatus;
         version.ActivatedAt = activatedAt;
         version.ActivatedBy = actor;
 
+        // 预检（F-G4 跨库兜底）：状态写前先确认审计库可写，失败不等状态落库即抛
+        await _auditLogRepository.EnsureWritableAsync(ct);
+
         // P0-06：原子替换（同域既有 ACTIVE 归档 + 本版本置 ACTIVE，单事务）
         await _planVersionRepo.ReplaceActiveAsync(version, actor, activatedAt, ct);
 
-        await _auditLogRepository.AddAsync(new GovernanceAuditLog
+        try
         {
-            OperationType = "ActivateCandidate",
-            EntityType = "PlanVersion",
-            EntityId = planVersionId,
-            BeforeStatus = PlanVersionComputedStatus,
-            AfterStatus = PlanVersionActiveStatus,
-            OperatedBy = actor,
-            OperatedAt = activatedAt,
-            Remarks = $"候选版本正式采用（CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）：{planVersionId}",
-        }, ct);
+            await _auditLogRepository.AddAsync(new AuditLog
+            {
+                ActionCode = "ActivateCandidate",
+                EntityType = "PlanVersion",
+                EntityId = planVersionId.ToString(),
+                OldValue = PlanVersionComputedStatus,
+                NewValue = PlanVersionActiveStatus,
+                UserId = actorUserId,
+                UserCode = actor,
+                OccurredAt = activatedAt,
+                Remark = $"候选版本正式采用（CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）：{planVersionId}",
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            // 兜底（fail-closed，P1-05）：状态已落库而审计失败，保留对账键供后续对账，绝不静默丢审计
+            _logger.LogError(ex,
+                "候选激活审计写入失败（状态已落库、审计缺、需对账）：EntityType=PlanVersion EntityId={PlanVersionId} Before={OldStatus} After={NewStatus} Actor={Actor}",
+                planVersionId, PlanVersionComputedStatus, PlanVersionActiveStatus, actor);
+            throw;
+        }
     }
 
     /// <summary>P0-04：校验该 Candidate 已完成最小人工确认（存在 ConfirmCandidate 审计记录）</summary>
     private async Task EnsureConfirmedAsync(int planVersionId, CancellationToken ct)
     {
-        var logs = await _auditLogRepository.GetByEntityAsync("PlanVersion", planVersionId, ct);
-        var confirmed = logs.Any(l => l.OperationType == ConfirmCandidateOperation);
+        var logs = await _auditLogRepository.GetByEntityAsync("PlanVersion", planVersionId.ToString(), ct);
+        var confirmed = logs.Any(l => l.ActionCode == ConfirmCandidateOperation);
         if (!confirmed)
         {
             throw new InvalidOperationException($"计划版本 {planVersionId} 未完成最小人工确认（缺 ConfirmCandidate 审计），不可激活");
@@ -296,8 +336,27 @@ public class RunLifecycleService : IRunLifecycleService
         }
     }
 
-    /// <summary>FAILED 恢复（P0-08）：为 FAILED ScheduleRun 新建一条 RUNNING 重跑，继承策略包版本与 Domain 基线；绝不动旧记录</summary>
-    public async Task<int> RecoverFailedRunAsync(int failedScheduleRunId, CancellationToken ct = default)
+    /// <summary>
+    /// 业务范围校验（5e：F-G4 Domain 维度）。写入人仅可操作其 DataScopePolicy 授权 Domain；
+    /// 未授权一律抛 <see cref="ScopeViolationException"/>（安全默认，失败关闭，Web 层映射 403）。
+    /// </summary>
+    private Task EnsureDomainInScopeAsync(int actorUserId, string domainKey, CancellationToken ct)
+        => _dataScopeService.EnsureInScopeAsync(actorUserId, DataScopeTypes.Domain, domainKey, ct);
+
+    /// <summary>B3：多 Domain 业务范围硬校验（F-G4 Domain 维度，fail-closed）。用于校验/恢复等多 Domain 场景。</summary>
+    private async Task EnsureDomainsInScopeAsync(int actorUserId, IReadOnlyList<string> domainKeys, CancellationToken ct)
+    {
+        foreach (var domainKey in domainKeys)
+        {
+            await _dataScopeService.EnsureInScopeAsync(actorUserId, DataScopeTypes.Domain, domainKey, ct);
+        }
+    }
+
+    /// <summary>
+    /// FAILED 恢复（P0-08 + P1-03）：为 FAILED FULL_SCHEDULE Run 新建一条 RUNNING 重跑，同一事务为每个预期 Domain
+    /// 各建一个 RECOVERY 壳（一域一壳），随后内联全量执行并一次性收口；继承策略包版本与 Domain 基线；绝不动旧记录。
+    /// </summary>
+    public async Task<int> RecoverFailedRunAsync(int failedScheduleRunId, int actorUserId, CancellationToken ct = default)
     {
         var failed = await _scheduleRunRepo.GetByIdAsync(failedScheduleRunId, ct)
             ?? throw new InvalidOperationException($"ScheduleRun 不存在：{failedScheduleRunId}");
@@ -307,21 +366,61 @@ public class RunLifecycleService : IRunLifecycleService
             throw new InvalidOperationException($"ScheduleRun {failedScheduleRunId} 状态为 {failed.Status}，仅 FAILED 可恢复（旧记录不可回改 RUNNING）");
         }
 
+        // P1-03 §5.1：仅 FULL_SCHEDULE 可恢复。非 FULL（候选/局部重排）恢复会丢 BasePlanVersionId 基线
+        //（恢复 INSERT 不继承该列），需求侧订单不钉基线、退化为按本 PV 装，恢复语义不正确。fail-closed 拒绝。
+        if (failed.RunType != FullScheduleRunType)
+        {
+            throw new InvalidOperationException(
+                $"ScheduleRun {failedScheduleRunId} 的 RunType 为 {failed.RunType}，仅 {FullScheduleRunType} 可恢复（非全量运行无法继承 Base 基线）");
+        }
+
         // 新建前先校验继承基线合法性（避免插入后再因基线不合法产生孤立 RUNNING 记录）
         ValidateDomainKeys(failed.RunType, failed.ExpectedDomainKeysJson, $"ScheduleRun {failedScheduleRunId} 继承基线");
 
-        var newRunId = await _scheduleRunRepo.InsertForRecoveryAsync(failed, "Recover", ct);
+        // B3：业务范围硬校验（F-G4 Domain 维度）—— 恢复人仅可操作其授权 Domain 的 Run（fail-closed）
+        var domainKeys = ParseExpectedDomainKeys(failed.ExpectedDomainKeysJson, failedScheduleRunId);
+        await EnsureDomainsInScopeAsync(actorUserId, domainKeys, ct);
 
-        await _auditLogRepository.AddAsync(new GovernanceAuditLog
+        // P1-03 §3.2/§3.3：一域一壳（N 个），窗口继承失败 Run 既有 PlanVersion，缺失兜底今天 ~ +90 天（不得静默平移）。
+        var failedPlanVersions = await _planVersionRepo.GetByScheduleRunIdAsync(failedScheduleRunId, ct);
+        var shells = new List<RecoveryShellSpec>(domainKeys.Count);
+        foreach (var domainKey in domainKeys)
         {
-            OperationType = "RecoverFailedRun",
+            var pv = failedPlanVersions.FirstOrDefault(p => string.Equals(p.DomainKey, domainKey, StringComparison.Ordinal));
+            shells.Add(new RecoveryShellSpec
+            {
+                DomainKey = domainKey,
+                PlanHorizonStart = pv is not null && pv.PlanHorizonStart != default ? pv.PlanHorizonStart : DateTime.Today,
+                PlanHorizonEnd = pv is not null && pv.PlanHorizonEnd != default ? pv.PlanHorizonEnd : DateTime.Today.AddDays(90),
+            });
+        }
+
+        // 同一事务原子写 Run + N 壳（任一失败整体回滚，不产生孤立 RUNNING）
+        var newRunId = await _scheduleRunRepo.InsertForRecoveryWithShellsAsync(failed, shells, "Recover", ct);
+
+        await _auditLogRepository.AddAsync(new AuditLog
+        {
+            ActionCode = "RecoverFailedRun",
             EntityType = "ScheduleRun",
-            EntityId = failedScheduleRunId,
-            BeforeStatus = ScheduleRunFailedStatus,
-            AfterStatus = ScheduleRunRunningStatus,
-            OperatedAt = DateTime.UtcNow,
-            Remarks = $"由 FAILED 运行 {failedScheduleRunId} 恢复，新建 RUNNING 运行 {newRunId}（继承 StrategyProfileVersionId 与 ExpectedDomainKeysJson 基线）",
+            EntityId = failedScheduleRunId.ToString(),
+            OldValue = ScheduleRunFailedStatus,
+            NewValue = ScheduleRunRunningStatus,
+            UserId = actorUserId,
+            OccurredAt = DateTime.Now,
+            Remark = $"由 FAILED 运行 {failedScheduleRunId} 恢复，新建 RUNNING 运行 {newRunId}（一域一壳 {shells.Count} 个，继承 StrategyProfileVersionId 与 ExpectedDomainKeysJson 基线）",
         }, ct);
+
+        // P1-03 §2：内联全量执行并一次性收口（与候选路径一致，恢复 = 交互式立即重算）。
+        // 注意超时预算：多域耗时 ≈ N × 单域（FULL 单域 ≈ 5.4 分钟），端点须放宽超时；排队/巡检兜底另行立项（发令枪/巡检在 2号位侧）。
+        var runResult = await _schedulingOrchestrator.ExecuteRunAsync(newRunId, ct);
+        if (!runResult.IsSuccess)
+        {
+            // ExecuteRunAsync 不抛业务异常，失败以返回结果表达（Run 已收口 PARTIAL_SUCCESS / FAILED）；
+            // 此处仅记录，供运维/追溯定位，不改变 Run 终态。
+            _logger.LogWarning(
+                "FAILED 恢复执行未全部成功：NewRunId={NewRunId} IsSuccess={IsSuccess} ScheduledCount={ScheduledCount} Error={Error}",
+                newRunId, runResult.IsSuccess, runResult.ScheduledCount, runResult.ErrorMessage);
+        }
 
         return newRunId;
     }
@@ -331,7 +430,7 @@ public class RunLifecycleService : IRunLifecycleService
     /// 冻结 运行类型 × 用途 × 策略版本，交 2号位 主流程执行收口）。
     /// 校验顺序（任一失败抛 InvalidOperationException，不静默降级）：见契约草案 §三。
     /// </summary>
-    public async Task<CandidateRunCreatedResult> CreateCandidateRunAsync(CandidateRunCreateSpec spec, CancellationToken ct = default)
+    public async Task<CandidateRunCreatedResult> CreateCandidateRunAsync(CandidateRunCreateSpec spec, int actorUserId, CancellationToken ct = default)
     {
         // 1. Actor 必填
         if (string.IsNullOrWhiteSpace(spec.Actor))
@@ -358,11 +457,26 @@ public class RunLifecycleService : IRunLifecycleService
                 $"RunType={spec.RunType} 的用途 {spec.Purpose} 不在冻结合法组合（{string.Join("/", legalPurposes)}），拒绝创建（实施包 §十九）");
         }
 
+        // 3a. ScopeJsonV2 范围载荷校验（M1：八码映射 + PriorityMode 轴 + 单一真相；GANTT/EQUIPMENT/RESOURCE_CALENDAR + EXPEDITE 拒绝）
+        ScopeJsonV2Validator.Validate(spec.Scope, spec.RunType, spec.Purpose);
+
+        // 3a'. BusinessScope 装配（真空④契约定案 §三/§四：3号位 生成权）。
+        // 服务端权威解析 actor 业务范围（经 IDataScopeService.ResolveScopeAsync），依 Trigger 判定维度装配进 ScopeJsonV2，
+        // **覆盖** 前端/调用方可能自传的 BusinessScope 值（范围=授权边界，不得由调用方自定）。
+        // 中断级（EQUIPMENT_FAILURE / RESOURCE_CALENDAR_CHANGE）= Global；订单类=ProductFamily；Task 局部=ResourceOrgGroup（DataScopeTypes 常量）。
+        if (spec.Scope is not null)
+        {
+            spec.Scope.BusinessScope = await BuildBusinessScopeAsync(actorUserId, spec.Scope.Trigger, ct);
+        }
+
         // 4. DomainKey 必填（白天候选严格单 Domain）
         if (string.IsNullOrWhiteSpace(spec.DomainKey))
         {
             throw new InvalidOperationException("目标 DomainKey 不能为空（白天候选运行严格单 Domain）");
         }
+
+        // 4a. B3：业务范围硬校验（F-G4 Domain 维度）—— 创建人仅可操作其授权 Domain（fail-closed）
+        await EnsureDomainInScopeAsync(actorUserId, spec.DomainKey, ct);
 
         // 5. Base ACTIVE 解析与校验（Base ACTIVE 只读锚定：白天 Candidate 必须基于当前 ACTIVE，不修改 Base）
         PlanVersion? baseVersion;
@@ -397,7 +511,7 @@ public class RunLifecycleService : IRunLifecycleService
         }
 
         // 6. 默认策略版本解析（有效窗口 0 缺失 / 多歧义拒绝——红线 #4：禁止盲目取第一个）
-        var now = spec.DataCutoffTime ?? DateTime.UtcNow;
+        var now = spec.DataCutoffTime ?? DateTime.Now;
         var defaultCandidates = await _strategyProfileVersionRepo.GetDefaultByRunTypeAsync(spec.RunType, ct);
         var effectiveDefaults = defaultCandidates
             .Where(v => (!v.EffectiveFrom.HasValue || v.EffectiveFrom.Value <= now)
@@ -425,6 +539,7 @@ public class RunLifecycleService : IRunLifecycleService
             DomainKey = spec.DomainKey,
             BasePlanVersionId = spec.BasePlanVersionId ?? baseVersion.Id,
             DataCutoffTime = spec.DataCutoffTime,
+            Scope = spec.Scope,
             Actor = spec.Actor,
             PlanHorizonStart = baseVersion.PlanHorizonStart != default ? baseVersion.PlanHorizonStart : DateTime.Today,
             PlanHorizonEnd = baseVersion.PlanHorizonEnd != default ? baseVersion.PlanHorizonEnd : DateTime.Today.AddDays(90),
@@ -434,23 +549,76 @@ public class RunLifecycleService : IRunLifecycleService
         var result = await _scheduleRunRepo.CreateCandidateRunAsync(createSpec, strategyProfileVersionId, spec.Actor, ct);
 
         // 9. 审计（契约点 P1：Purpose 本轮仅审计不落库）
-        await _auditLogRepository.AddAsync(new GovernanceAuditLog
+        await _auditLogRepository.AddAsync(new AuditLog
         {
-            OperationType = CreateCandidateRunOperation,
+            ActionCode = CreateCandidateRunOperation,
             EntityType = "ScheduleRun",
-            EntityId = result.NewScheduleRunId,
-            BeforeStatus = "-",
-            AfterStatus = ScheduleRunRunningStatus,
-            OperatedBy = spec.Actor,
-            OperatedAt = DateTime.UtcNow,
-            Remarks = $"白天候选运行创建：RunType={spec.RunType}, Purpose={spec.Purpose}, Domain={spec.DomainKey}, "
+            EntityId = result.NewScheduleRunId.ToString(),
+            OldValue = "-",
+            NewValue = ScheduleRunRunningStatus,
+            UserId = actorUserId,
+            UserCode = spec.Actor,
+            OccurredAt = DateTime.Now,
+            Remark = $"白天候选运行创建：RunType={spec.RunType}, Purpose={spec.Purpose}, Domain={spec.DomainKey}, "
                 + $"BasePlanVersionId={createSpec.BasePlanVersionId}, StrategyProfileVersionId={strategyProfileVersionId}, "
                 + $"NewPlanVersionId={result.NewPlanVersionId}",
         }, ct);
 
-        // 10. 触发接缝（B-1 契约草案 §四）：建 Run+壳后按方案 A/B/C 调 2号位 主流程执行并收口 Run；
-        //     本轮未接线，待 2号位/0号位 裁定后由 3号位 补接线（不越位调用 2号位 内部方法）。
+        // 10. 触发接缝（P1-02）：建 Run + 候选壳后正式接通 3→2 Application Service 契约，
+        //     调 2号位 RunSchedulingAndFinalizeAsync 执行并收口 Run（RUNNING → COMPLETED / FAILED）。
+        // P1-03 §5.4 兜底：同步耗时（单域≈5.4min）期间应用池回收/发版/OOM/客户端断连 → 异常直接穿出、
+        //     Run 永久卡 RUNNING（发令枪只领 FULL_SCHEDULE、恢复端点只收 FAILED，两条路都接不着）。
+        //     此处落 FAILED 即被既有恢复通道接住。用无取消令牌绕过已取消的请求 ct（客户端断连也能落库）。
+        try
+        {
+            await _schedulingOrchestrator.RunSchedulingAndFinalizeAsync(
+                result.NewPlanVersionId, result.NewScheduleRunId, strategyProfileVersionId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "候选运行执行中断，落 FAILED 供恢复：ScheduleRunId={RunId} PlanVersionId={PlanVersionId}",
+                result.NewScheduleRunId, result.NewPlanVersionId);
+            await _scheduleRunService.FailAsync(result.NewScheduleRunId, 0, ex.Message, CancellationToken.None);
+            throw;
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// 装配 BusinessScopeDto（真空④契约定案 §1.3 维度映射，3号位 生成权）。
+    /// 经 <see cref="IDataScopeService.ResolveScopeAsync"/> 解析 actor 有效业务范围，依 Trigger 判定操作类型维度：
+    /// 订单类（NEW_ORDER_CTP / NEW_ORDER_IMPACT / NEW_ORDER_INSERT / EXISTING_ORDER_ADVANCE）= ProductFamily（产品族 PMC）；
+    /// Task 局部（GANTT_ADJUSTMENT / DOMAIN_MANUAL_RESCHEDULE）= ResourceOrgGroup（一般计划员）；
+    /// 中断级（EQUIPMENT_FAILURE / RESOURCE_CALENDAR_CHANGE）= Global（不涉用户业务范围）。
+    /// Global 放行 → IsGlobal=true；全局范围扩展解析出的维度键集合 → ScopeType/ScopeValues（业务键字符串，与 EnsureInScopeAsync 的 value 同口径）；
+    /// 无任何授权（DataScopeContext.Empty）→ IsGlobal=false + 空集（按无授权 fail-safe，交 1号位 范围不足返回）。
+    /// </summary>
+    private async Task<BusinessScopeDto> BuildBusinessScopeAsync(int actorUserId, BusinessTriggerType trigger, CancellationToken ct)
+    {
+        var scopeType = trigger switch
+        {
+            BusinessTriggerType.NewOrderCtp or BusinessTriggerType.NewOrderImpact
+                or BusinessTriggerType.NewOrderInsert or BusinessTriggerType.ExistingOrderAdvance => DataScopeTypes.ProductFamily,
+            BusinessTriggerType.GanttAdjustment or BusinessTriggerType.DomainManualReschedule => DataScopeTypes.ResourceOrgGroup,
+            _ => DataScopeTypes.Global,
+        };
+
+        var ctx = await _dataScopeService.ResolveScopeAsync(actorUserId, ct);
+
+        if (scopeType == DataScopeTypes.Global || ctx.IsGlobal)
+        {
+            return new BusinessScopeDto { IsGlobal = true, ScopeType = scopeType };
+        }
+
+        var values = ctx.GetValues(scopeType);
+        return new BusinessScopeDto
+        {
+            IsGlobal = false,
+            ScopeType = scopeType,
+            ScopeValues = values is null ? Array.Empty<string>() : values.ToArray(),
+        };
     }
 
     /// <summary>Run 引用追溯（P0-08）：ScheduleRun → 策略包版本 → 规则集/参数集版本 + 关联 PlanVersion 状态与结果</summary>

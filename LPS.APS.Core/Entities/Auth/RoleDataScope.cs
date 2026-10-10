@@ -2,7 +2,7 @@ namespace LPS.APS.Core.Entities.Auth;
 
 /// <summary>
 /// 角色业务范围关联表
-/// 对应 APS_Auth.RoleDataScope（复合主键 RoleId + ScopePolicyId，DDL v1.1）
+/// 对应 APS_Auth.RoleDataScope（复合主键 RoleId + ScopePolicyId，DDL v1.3）
 /// </summary>
 public class RoleDataScope
 {

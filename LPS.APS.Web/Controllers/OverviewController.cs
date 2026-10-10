@@ -1,4 +1,8 @@
-using LPS.APS.BusinessRules.Services;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+using LPS.APS.Core.Authorization;
+using LPS.APS.Core.Interfaces;
+using LPS.APS.Application.Services.Query;
 using LPS.APS.Core.Dto;
 using LPS.APS.Shared.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -18,20 +22,28 @@ namespace LPS.APS.Web.Controllers;
 /// - 5号位提供只读查询接口，直接读取APS事实表
 /// - 不重算业务结果
 /// </summary>
+[Authorize(Policy = PermissionCodes.PlanView)]
 [ApiController]
 [Route("api/overview")]
 public class OverviewController : ControllerBase
 {
-    private readonly OverviewQueryService _service;
+    private readonly IOverviewQueryService _service;
+    private readonly IDataScopeService _dataScopeService;
     private readonly ILogger<OverviewController> _logger;
 
     public OverviewController(
-        OverviewQueryService service,
+        IOverviewQueryService service,
+        IDataScopeService dataScopeService,
         ILogger<OverviewController> logger)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
+        _dataScopeService = dataScopeService ?? throw new ArgumentNullException(nameof(dataScopeService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
+
+    /// <summary>解析当前登录用户 Id（无效返回 0 → 范围解析为拒绝全部，安全默认）</summary>
+    private int GetCurrentUserId()
+        => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
 
     /// <summary>
     /// 查询当前ACTIVE计划版本信息
@@ -43,7 +55,16 @@ public class OverviewController : ControllerBase
     {
         try
         {
-            var result = await _service.GetActivePlanAsync(domainKey, cancellationToken);
+            var scope = await _dataScopeService.ResolveScopeAsync(GetCurrentUserId(), cancellationToken);
+
+            // 校验：非空入参必须落在授权范围（Global 全放行，无范围全拒绝）
+            if (!string.IsNullOrEmpty(domainKey) && !scope.Allows(DataScopeTypes.Domain, domainKey))
+                return ApiResponse<OverviewActivePlanDto?>.Fail(403, "Domain 范围越界");
+
+            // 过滤：空参按授权范围收窄结果集，避免越权返回全域数据
+            var allowedDomains = scope.GetValues(DataScopeTypes.Domain);
+
+            var result = await _service.GetActivePlanAsync(domainKey, cancellationToken, allowedDomains);
             return ApiResponse<OverviewActivePlanDto?>.Success(result);
         }
         catch (Exception ex)

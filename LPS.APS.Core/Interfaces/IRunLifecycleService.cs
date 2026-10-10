@@ -18,8 +18,9 @@ public interface IRunLifecycleService
     /// 失败：抛 InvalidOperationException（配置错误，不静默降级）。
     /// </summary>
     /// <param name="scheduleRunId">ScheduleRun.Id</param>
+    /// <param name="actorUserId">操作人用户 Id（JWT 解析，用于业务范围校验）</param>
     /// <param name="ct">取消令牌</param>
-    Task ValidateExpectedDomainKeysAsync(int scheduleRunId, CancellationToken ct = default);
+    Task ValidateExpectedDomainKeysAsync(int scheduleRunId, int actorUserId, CancellationToken ct = default);
 
     /// <summary>
     /// Candidate 最小人工确认（P0-08：正式 Reschedule Candidate 只做最小确认）。
@@ -28,19 +29,21 @@ public interface IRunLifecycleService
     /// 不强制 OA；不建 MultiDomain Candidate。
     /// </summary>
     /// <param name="planVersionId">Candidate 计划版本 Id</param>
+    /// <param name="actorUserId">操作人用户 Id（JWT 解析，用于业务范围校验）</param>
     /// <param name="actor">确认人（Actor）</param>
     /// <param name="remark">必要备注（可空）</param>
     /// <param name="ct">取消令牌</param>
-    Task ConfirmCandidateAsync(int planVersionId, string actor, string? remark, CancellationToken ct = default);
+    Task ConfirmCandidateAsync(int planVersionId, int actorUserId, string actor, string? remark, CancellationToken ct = default);
 
     /// <summary>
     /// 激活 Candidate（确认后正式采用：CANDIDATE → ACTIVE）。
     /// 前置：DomainKey 非空（V1 必填语义）；同域已有 ACTIVE 则报错（UQ_PlanVersion_OneActivePerDomain 应用层预检）。
     /// </summary>
     /// <param name="planVersionId">Candidate 计划版本 Id</param>
+    /// <param name="actorUserId">操作人用户 Id（JWT 解析，用于业务范围校验）</param>
     /// <param name="actor">激活人</param>
     /// <param name="ct">取消令牌</param>
-    Task ActivateCandidateAsync(int planVersionId, string actor, CancellationToken ct = default);
+    Task ActivateCandidateAsync(int planVersionId, int actorUserId, string actor, CancellationToken ct = default);
 
     /// <summary>
     /// FAILED 恢复（P0-08）：为 FAILED ScheduleRun **新建** 一条 RUNNING ScheduleRun 重跑。
@@ -49,9 +52,10 @@ public interface IRunLifecycleService
     /// 返回新 ScheduleRunId。
     /// </summary>
     /// <param name="failedScheduleRunId">已 FAILED 的 ScheduleRun.Id</param>
+    /// <param name="actorUserId">操作人用户 Id（JWT 解析，用于业务范围校验）</param>
     /// <param name="ct">取消令牌</param>
     /// <returns>新建的 ScheduleRun.Id</returns>
-    Task<int> RecoverFailedRunAsync(int failedScheduleRunId, CancellationToken ct = default);
+    Task<int> RecoverFailedRunAsync(int failedScheduleRunId, int actorUserId, CancellationToken ct = default);
 
     /// <summary>
     /// Run 引用追溯（P0-08 第 12 项）：ScheduleRun → StrategyProfileVersion → RuleSet/ParameterSet
@@ -81,7 +85,8 @@ public interface IRunLifecycleService
     /// 触发接缝：创建后按《B-1 契约草案》方案 A/B/C 调 2号位 主流程，本轮未接线（待 2号位/0号位 裁定）。
     /// </summary>
     /// <param name="spec">创建入参（RunType / Purpose / DomainKey / BasePlanVersionId / DataCutoffTime / Actor）</param>
+    /// <param name="actorUserId">操作人用户 Id（JWT 解析，用于业务范围校验）</param>
     /// <param name="ct">取消令牌</param>
     /// <returns>新建 ScheduleRun.Id 与 Candidate 壳 Id</returns>
-    Task<CandidateRunCreatedResult> CreateCandidateRunAsync(CandidateRunCreateSpec spec, CancellationToken ct = default);
+    Task<CandidateRunCreatedResult> CreateCandidateRunAsync(CandidateRunCreateSpec spec, int actorUserId, CancellationToken ct = default);
 }

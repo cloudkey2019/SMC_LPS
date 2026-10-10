@@ -17,7 +17,9 @@ namespace LPS.APS.Engine.Services.Sync;
 ///   5. 通过 MaterialMapping(Source='MES', IsCurrent=1) 映射 MES_ID → MaterialId
 ///   6. 通过 ProductionDepartment(DeptCode, IsActive=1) 映射 ProductionDeptCode → ProductionDepartmentId
 ///   7. 通过 Resource(IsActive=1) 映射 ResourceCode → ResourceId
-///   8. 软删除：视图中不再出现的记录标记 IsActive=0
+///   8. 对账删除：视图中不再出现的记录直接删除，保证 APS 表 = 源视图镜像
+///      （v2.1 起；此前 v2.0 只增不减，导致旧键整批堆积 —— 详见
+///       Database/Scripts/APS/03_SQL脚本/alter_sp_SyncRoutingData_mirror_reconciliation_v2.1_20260930.sql）
 ///
 /// SP 契约：sp_SyncRoutingData.sql（参见 .windsurf/docs/sql/）
 /// </summary>

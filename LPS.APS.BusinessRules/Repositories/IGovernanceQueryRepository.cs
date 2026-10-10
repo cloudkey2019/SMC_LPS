@@ -24,5 +24,6 @@ public interface IGovernanceQueryRepository
     Task<List<DomainDependencyDto>> QueryDomainDependenciesAsync(
         string? domainCode = null,
         string? direction = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedDomains = null);
 }

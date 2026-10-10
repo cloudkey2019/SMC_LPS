@@ -26,8 +26,9 @@ public class PermissionService : IPermissionService
             return false;
         }
 
-        var codes = await _repository.GetPermissionCodesByUserIdAsync(userId, ct);
-        return codes.Any(c => string.Equals(c, permissionCode, StringComparison.Ordinal));
+        // M1：按需查码——直接经仓储做单码 EXISTS 判定，避免拉全量后在内存比对；
+        // 仍保持「每次请求命中 DB 权威、撤销即时生效」，不引入缓存导致的权限残留。
+        return await _repository.HasPermissionAsync(userId, permissionCode, ct);
     }
 
     /// <inheritdoc />

@@ -145,7 +145,7 @@ BEGIN
         N'"Split":{"MaxOptimizationSplitCount":3,"LimitMandatorySplit":false,"MinBatchQty":1.0},' +
         N'"Setup":{"Dimensions":["Mold","Tool"],"DefaultSetupMinutes":30.0,"SetupLookAheadSize":5},' +
         N'"StageOverlap":{"AllowOverlap":false,"TransferBatchQty":100.0,"ThresholdQty":50.0,"ThresholdPercent":0.5},' +
-        N'"AllowMerge":false,"MaxIterations":1000},' +
+        N'"AllowMerge":false},' +
         N'"CandidateGuardrail":{"NormalMs":60000,"SoftMs":90000,"LocalHardMs":180000,"ImpactedTaskWarningPercent":30,"MaxRepairAttempts":5,"MaxPropagationRounds":10,"ResourceTopN":5,"SplitAlternatives":3,"WarnOnlyOnMaxImpacted":true}}');
     SET @paramV1Id = SCOPE_IDENTITY();
 END
@@ -175,9 +175,9 @@ BEGIN
         N'"PlanningYields":[{"MaterialId":"MAT001","YieldPercent":95.0},{"MaterialId":"MAT002","YieldPercent":90.0}]},' +
         N'"SolverStrategy":{"Mode":0,"BottleneckMode":0,"OnTimeTarget":{"TargetPercent":95,"IsPrimaryObjective":true},' +
         N'"Split":{"MaxOptimizationSplitCount":3,"LimitMandatorySplit":false,"MinBatchQty":1.0},' +
-        N'"Setup":{"Dimensions":["Mold","Tool"],"DefaultSetupMinutes":30.0,"SetupLookAheadSize":5},' +
+        N'"Setup":{"SetupSearchBudget":500,"SetupMaxNeighborhoodTries":50},' +
         N'"StageOverlap":{"AllowOverlap":false,"TransferBatchQty":100.0,"ThresholdQty":50.0,"ThresholdPercent":0.5},' +
-        N'"AllowMerge":false,"MaxIterations":1000},' +
+        N'"AllowMerge":false},' +
         N'"CandidateGuardrail":{"NormalMs":45000,"SoftMs":75000,"LocalHardMs":150000,"ImpactedTaskWarningPercent":30,"MaxRepairAttempts":5,"MaxPropagationRounds":10,"ResourceTopN":5,"SplitAlternatives":3,"WarnOnlyOnMaxImpacted":true}}');
     SET @paramV2Id = SCOPE_IDENTITY();
 END

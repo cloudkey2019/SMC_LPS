@@ -1,7 +1,11 @@
 using LPS.APS.BusinessRules.Services;
+using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Dto;
+using LPS.APS.Engine.Data;
 using LPS.APS.Shared.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Data;
 
 namespace LPS.APS.Web.Controllers;
 
@@ -20,26 +24,57 @@ namespace LPS.APS.Web.Controllers;
 ///
 /// 参考：复审报告P1-01
 /// </summary>
+[Authorize(Policy = PermissionCodes.ManualEtaView)]
 [ApiController]
 [Route("api/procurement-manual-eta")]
 public class ProcurementManualEtaController : ControllerBase
 {
     private readonly ProcurementManualEtaService _service;
+    private readonly DatabaseConnectionManager _connectionManager;
     private readonly ILogger<ProcurementManualEtaController> _logger;
 
     public ProcurementManualEtaController(
         ProcurementManualEtaService service,
+        DatabaseConnectionManager connectionManager,
         ILogger<ProcurementManualEtaController> logger)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
+        _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    /// <summary>
+    /// 收货仓库下拉（数据源：ext_MES_ProcessCode_View，processcode→code、processname→name）
+    /// GET /api/procurement-manual-eta/warehouses
+    /// </summary>
+    [HttpGet("warehouses")]
+    public async Task<ApiResponse<IReadOnlyList<WarehouseLookupItem>>> ListWarehouses(
+        [FromQuery] string? search = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sql = @"
+SELECT processcode AS Code, processname AS Name
+FROM ext_MES_ProcessCode_View
+WHERE (@Search IS NULL OR processcode LIKE '%' + @Search + '%' OR processname LIKE '%' + @Search + '%')
+ORDER BY processcode";
+            var items = await _connectionManager.QueryAsync<WarehouseLookupItem>(
+                sql, new { Search = search }, CommandType.Text, DatabaseId.APS, commandTimeout: 10);
+            return ApiResponse<IReadOnlyList<WarehouseLookupItem>>.Success(items.ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to query warehouses");
+            return ApiResponse<IReadOnlyList<WarehouseLookupItem>>.Fail(500, $"Query failed: {ex.Message}");
+        }
     }
 
     /// <summary>
     /// 查询Manual ETA列表
     /// </summary>
     [HttpGet]
-    public async Task<ApiResponse<List<ProcurementManualEtaOverride>>> Query(
+    public async Task<ApiResponse<PageResult<ProcurementManualEtaOverride>>> Query(
         [FromQuery] string? materialIds = null,
         [FromQuery] string? materialCodes = null,
         [FromQuery] string? poNos = null,
@@ -48,8 +83,8 @@ public class ProcurementManualEtaController : ControllerBase
         [FromQuery] DateTime? etaAfter = null,
         [FromQuery] DateTime? updatedAfter = null,
         [FromQuery] bool activeOnly = true,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 100,
+        [FromQuery] int pageIndex = 1,
+        [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
         try
@@ -86,7 +121,8 @@ public class ProcurementManualEtaController : ControllerBase
                     .ToList();
             }
 
-            if (take <= 0 || take > 500) take = 100;
+            if (pageIndex <= 0) pageIndex = 1;
+            if (pageSize <= 0 || pageSize > 200) pageSize = 20;
 
             var result = await _service.QueryAsync(
                 materialIds: materialIdList,
@@ -97,16 +133,16 @@ public class ProcurementManualEtaController : ControllerBase
                 etaAfter: etaAfter,
                 updatedAfter: updatedAfter,
                 activeOnly: activeOnly,
-                skip: skip,
-                take: take,
+                pageIndex: pageIndex,
+                pageSize: pageSize,
                 ct: cancellationToken);
 
-            return ApiResponse<List<ProcurementManualEtaOverride>>.Success(result);
+            return ApiResponse<PageResult<ProcurementManualEtaOverride>>.Success(result);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to query Manual ETA records");
-            return ApiResponse<List<ProcurementManualEtaOverride>>.Fail(500, $"Query failed: {ex.Message}");
+            return ApiResponse<PageResult<ProcurementManualEtaOverride>>.Fail(500, $"Query failed: {ex.Message}");
         }
     }
 
@@ -143,6 +179,7 @@ public class ProcurementManualEtaController : ControllerBase
     /// <summary>
     /// 新增或更新Manual ETA
     /// </summary>
+    [Authorize(Policy = PermissionCodes.ManualEtaMaintain)]
     [HttpPost]
     public async Task<ApiResponse<ProcurementManualEtaOverride>> Upsert(
         [FromBody] ProcurementManualEtaOverride etaOverride,
@@ -167,6 +204,7 @@ public class ProcurementManualEtaController : ControllerBase
     /// <summary>
     /// 取消Manual ETA（设置IsActive=0）
     /// </summary>
+    [Authorize(Policy = PermissionCodes.ManualEtaCancel)]
     [HttpDelete("{poNo}/{lineNo}")]
     public async Task<ApiResponse<CancelManualEtaResponse>> Cancel(
         [FromRoute] string poNo,
@@ -216,7 +254,7 @@ public class ProcurementManualEtaController : ControllerBase
                     MaterialId = request.MaterialId,
                     ReceivingWarehouse = request.ReceivingWarehouse,
                     AlreadyCanceled = false,
-                    CanceledAt = DateTime.UtcNow
+                    CanceledAt = DateTime.Now
                 },
                 "Manual ETA canceled successfully");
         }
@@ -230,6 +268,15 @@ public class ProcurementManualEtaController : ControllerBase
             return ApiResponse<CancelManualEtaResponse>.Fail(500, $"Cancel failed: {ex.Message}");
         }
     }
+}
+
+/// <summary>
+/// 收货仓库下拉项（数据源 ext_MES_ProcessCode_View：processcode→Code、processname→Name）
+/// </summary>
+public sealed class WarehouseLookupItem
+{
+    public string Code { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
 }
 
 /// <summary>

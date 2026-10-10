@@ -11,7 +11,7 @@ namespace LPS.APS.BusinessRules.Services;
 ///
 /// 【职责边界】
 /// - 查看：5号位自己实现（直接查库）
-/// - 释放：必须通过2号位Application Service
+/// - 释放：通过 DemandProtectionAppService（Application 层）中转调用
 /// </summary>
 public class DemandProtectionService
 {

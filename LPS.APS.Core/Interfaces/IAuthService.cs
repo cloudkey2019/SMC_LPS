@@ -15,8 +15,10 @@ public interface IAuthService
     /// </summary>
     /// <param name="userCode">用户工号</param>
     /// <param name="password">明文密码</param>
+    /// <param name="clientIp">客户端 IP（由控制器从 HttpContext 传入，供审计，可空）</param>
+    /// <param name="userAgent">客户端 UA（由控制器从 HttpContext 传入，供审计，可空）</param>
     /// <returns>登录结果（含 Token）</returns>
-    Task<LoginResult> LoginAsync(string userCode, string password);
+    Task<LoginResult> LoginAsync(string userCode, string password, string? clientIp = null, string? userAgent = null);
 
     /// <summary>
     /// 刷新 AccessToken
@@ -30,5 +32,8 @@ public interface IAuthService
     /// 登出（吊销 RefreshToken）
     /// </summary>
     /// <param name="userId">用户ID</param>
-    Task LogoutAsync(int userId);
+    /// <param name="userCode">用户工号（由控制器从 JWT 声明传入，供审计 entityId，可空）</param>
+    /// <param name="clientIp">客户端 IP（由控制器从 HttpContext 传入，供审计，可空）</param>
+    /// <param name="userAgent">客户端 UA（由控制器从 HttpContext 传入，供审计，可空）</param>
+    Task LogoutAsync(int userId, string? userCode = null, string? clientIp = null, string? userAgent = null);
 }

@@ -2,7 +2,7 @@ namespace LPS.APS.Core.Entities.Auth;
 
 /// <summary>
 /// 权限表
-/// 对应 APS_Auth.Permission
+/// 对应 APS_Auth.Permission（DDL v1.3：ActionType，PermissionCode 统一 aps. 前缀）
 /// </summary>
 public class Permission
 {
@@ -11,7 +11,7 @@ public class Permission
     public string PermissionName { get; set; } = string.Empty;
     public string? Description { get; set; }
     public string Module { get; set; } = string.Empty;
-    public string Category { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

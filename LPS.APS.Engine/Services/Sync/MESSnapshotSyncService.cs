@@ -53,7 +53,9 @@ public class MESSnapshotSyncService : IMESSnapshotSyncService
             {
                 const string msg = "未找到当日 RUNNING ScheduleRun，请确认 NightlyBatch（00:30）已正常完成";
                 _logger.LogError("{Step} 失败: {Msg}", logStep, msg);
-                return new MESSnapshotSyncResultDto { ErrorMessage = msg };
+                // 2026-10-08：原先返回带 ErrorMessage 的 DTO ⇒ Hangfire 视为 Succeeded，
+                // 失败被静默吞掉（只有查 APS_ETL_Log 才看得见）。改为抛，让定时任务如实标 Failed。
+                throw new InvalidOperationException($"{logStep} 失败：{msg}");
             }
 
             var spParams = new DynamicParameters();
@@ -86,7 +88,10 @@ public class MESSnapshotSyncService : IMESSnapshotSyncService
         {
             stopwatch.Stop();
             _logger.LogError(ex, "{Step} 异常: elapsed={Elapsed}ms", logStep, stopwatch.ElapsedMilliseconds);
-            return new MESSnapshotSyncResultDto { ErrorMessage = ex.Message };
+            // 2026-10-08：原先吞成 ErrorMessage 返回 ⇒ Hangfire 报 Succeeded 而 SP 实际已 FAILED
+            // （sp_SyncMESWorkOrderSnapshot 因 PlannedQty NULL 失败时即如此，任务状态是假的）。
+            // 改为向上抛，由 Hangfire 如实标记失败并触发重试/告警。
+            throw;
         }
     }
 }

@@ -28,12 +28,22 @@ public class OrderQueryRepository : IOrderQueryRepository
         string? status = null,
         int skip = 0,
         int take = 50,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null)
     {
+        // Dapper 列表参数只能出现在 IN 内；@X IS NULL(标量) 会随 @X 一起扩成 (@p1,@p2) → "(@p1,@p2) IS NULL" 非法 SQL 4145。
+        // 用 Has 标志替代标量判空；空集 fail-closed 返空，避免空集传入 IN ()。
+        if (allowedFactories is { Count: 0 } || allowedDomains is { Count: 0 })
+            return new List<OrderListItemDto>();
+        var hasFactories = allowedFactories is { Count: > 0 };
+        var hasDomains = allowedDomains is { Count: > 0 };
+
         var sql = @"
 SELECT
     o.Id,
     o.PlanVersionId,
+    o.OrderCanonicalId,
     o.OrderNo,
     o.OrderType,
     o.MaterialCode,
@@ -65,6 +75,8 @@ WHERE o.PlanVersionId = @PlanVersionId
     AND (@DomainKey IS NULL OR o.DomainKey = @DomainKey)
     AND (@DelayStatus IS NULL OR o.DelayStatus = @DelayStatus)
     AND (@Status IS NULL OR o.Status = @Status)
+    AND (@HasFactories = 0 OR f.Code IN @AllowedFactories)
+    AND (@HasDomains = 0 OR o.DomainKey IN @AllowedDomains)
 ORDER BY o.Priority DESC, o.CustomerDueDate
 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 
@@ -78,6 +90,10 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
             DomainKey = domainKey,
             DelayStatus = delayStatus,
             Status = status,
+            HasFactories = hasFactories,
+            HasDomains = hasDomains,
+            AllowedFactories = allowedFactories,
+            AllowedDomains = allowedDomains,
             Skip = skip,
             Take = take
         };
@@ -98,6 +114,7 @@ OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY";
 SELECT
     o.Id,
     o.PlanVersionId,
+    o.OrderCanonicalId,
     o.OrderNo,
     o.OrderType,
     o.MaterialCode,
@@ -190,5 +207,45 @@ ORDER BY t.OperationSeq";
             Pegging = pegging,
             Tasks = tasks
         };
+    }
+
+    public async Task<OrderSummaryDto> GetSummaryAsync(
+        int planVersionId,
+        IReadOnlySet<string>? allowedFactories = null,
+        IReadOnlySet<string>? allowedDomains = null,
+        CancellationToken ct = default)
+    {
+        // Dapper 列表参数只进 IN；空集 fail-closed 返空摘要。
+        if (allowedFactories is { Count: 0 } || allowedDomains is { Count: 0 })
+            return new OrderSummaryDto { PlanVersionId = planVersionId };
+        var hasFactories = allowedFactories is { Count: > 0 };
+        var hasDomains = allowedDomains is { Count: > 0 };
+
+        var sql = @"
+SELECT
+    COUNT(*) AS TotalCount,
+    SUM(CASE WHEN o.DelayStatus IS NULL OR o.DelayStatus = 'ON_TIME' THEN 1 ELSE 0 END) AS OnTimeCount,
+    SUM(CASE WHEN o.DelayStatus IN ('FIRST_DELAY', 'REPEATED_DELAY') THEN 1 ELSE 0 END) AS DelayedCount,
+    SUM(CASE WHEN o.DelayStatus = 'RISK' THEN 1 ELSE 0 END) AS RiskCount,
+    SUM(CASE WHEN o.Status = 'UNSCHEDULED' THEN 1 ELSE 0 END) AS UnscheduledCount
+FROM [Order] o
+LEFT JOIN Factory f ON f.Id = o.FactoryId
+WHERE o.PlanVersionId = @PlanVersionId
+    AND (@HasFactories = 0 OR f.Code IN @AllowedFactories)
+    AND (@HasDomains = 0 OR o.DomainKey IN @AllowedDomains)";
+
+        var parameters = new
+        {
+            PlanVersionId = planVersionId,
+            HasFactories = hasFactories,
+            HasDomains = hasDomains,
+            AllowedFactories = allowedFactories,
+            AllowedDomains = allowedDomains
+        };
+
+        var result = await _connectionManager.QueryFirstOrDefaultAsync<OrderSummaryDto>(
+            sql, parameters, CommandType.Text, DatabaseId.APS, commandTimeout: 10);
+
+        return result ?? new OrderSummaryDto { PlanVersionId = planVersionId };
     }
 }

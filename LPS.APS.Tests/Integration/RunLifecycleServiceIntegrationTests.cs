@@ -1,5 +1,7 @@
 using FluentAssertions;
 using LPS.APS.Application.Services;
+using LPS.APS.Core.Authorization;
+using LPS.APS.Core.Dto;
 using LPS.APS.Core.DTOs.Governance;
 using LPS.APS.Core.Interfaces;
 using LPS.APS.Engine.Data;
@@ -8,6 +10,7 @@ using LPS.APS.Engine.Repositories.Governance;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Moq;
 using Xunit;
 using PlanVersion = LPS.APS.Core.Entities.APS.PlanVersion;
 using RuleSetVersion = LPS.APS.Core.Entities.APS.RuleSetVersion;
@@ -50,7 +53,7 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
     public RunLifecycleServiceIntegrationTests()
     {
-        _now = DateTime.UtcNow;
+        _now = DateTime.Now;
         _uniqueSuffix = $"{_now:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}".Substring(0, 30);
 
         _cm = TestEnvironment.GetConnectionManager();
@@ -64,16 +67,39 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
 
         var auditRepo = CreateAuditRepository(loggerFactory);
 
+        // 5e：业务范围集成测试用 Global 放行（范围归属校验逻辑已由单元测试覆盖；此处聚焦真实落库链路）
+        var dataScopeService = new Mock<IDataScopeService>();
+        dataScopeService
+            .Setup(s => s.EnsureInScopeAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // P1-02：3→2 排程发令枪默认成功（真实 2号位 主流程不在集成测试内重演）
+        var schedulingOrchestrator = new Mock<ISchedulingOrchestrator>();
+        schedulingOrchestrator
+            .Setup(o => o.RunSchedulingAndFinalizeAsync(
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SchedulingRunResult { IsSuccess = true });
+        // P1-03：FAILED 恢复内联执行 seam（ExecuteRunAsync）默认全成功
+        schedulingOrchestrator
+            .Setup(o => o.ExecuteRunAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SchedulingRunResult { IsSuccess = true });
+
+        var scheduleRunService = new Mock<IScheduleRunService>();
+
         _service = new RunLifecycleService(
             _scheduleRunRepo,
             _planVersionRepo,
             _strategyProfileVersionRepo,
             _ruleSetVersionRepo,
             _parameterSetVersionRepo,
-            auditRepo);
+            auditRepo,
+            dataScopeService.Object,
+            schedulingOrchestrator.Object,
+            scheduleRunService.Object,
+            loggerFactory.CreateLogger<RunLifecycleService>());
     }
 
-    private static GovernanceAuditLogRepository CreateAuditRepository(ILoggerFactory loggerFactory)
+    private static AuditLogRepository CreateAuditRepository(ILoggerFactory loggerFactory)
     {
         var configuration = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
@@ -85,9 +111,7 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         var options = new DbContextOptionsBuilder<AuthDbContext>()
             .UseSqlServer(authConn)
             .Options;
-        return new GovernanceAuditLogRepository(
-            new AuthDbContext(options),
-            loggerFactory.CreateLogger<GovernanceAuditLogRepository>());
+        return new AuditLogRepository(new AuthDbContext(options));
     }
 
     [SkippableFact]
@@ -95,13 +119,13 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     {
         Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
         Skip.If(!TestEnvironment.HasScheduleRunExpectedDomainKeysColumn(), "测试库 ScheduleRun 缺 ExpectedDomainKeysJson 列（冻结 DDL v5.1.2 未迁移），需 2号位迁移后转绿");
-        Skip.If(!TestEnvironment.HasGovernanceAuditLogTable(), "测试库缺 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
+        Skip.If(!TestEnvironment.HasAuditLogTable(), "测试库缺 AuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
 
         // 建 FAILED 运行（预期 Domain 冻结 ["D1","D2"]，引用真实策略包版本）
         await SetupFailedRunAsync();
 
         // 恢复：新建 RUNNING 继承基线（新 Run Id 必须存字段，供 Dispose 清理——否则引用策略版本残留，删版本 FK 冲突）
-        _testRecoveredRunId = await _service.RecoverFailedRunAsync(_testScheduleRunId, CancellationToken.None);
+        _testRecoveredRunId = await _service.RecoverFailedRunAsync(_testScheduleRunId, 1, CancellationToken.None);
 
         // 新记录落库验证：RUNNING + 继承 RunType/StrategyProfileVersionId/ExpectedDomainKeysJson
         var newRun = await _scheduleRunRepo.GetByIdAsync(_testRecoveredRunId);
@@ -115,6 +139,12 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         var oldRun = await _scheduleRunRepo.GetByIdAsync(_testScheduleRunId);
         oldRun!.Status.Should().Be("FAILED");
         oldRun.ErrorMessage.Should().Be("致命错误");
+
+        // P1-03：恢复壳落库（一域一壳 2 个 RECOVERY 壳，Status='Created'，SourceScheduleRunId=新 Run）
+        var shells = await _planVersionRepo.GetByScheduleRunIdAsync(_testRecoveredRunId, CancellationToken.None);
+        shells.Should().HaveCount(2);
+        shells.Should().OnlyContain(s => s.VersionCategory == "RECOVERY" && s.Status == "Created");
+        shells.Select(s => s.DomainKey).Should().BeEquivalentTo(new[] { "D1", "D2" });
     }
 
     [SkippableFact]
@@ -174,20 +204,20 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     [SkippableFact]
     public async Task 候选确认与激活_真实库落库()
     {
-        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasGovernanceAuditLogTable(),
-            "测试环境缺 APS_Auth 库或 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
+        Skip.If(!TestEnvironment.IsAuthDbAvailable() || !TestEnvironment.HasAuditLogTable(),
+            "测试环境缺 APS_Auth 库或 AuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
 
         await SetupCandidateAsync();
 
         // 确认（二轮复审 P0-05）：仅记审计，不写 ActivatedAt/ActivatedBy、不转 ACTIVE
-        await _service.ConfirmCandidateAsync(_testPlanVersionId, "tester", "集成测试确认", CancellationToken.None);
+        await _service.ConfirmCandidateAsync(_testPlanVersionId, 1, "tester", "集成测试确认", CancellationToken.None);
         var confirmed = await _planVersionRepo.GetByIdAsync(_testPlanVersionId);
         confirmed!.Status.Should().Be("Computed");
         confirmed.ActivatedAt.Should().BeNull();
         confirmed.ActivatedBy.Should().BeNull();
 
         // 激活（二轮复审 P0-03/04/06）：已确认 + 来源 MANUAL_RESCHEDULE 可激活 → 原子替换 CANDIDATE → ACTIVE
-        await _service.ActivateCandidateAsync(_testPlanVersionId, "tester", CancellationToken.None);
+        await _service.ActivateCandidateAsync(_testPlanVersionId, 1, "tester", CancellationToken.None);
         var activated = await _planVersionRepo.GetByIdAsync(_testPlanVersionId);
         activated!.Status.Should().Be("ACTIVE");
         activated.ActivatedAt.Should().NotBeNull();
@@ -199,7 +229,7 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
     {
         Skip.If(!TestEnvironment.IsAuthDbAvailable(), "测试环境缺 APS_Auth 库，需 2号位部署后转绿");
         Skip.If(!TestEnvironment.HasScheduleRunExpectedDomainKeysColumn(), "测试库 ScheduleRun 缺 ExpectedDomainKeysJson 列（冻结 DDL v5.1.2 未迁移），需 2号位迁移后转绿");
-        Skip.If(!TestEnvironment.HasGovernanceAuditLogTable(), "测试库缺 GovernanceAuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
+        Skip.If(!TestEnvironment.HasAuditLogTable(), "测试库缺 AuditLog 表（审计 DDL 未迁移），需 2号位建表后转绿");
 
         // 建前置：MANUAL_RESCHEDULE 默认 PUBLISHED 策略版本 + 唯一 Domain 的 ACTIVE Base 计划版本
         // （唯一 Domain 防 xUnit 并行下其他用例同域 ACTIVE 触发 UQ_PlanVersion_OneActivePerDomain）
@@ -213,7 +243,7 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
             Purpose = "MANUAL_ADJUSTMENT",
             DomainKey = domainKey,
             Actor = "tester",
-        }, CancellationToken.None);
+        }, 1, CancellationToken.None);
 
         // 新 Run 落库：RUNNING + BasePlanVersionId + 冻结 Domain 基线 + 继承默认策略版本
         _testCreatedRunId = result.NewScheduleRunId;
@@ -498,6 +528,8 @@ public class RunLifecycleServiceIntegrationTests : IDisposable
         }
         if (_testRecoveredRunId > 0)
         {
+            // P1-03：恢复会一域一壳写入 RECOVERY PlanVersion（SourceScheduleRunId=新 Run），须先删壳再删 Run，避免 FK 冲突
+            await _cm.ExecuteAsync("DELETE FROM PlanVersion WHERE SourceScheduleRunId = @Id", new { Id = _testRecoveredRunId }, db: DatabaseId.APS);
             await _cm.ExecuteAsync("DELETE FROM ScheduleRun WHERE Id = @Id", new { Id = _testRecoveredRunId }, db: DatabaseId.APS);
         }
         if (_testStrategyProfileVersionId > 0)

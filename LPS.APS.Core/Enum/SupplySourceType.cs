@@ -29,7 +29,8 @@ public enum SupplySourceType
     PIPELINE = 3,
 
     /// <summary>
-    /// 跨厂订单供给（含 STAGE_HANDOFF 和 INTER_FACTORY_ORDER 两种子模式）
+    /// 跨厂订单供给（厂间出荷指示 SH 级，单一 Supply 身份，量=Order.Quantity 指令总量）。
+    /// STAGE_HANDOFF 属 PI Position（INTERPLANT_IN_TRANSIT），不走此供给类型。
     /// </summary>
     INTER_FACTORY_ORDER = 4,
 

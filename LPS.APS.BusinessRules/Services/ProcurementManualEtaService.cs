@@ -25,7 +25,7 @@ public class ProcurementManualEtaService
     /// <summary>
     /// 查询Manual ETA记录
     /// </summary>
-    public async Task<List<ProcurementManualEtaOverride>> QueryAsync(
+    public async Task<PageResult<ProcurementManualEtaOverride>> QueryAsync(
         List<int>? materialIds = null,
         List<string>? materialCodes = null,
         List<string>? poNos = null,
@@ -34,14 +34,14 @@ public class ProcurementManualEtaService
         DateTime? etaAfter = null,
         DateTime? updatedAfter = null,
         bool activeOnly = true,
-        int skip = 0,
-        int take = 100,
+        int pageIndex = 1,
+        int pageSize = 20,
         CancellationToken ct = default)
     {
         return await _repository.QueryAsync(
             materialIds, materialCodes, poNos, receivingWarehouses,
             etaBefore, etaAfter, updatedAfter,
-            activeOnly, skip, take, ct);
+            activeOnly, pageIndex, pageSize, ct);
     }
 
     /// <summary>

@@ -11,4 +11,11 @@ internal class PlanVersionInfoDto
     public DateTime PlanHorizonStart { get; set; }
     public DateTime PlanHorizonEnd { get; set; }
     public int SourceScheduleRunId { get; set; }
+
+    /// <summary>
+    /// 执行进度状态（Created / Computing / Computed / ComputeFailed）。
+    /// 【2026-09-29 新增】仅供 <c>SchedulingOrchestrator.ExecuteRunAsync</c> 的重入守卫读终态用，
+    /// 不参与其它查询的投影 —— 未 SELECT 该列的旧调用点保持 default(null)，不受影响。
+    /// </summary>
+    public string? Status { get; set; }
 }
