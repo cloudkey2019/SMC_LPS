@@ -62,6 +62,14 @@ public sealed class ExistingExecutionContextDto
     public string? StartOperationCode { get; init; }
 
     /// <summary>
+    /// 当前有效执行起点工序名（兼容投影：N=1 时镜像唯一 Slice 的 StartOperationName；N>1 时为 null）
+    ///
+    /// 来源：Slices[].StartOperationName
+    /// 用途：同 slice 级——DAG 前沿为空时供 2号位 按 名→码 反查；只装名、不装码。
+    /// </summary>
+    public string? StartOperationName { get; init; }
+
+    /// <summary>
     /// 工单创建部门（APS ProductionDepartment.Id，可空）
     ///
     /// 来源：OperationProgress.ProductionDepartmentId

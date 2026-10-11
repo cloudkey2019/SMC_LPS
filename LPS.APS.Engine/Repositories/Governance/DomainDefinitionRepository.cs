@@ -110,6 +110,26 @@ public class DomainDefinitionRepository : IDomainDefinitionRepository
         return count > 0;
     }
 
+    public async Task<bool> ExistsActiveScopeComboAsync(
+        string scopeType, int productFamilyId, int? factoryId, int? excludeId = null, CancellationToken ct = default)
+    {
+        // G2 scope 组合唯一性（仅启用域）：FAMILY 按 ProductFamilyId；FACTORY_FAMILY 按 FactoryId+ProductFamilyId。
+        // FAMILY 的 FactoryId 恒为 NULL（治理侧已校验 FAMILY 不得指定 FactoryId），故 @FactoryId IS NULL 分支仅命中 FAMILY。
+        const string sql = @"
+            SELECT COUNT(1) FROM [dbo].[DomainDefinition]
+            WHERE [IsActive] = 1
+              AND [ScopeType] = @ScopeType
+              AND [ProductFamilyId] = @ProductFamilyId
+              AND (@FactoryId IS NULL OR [FactoryId] = @FactoryId)
+              AND (@ExcludeId IS NULL OR [Id] <> @ExcludeId)";
+
+        var count = await _connectionManager.QueryFirstOrDefaultAsync<int>(
+            sql,
+            new { ScopeType = scopeType, ProductFamilyId = productFamilyId, FactoryId = factoryId, ExcludeId = excludeId },
+            db: DatabaseId.APS);
+        return count > 0;
+    }
+
     public async Task<bool> ProductFamilyExistsAsync(int productFamilyId, CancellationToken ct = default)
     {
         const string sql = "SELECT COUNT(1) FROM [dbo].[ProductFamily] WHERE [Id] = @Id";

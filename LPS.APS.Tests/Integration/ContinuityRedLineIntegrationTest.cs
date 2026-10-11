@@ -19,17 +19,22 @@ namespace LPS.APS.Tests.Integration;
 
 /// <summary>
 /// 跨版本连续性红线验收（v1.6 §10）：
-/// 对已验证数据齐备的 PlanVersion 328（FAMILY_X，11,659 订单 100% 带 MTS_InstructionNo）
-/// + MES 快照 ScheduleRun 477，触发 RunSchedulingAsync(328, 251L)，验证：
+/// 对「源 Run 有三张 MES 快照分区 + 有订单」的 PlanVersion 动态解析后触发
+/// RunSchedulingAsync(pv, 251L)，验证：
 ///  1) 日志 [Pegging][Continuity] 分桶完成：Continuation/Free 同现；
 ///  2) 落库 Task.MTS_InstructionNo 非空 + 同 PI 多 Task 数量闭合（E + Q−E = Q）。
 /// </summary>
+/// <remarks>
+/// 【2026-10-10 修复】原写死 <c>PlanVersionId = 328</c> + <c>ScheduleRun 477</c>（FAMILY_X / 11,659 订单），
+/// 两者在 09-29 版本清理后均**不存在**（328 在 <c>[Order]</c> 里 0 行；库内 PV max 81 / Run max 89）
+/// ⇒ 该测试按原值必失败且无法「确认就位」。改为动态解析，口径见 <see cref="PlanVersionTestFixture"/>。
+/// 解析不到 = 环境态 ⇒ <c>Skip</c> 而非红。
+/// </remarks>
 public class ContinuityRedLineIntegrationTest
 {
-    private const int PlanVersionId = 328;
     private const long StrategyProfileVersionId = 251L; // SP-DEMO-V2.0
 
-    [Fact(DisplayName = "跨版本连续性红线：328 触发 + Continuation/Free 同现")]
+    [SkippableFact(DisplayName = "跨版本连续性红线：Continuation/Free 同现 + Task 侧 PI 继承闭合")]
     public async Task RunContinuityRedLineAsync()
     {
         var services = new ServiceCollection();
@@ -51,11 +56,20 @@ public class ContinuityRedLineIntegrationTest
         services.AddScoped<DatabaseConnectionManager>();
 
         var sp = services.BuildServiceProvider();
-        var orch = sp.GetRequiredService<SchedulingOrchestrator>();
         var conn = sp.GetRequiredService<DatabaseConnectionManager>();
 
-        Console.WriteLine($"触发 RunSchedulingAsync({PlanVersionId}, {StrategyProfileVersionId}) ...");
-        var result = await orch.RunSchedulingAsync(PlanVersionId, StrategyProfileVersionId, CancellationToken.None);
+        var planVersionId = await PlanVersionTestFixture.ResolveWithMesSnapshotAsync(conn);
+        Skip.If(planVersionId is null,
+            "库内无「源 Run 有三张 MES 快照分区 + 有订单」的 PlanVersion（连续性红线需要 MES 在制事实）—— 环境态，非缺陷。");
+        Skip.IfNot(await PlanVersionTestFixture.IsPublishedStrategyProfileVersionAsync(conn, StrategyProfileVersionId),
+            $"StrategyProfileVersion {StrategyProfileVersionId} 不存在或非 PUBLISHED —— 环境态，非缺陷。");
+        var pv = planVersionId!.Value;
+        Console.WriteLine($"[夹具] 动态解析 PlanVersion={pv}（原硬编码 328 已于 09-29 清理后不存在）");
+
+        var orch = sp.GetRequiredService<SchedulingOrchestrator>();
+
+        Console.WriteLine($"触发 RunSchedulingAsync({pv}, {StrategyProfileVersionId}) ...");
+        var result = await orch.RunSchedulingAsync(pv, StrategyProfileVersionId, CancellationToken.None);
         Console.WriteLine(
             $"[红线上] IsSuccess={result.IsSuccess}, Scheduled={result.ScheduledCount}, " +
             $"Unscheduled={result.UnscheduledCount}, Elapsed={result.ElapsedMs}ms, Error={result.ErrorMessage}");
@@ -63,13 +77,13 @@ public class ContinuityRedLineIntegrationTest
         // 落库硬证据（不依赖日志）
         var tasksWithPi = await conn.QueryFirstOrDefaultAsync<int>(
             "SELECT COUNT(*) FROM [Task] WHERE PlanVersionId=@p AND MTS_InstructionNo IS NOT NULL",
-            new { p = PlanVersionId }, db: DatabaseId.APS);
+            new { p = pv }, db: DatabaseId.APS);
         var multiTaskPi = await conn.QueryFirstOrDefaultAsync<int>(
             @"SELECT COUNT(*) FROM (
                   SELECT MTS_InstructionNo FROM [Task]
                   WHERE PlanVersionId=@p AND MTS_InstructionNo IS NOT NULL
                   GROUP BY MTS_InstructionNo HAVING COUNT(*)>=2) x",
-            new { p = PlanVersionId }, db: DatabaseId.APS);
+            new { p = pv }, db: DatabaseId.APS);
         Console.WriteLine($"[红线上] Task带PI数={tasksWithPi}, 同PI多Task(MTS工单数)={multiTaskPi}");
 
         Assert.True(result.IsSuccess, result.ErrorMessage);

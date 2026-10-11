@@ -11,7 +11,7 @@
     - effectiveTo        可选
     - isDefault          仅在 Profile 已有 PUBLISHED 时显示（红线 UI 三重防护 #1）
 
-  v1.4 §十八.10 修复（P1-12 反馈 500 Internal Server Error）：
+  v1.6 4号位 补登（历史引用 v1.4 §十八.10）修复 P1-12 反馈 500 Internal Server Error：
     原 ElInputNumber 让用户自由填 ID；FK_StrategyProfileVersion_RuleSetVersion 不通过即 SqlException → 500。
     现改 ElSelect 双级级联：必须先选主表 → 才能选版本；版本必须存在，避免 FK 违反。
 
@@ -251,9 +251,7 @@ const rules = computed(() => ({
 }))
 
 const title = computed<string>(() =>
-  props.mode === 'create'
-    ? '新建策略版本（DRAFT）'
-    : `编辑策略版本 ${props.version?.versionCode ?? ''}`
+  props.mode === 'create' ? '新建草稿版本' : `编辑草稿版本 ${props.version?.versionCode ?? ''}`
 )
 
 function close(): void {
@@ -297,7 +295,7 @@ async function onSubmit(): Promise<void> {
     @update:model-value="(v) => emit('update:visible', v)"
   >
     <ElForm ref="formRef" :model="form" :rules="rules" label-width="140px" label-position="right">
-      <ElFormItem label="所属 Profile">
+      <ElFormItem label="所属策略包">
         <span class="d-val">{{ profile?.strategyProfileCode ?? '—' }}</span>
         <span class="d-sub">（{{ profile?.strategyProfileName }}）</span>
       </ElFormItem>
@@ -408,8 +406,8 @@ async function onSubmit(): Promise<void> {
 
       <ElAlert type="info" :closable="false" show-icon class="d-alert">
         <template #title>状态流转</template>
-        {{ mode === 'create' ? '创建后状态固定为 DRAFT' : '仅 DRAFT 状态可编辑' }}； 发布时调用
-        <code>POST /strategy-profile/version/{id}/publish</code>， 退役仅对 PUBLISHED 生效。
+        {{ mode === 'create' ? '创建后状态固定为「草稿」' : '仅「草稿」状态可编辑' }}； 发布时调用
+        <code>POST /strategy-profile/version/{id}/publish</code>， 退役仅对已发布状态生效。
       </ElAlert>
 
       <ElAlert
@@ -426,7 +424,7 @@ async function onSubmit(): Promise<void> {
     <template #footer>
       <ElButton :disabled="submitting" @click="close">取消</ElButton>
       <ElButton type="primary" :loading="submitting" @click="onSubmit">
-        {{ mode === 'create' ? '创建 DRAFT' : '保存' }}
+        {{ mode === 'create' ? '创建草稿' : '保存' }}
       </ElButton>
     </template>
   </ElDialog>

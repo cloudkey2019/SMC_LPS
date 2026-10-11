@@ -438,6 +438,7 @@ public class Phase5CompactionTests
     {
         LogicalDemandKey = "D1", PlanVersionId = 1L, DomainKey = "DOMAIN",
         AllocationSequence = 1, DemandKey = "D1", MaterialId = 1, FactoryId = 1,
+        StartStageCode = "STAGE1",
         NetOutputQty = 1m, PlannedProcessQty = 1m,
         RequiredAvailableTime = PlanningStart.AddDays(20), DemandSequence = 1
     };
@@ -446,6 +447,7 @@ public class Phase5CompactionTests
     {
         LogicalDemandKey = $"D{i}", PlanVersionId = 1L, DomainKey = "DOMAIN",
         AllocationSequence = i, DemandKey = $"D{i}", MaterialId = i, FactoryId = 1,
+        StartStageCode = "STAGE1",
         NetOutputQty = 1m, PlannedProcessQty = 1m,
         RequiredAvailableTime = PlanningStart.AddDays(20), DemandSequence = i
     };
@@ -455,6 +457,7 @@ public class Phase5CompactionTests
         {
             LogicalDemandKey = key, PlanVersionId = 1L, DomainKey = "DOMAIN",
             AllocationSequence = alloc, DemandKey = key, MaterialId = materialId, FactoryId = 1,
+            StartStageCode = "STAGE1",
             NetOutputQty = qty, PlannedProcessQty = qty,
             RequiredAvailableTime = due, DemandSequence = 1
         };
@@ -545,7 +548,7 @@ public class Phase5CompactionTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是 Phase5 压实，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
-                BatchPolicies = TestBatchPolicy.Permissive(demands.Select(d => d.MaterialId)),
+                BatchPolicies = TestBatchPolicy.Permissive(demands.Select(d => d.MaterialId), 100),
                 SetupTransitionRules = setupRules ?? Array.Empty<SetupTransitionRuleSnapshot>()
             }
         };

@@ -381,6 +381,7 @@ public class P0RegressionTests
             DemandKey = d.Key,
             MaterialId = d.MaterialId,
             FactoryId = 1,
+            StartStageCode = "STAGE1",
             StartOperationCode = d.StartOperationCode,
             NetOutputQty = d.Qty,
             PlannedProcessQty = d.Qty,
@@ -421,7 +422,7 @@ public class P0RegressionTests
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是 P0-01~P0-06 修复链，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
                 //   `AllowMerge` 镜像夹具参数：策略是 Merge 的正式控制源（§八 P1-01），不能覆盖掉 Merge 类断言。
-                BatchPolicies = TestBatchPolicy.Permissive(materialIds, allowMerge),
+                BatchPolicies = TestBatchPolicy.Permissive(materialIds, 100, allowMerge),
                 SetupTransitionRules = setupRules ?? Array.Empty<SetupTransitionRuleSnapshot>()
             }
         };

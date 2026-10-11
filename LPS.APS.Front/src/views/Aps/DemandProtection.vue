@@ -14,7 +14,7 @@
  *  - 复用 Manual ETA 样板（KPI + 筛选 + Table + Drawer）
  *
  * 页面分区：
- *  - 顶部 page-header（标题 / 副标题 / 刷新）
+ *  - 顶部 page-header（标题 / 刷新）
  *  - 约束提示条（4→5→2 链路 / 不计算保护数量 / 只支持 Full Release）
  *  - 错误条
  *  - KPI 4 卡（总数 / Active / 已释放 / 锁定总量）
@@ -41,7 +41,7 @@ import type {
   DemandProtectionReleaseResult,
   DemandProtectionStatus,
   HardLockStatus,
-  HardLockSupplyType,
+  HardLockType,
   ReleaseDemandProtectionInput
 } from '@/api/aps-v1'
 import {
@@ -65,7 +65,6 @@ import {
   ElInput,
   ElOption,
   ElSelect,
-  ElSwitch,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -74,19 +73,7 @@ import {
 
 const store = useDemandProtectionStore()
 const apsAuth = useApsAuthStore()
-const {
-  list,
-  currentDetail,
-  loading,
-  releasing,
-  error,
-  lastFilter,
-  activeCount,
-  releasedCount,
-  totalLockedQty,
-  distinctDemandTypes,
-  distinctLockTypes
-} = storeToRefs(store)
+const { list, currentDetail, loading, releasing, error, lastFilter } = storeToRefs(store)
 
 /* ===== 权限门控（v1.2 §23.1 权限码门控）=====
  *  - aps.demand_protection.release：dev seed 下仅 aps.admin.system 持有
@@ -123,21 +110,24 @@ const SUPPLY_STATUS_TAG: Record<HardLockStatus, 'success' | 'info' | 'danger'> =
   BROKEN: 'danger'
 }
 
-/* ===== 筛选本地 state（变更后点 [筛选] 才生效） ===== */
+/* ===== 筛选本地 state（变更后点 [筛选] 才生效） =====
+ * 形状对齐 5号位 GET /api/demand-protection QueryAsync 签名：
+ *  - demandKey / supplyKey：substring LIKE
+ *  - lockType / status：单值字符串（与 backend 枚举字面量一致）
+ *  - skip / take：分页（UI 不暴露）
+ */
 const filterDraft = ref<DemandProtectionListFilter>({})
-const activeOnlyDraft = ref(false)
-const selectedDemandTypes = ref<string[]>([])
-const selectedLockTypes = ref<string[]>([])
+const filterDemandKey = ref('')
+const filterSupplyKey = ref('')
+const filterLockType = ref<HardLockType | ''>('')
+const filterStatus = ref<HardLockStatus | ''>('')
 
 function syncFilterDraft(): void {
   filterDraft.value = {
-    demandTypes: selectedDemandTypes.value.length
-      ? (selectedDemandTypes.value as DemandProtectionListFilter['demandTypes'])
-      : undefined,
-    lockTypes: selectedLockTypes.value.length
-      ? (selectedLockTypes.value as DemandProtectionListFilter['lockTypes'])
-      : undefined,
-    activeOnly: activeOnlyDraft.value
+    demandKey: filterDemandKey.value.trim() || undefined,
+    supplyKey: filterSupplyKey.value.trim() || undefined,
+    lockType: filterLockType.value || undefined,
+    status: filterStatus.value || undefined
   }
 }
 
@@ -147,9 +137,10 @@ async function applyFilter(): Promise<void> {
 }
 
 function resetFilters(): void {
-  selectedDemandTypes.value = []
-  selectedLockTypes.value = []
-  activeOnlyDraft.value = false
+  filterDemandKey.value = ''
+  filterSupplyKey.value = ''
+  filterLockType.value = ''
+  filterStatus.value = ''
 }
 
 async function refresh(): Promise<void> {
@@ -386,51 +377,15 @@ onMounted(refresh)
   <div class="aps-dp">
     <!-- ===== 顶部 ===== -->
     <div class="page-header">
-      <div>
-        <h2 class="page-title">需求保护释放</h2>
-        <p class="page-sub"> 按需求稳定键聚合，查看锁定的供给份额，支持整条释放 </p>
-      </div>
+      <h2 class="page-title">需求保护释放</h2>
       <ElButton :loading="loading" @click="refresh">
         <Icon icon="vi-ep:refresh" />
         刷新
       </ElButton>
     </div>
 
-    <!-- ===== 文档约束提示 ===== -->
-    <ElAlert type="info" :closable="false" show-icon class="hint-bar">
-      <template #title>只支持整条释放</template>
-      <span class="hint-text">
-        本页只做释放提交：Demand 标识 + 当前保护数量 + 释放范围 + 原因 + 当前用户身份。
-        保护数量的计算与规则的复制均不在本页发生，本页也不直接改库。
-      </span>
-    </ElAlert>
-
     <!-- ===== 错误条 ===== -->
     <ElAlert v-if="error" type="error" :closable="false" show-icon :title="`加载失败：${error}`" />
-
-    <!-- ===== KPI ===== -->
-    <div class="kpi-row kpi-row-4">
-      <div class="kpi-card" style="border-top-color: #3b82f6">
-        <div class="kpi-label">总需求数</div>
-        <div class="kpi-value" style="color: #3b82f6">{{ list.length }}</div>
-        <div class="kpi-ratio">按需求稳定键聚合</div>
-      </div>
-      <div class="kpi-card" style="border-top-color: #059669">
-        <div class="kpi-label">生效中</div>
-        <div class="kpi-value" style="color: #059669">{{ activeCount }}</div>
-        <div class="kpi-ratio">可释放</div>
-      </div>
-      <div class="kpi-card" style="border-top-color: #94a3b8">
-        <div class="kpi-label">已释放</div>
-        <div class="kpi-value" style="color: #94a3b8">{{ releasedCount }}</div>
-        <div class="kpi-ratio">已释放 / 部分释放</div>
-      </div>
-      <div class="kpi-card" style="border-top-color: #d97706">
-        <div class="kpi-label">锁定总量</div>
-        <div class="kpi-value" style="color: #d97706">{{ totalLockedQty }}</div>
-        <div class="kpi-ratio">生效锁聚合求和</div>
-      </div>
-    </div>
 
     <!-- ===== 筛选 + 操作 ===== -->
     <ElCard class="panel">
@@ -438,18 +393,20 @@ onMounted(refresh)
         <div class="panel-header">
           <span>筛选条件</span>
           <span class="hint-text">
-            <span v-if="lastFilter.activeOnly">仅生效中</span>
-            <span v-if="lastFilter.demandTypes?.length">
-              · 需求类型 {{ lastFilter.demandTypes.length }} 个</span
+            <span v-if="lastFilter.demandKey">· 需求键含 "{{ lastFilter.demandKey }}"</span>
+            <span v-if="lastFilter.supplyKey">· 供给键含 "{{ lastFilter.supplyKey }}"</span>
+            <span v-if="lastFilter.lockType"
+              >· 锁类型 {{ LOCK_TYPE_LABELS[lastFilter.lockType] }}</span
             >
-            <span v-if="lastFilter.lockTypes?.length">
-              · 锁类型 {{ lastFilter.lockTypes.length }} 个</span
+            <span v-if="lastFilter.status"
+              >· 状态 {{ HARD_LOCK_STATUS_LABELS[lastFilter.status] }}</span
             >
             <span
               v-if="
-                !lastFilter.activeOnly &&
-                !lastFilter.demandTypes?.length &&
-                !lastFilter.lockTypes?.length
+                !lastFilter.demandKey &&
+                !lastFilter.supplyKey &&
+                !lastFilter.lockType &&
+                !lastFilter.status
               "
               >全部</span
             >
@@ -458,46 +415,42 @@ onMounted(refresh)
       </template>
       <div class="filter-row">
         <div class="filter-item">
-          <label>需求类型</label>
-          <ElSelect
-            v-model="selectedDemandTypes"
-            multiple
-            filterable
+          <label>需求稳定键</label>
+          <ElInput
+            v-model="filterDemandKey"
+            placeholder="需求键 substring 模糊匹配"
             clearable
-            collapse-tags
-            placeholder="全部需求类型"
             style="width: 220px"
-          >
-            <ElOption
-              v-for="t in distinctDemandTypes"
-              :key="t"
-              :label="DEMAND_TYPE_LABELS[t] + ' (' + t + ')'"
-              :value="t"
-            />
-          </ElSelect>
+          />
+        </div>
+        <div class="filter-item">
+          <label>供给稳定键</label>
+          <ElInput
+            v-model="filterSupplyKey"
+            placeholder="供给键 substring 模糊匹配"
+            clearable
+            style="width: 220px"
+          />
         </div>
         <div class="filter-item">
           <label>锁类型</label>
           <ElSelect
-            v-model="selectedLockTypes"
-            multiple
-            filterable
-            clearable
-            collapse-tags
+            v-model="filterLockType"
             placeholder="全部锁类型"
-            style="width: 220px"
+            clearable
+            style="width: 160px"
           >
-            <ElOption
-              v-for="t in distinctLockTypes"
-              :key="t"
-              :label="LOCK_TYPE_LABELS[t] + ' (' + t + ')'"
-              :value="t"
-            />
+            <ElOption label="需求保护 (DEMAND_PROTECTION)" value="DEMAND_PROTECTION" />
+            <ElOption label="严格绑定 (STRICT_BINDING)" value="STRICT_BINDING" />
           </ElSelect>
         </div>
         <div class="filter-item">
-          <label>仅生效中</label>
-          <ElSwitch v-model="activeOnlyDraft" />
+          <label>状态</label>
+          <ElSelect v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px">
+            <ElOption label="生效中 (ACTIVE)" value="ACTIVE" />
+            <ElOption label="已释放 (RELEASED)" value="RELEASED" />
+            <ElOption label="已失效 (BROKEN)" value="BROKEN" />
+          </ElSelect>
         </div>
         <div class="filter-actions">
           <ElButton @click="resetFilters">重置</ElButton>
@@ -591,7 +544,7 @@ onMounted(refresh)
             <ElTag :type="STATUS_TAG[row.status]" size="small">
               {{
                 row.status === 'ACTIVE'
-                  ? 'Active'
+                  ? '生效中'
                   : row.status === 'RELEASED'
                     ? '已释放'
                     : '部分释放'
@@ -741,7 +694,7 @@ onMounted(refresh)
             <ElTableColumn label="供给类型" width="120" align="center">
               <template #default="{ row }">
                 <ElTag size="small">
-                  {{ HARD_LOCK_SUPPLY_TYPE_LABELS[row.supplyType as HardLockSupplyType] }}
+                  {{ HARD_LOCK_SUPPLY_TYPE_LABELS[row.supplyType] }}
                 </ElTag>
               </template>
             </ElTableColumn>
@@ -786,7 +739,7 @@ onMounted(refresh)
                 v-model="drawerReason"
                 type="textarea"
                 :rows="3"
-                placeholder="请输入释放原因（必填，落审计）"
+                placeholder="请输入释放原因（必填，便于事后追溯）"
                 maxlength="200"
                 show-word-limit
               />
@@ -861,7 +814,7 @@ onMounted(refresh)
               v-model="batchReason"
               type="textarea"
               :rows="3"
-              placeholder="请输入批量释放原因（必填，落审计）"
+              placeholder="请输入批量释放原因（必填，便于事后追溯）"
               maxlength="200"
               show-word-limit
             />
@@ -892,75 +845,13 @@ onMounted(refresh)
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: center;
 
   .page-title {
     margin: 0;
     font-size: 20px;
     font-weight: 600;
     color: #1e293b;
-  }
-
-  .page-sub {
-    margin: 4px 0 0;
-    font-size: 12px;
-    color: #94a3b8;
-  }
-}
-
-.hint-bar {
-  :deep(.el-alert__title) {
-    font-weight: 600;
-  }
-
-  .hint-text {
-    margin-left: 8px;
-    font-size: 13px;
-    color: #475569;
-
-    code {
-      padding: 0 4px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      background: #f1f5f9;
-      border-radius: 3px;
-    }
-  }
-}
-
-.kpi-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}
-
-.kpi-row-4 {
-  grid-template-columns: repeat(4, 1fr);
-}
-
-.kpi-card {
-  padding: 14px 16px;
-  background: #fff;
-  border-top: 3px solid #94a3b8;
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgb(0 0 0 / 6%);
-
-  .kpi-label {
-    font-size: 12px;
-    color: #94a3b8;
-  }
-
-  .kpi-value {
-    margin-top: 4px;
-    font-size: 22px;
-    font-weight: 600;
-    color: #1e293b;
-  }
-
-  .kpi-ratio {
-    margin-top: 2px;
-    font-size: 11px;
-    color: #cbd5e1;
   }
 }
 
@@ -1058,10 +949,6 @@ onMounted(refresh)
   font-size: 13px;
   font-weight: 600;
   color: #1e293b;
-}
-
-.lock-details {
-  /* 让明细表格占满 drawer 宽度 */
 }
 
 .release-form {

@@ -22,6 +22,8 @@
  *  - audit.ts            审计日志 DTO（U42 / §22.6 Audit / §二十四）
  *  - opm.ts              OPM 工艺规划模式 DTO（3号位 2026-09-23 T1 交付）
  *  - resourceCalendar.ts 设备资源日历 + 人工能力槽 DTO（v1.3 冻结方案 + 5号位 2026-09-24 对接函）
+ *  - material.ts         物料主数据查询 DTO（lookup 端点；Opm.vue / Domain.vue 等页面用）
+ *  - taskSplitRuleConfig.ts 执行批拆分规则 / Batch Policy 批量策略 DTO（3号位 2026-10-07 v1.0 契约）
  *  - backend-aligned.ts 后端 Core DTO 类型对齐（只读参考）
  */
 
@@ -45,4 +47,6 @@ export * from './setup'
 export * from './audit'
 export * from './opm'
 export * from './resourceCalendar'
+export * from './material'
+export * from './taskSplitRuleConfig'
 export * from './backend-aligned'

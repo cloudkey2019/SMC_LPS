@@ -347,9 +347,6 @@ onBeforeRouteLeave(async () => {
     <div class="page-header">
       <div>
         <h2 class="page-title">规则与参数维护</h2>
-        <p class="page-sub">
-          草稿可编辑；已发布 / 已停用不可直接修改；已提交 / 已批准 / 已归档为只读。
-        </p>
       </div>
       <div class="header-actions">
         <ElTooltip
@@ -381,15 +378,6 @@ onBeforeRouteLeave(async () => {
         </ElButton>
       </div>
     </div>
-
-    <!-- ===== 业务约束提示 ===== -->
-    <ElAlert type="info" :closable="false" show-icon class="hint-bar">
-      <template #title>使用说明</template>
-      <span class="hint-text">
-        优先级分段只展示<strong>段内顺序</strong>，不展示内部评分；发布规则会产生<strong>新版本</strong>，
-        历史版本不会被覆盖；已发布版本的字段不可直接修改，只能新建版本。
-      </span>
-    </ElAlert>
 
     <!-- ===== 错误条 ===== -->
     <ElAlert v-if="error" type="error" :closable="false" show-icon :title="error" />
@@ -556,7 +544,7 @@ onBeforeRouteLeave(async () => {
               <!-- 顶部状态条：当前规则集状态 + buffer dirty 状态 -->
               <ElAlert
                 v-if="!actions.canEdit && currentDetail"
-                type="info"
+                :type="detailNN.summary.status === 'ARCHIVED' ? 'warning' : 'info'"
                 :closable="false"
                 show-icon
                 class="tab-alert"
@@ -564,7 +552,23 @@ onBeforeRouteLeave(async () => {
                 <template #title>
                   {{ `${RULE_STATUS_LABELS[detailNN.summary.status]} 状态：参数只读` }}
                 </template>
-                已发布 / 已停用的版本不可直接修改；如需变更，请新建草稿 → 校验 → 发布。
+                <template
+                  v-if="
+                    detailNN.summary.status === 'PUBLISHED' ||
+                    detailNN.summary.status === 'DISABLED'
+                  "
+                >
+                  已发布 / 已停用的版本不可直接修改；如需变更，请新建草稿 → 校验 → 发布。
+                </template>
+                <template v-else-if="detailNN.summary.status === 'SUBMITTED'">
+                  已提交等待审批，参数只读；如需调整，请联系审批人或等待驳回。
+                </template>
+                <template v-else-if="detailNN.summary.status === 'APPROVED'">
+                  已审批通过、待发布，参数只读；如需调整，请新建草稿或直接发布。
+                </template>
+                <template v-else-if="detailNN.summary.status === 'ARCHIVED'">
+                  已归档，不可编辑、不可再发布；如需继续使用，请基于历史版本新建草稿。
+                </template>
               </ElAlert>
 
               <ElAlert
@@ -840,6 +844,29 @@ onBeforeRouteLeave(async () => {
                 <ElTableColumn label="发布时间" width="180">
                   <template #default="{ row }">
                     {{ row.publishedAt ? dayjs(row.publishedAt).format('YYYY-MM-DD HH:mm') : '—' }}
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="审批时间" width="180">
+                  <template #default="{ row }">
+                    {{ row.approvedAt ? dayjs(row.approvedAt).format('YYYY-MM-DD HH:mm') : '—' }}
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="审批人" width="120">
+                  <template #default="{ row }">
+                    <code v-if="row.approvedBy" class="code-tag">{{ row.approvedBy }}</code>
+                    <span v-else class="muted">—</span>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="生效起" width="170">
+                  <template #default="{ row }">
+                    {{
+                      row.effectiveFrom ? dayjs(row.effectiveFrom).format('YYYY-MM-DD HH:mm') : '—'
+                    }}
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="生效止" width="170">
+                  <template #default="{ row }">
+                    {{ row.effectiveTo ? dayjs(row.effectiveTo).format('YYYY-MM-DD HH:mm') : '—' }}
                   </template>
                 </ElTableColumn>
                 <ElTableColumn label="当前" width="80" align="center">
@@ -1137,19 +1164,6 @@ onBeforeRouteLeave(async () => {
     display: flex;
     gap: 8px;
     align-items: center;
-  }
-}
-
-.hint-bar {
-  :deep(.el-alert__title) {
-    font-weight: 600;
-  }
-
-  .hint-text {
-    margin-left: 8px;
-    font-size: 13px;
-    line-height: 1.8;
-    color: #475569;
   }
 }
 

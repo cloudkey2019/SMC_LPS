@@ -58,23 +58,26 @@ public class BusinessFactIssueController : ControllerBase
     /// 实现：全链路下推 allowedFactories 到 SQL WHERE，null = Global 全放行。
     /// </summary>
     [HttpGet]
-    public async Task<ApiResponse<List<BusinessFactIssueDto>>> QueryAll(
+    public async Task<ApiResponse<PageResult<BusinessFactIssueDto>>> QueryAll(
         [FromQuery] string? source = null,
         [FromQuery] string? materialCode = null,
         [FromQuery] string? factoryCode = null,
         [FromQuery] string? severity = null,
         [FromQuery] string? reviewStatus = null,
-        [FromQuery] int skip = 0,
-        [FromQuery] int take = 100,
+        [FromQuery] int pageIndex = 1,
+        [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
         try
         {
+            if (pageIndex <= 0) pageIndex = 1;
+            if (pageSize <= 0 || pageSize > 200) pageSize = 20;
+
             var scope = await _dataScopeService.ResolveScopeAsync(GetCurrentUserId(), cancellationToken);
 
             // 非空入参校验：用户指定的 factoryCode 必须在授权范围内
             if (!string.IsNullOrEmpty(factoryCode) && !scope.Allows(DataScopeTypes.Factory, factoryCode))
-                return ApiResponse<List<BusinessFactIssueDto>>.Fail(403, "Factory 范围越界");
+                return ApiResponse<PageResult<BusinessFactIssueDto>>.Fail(403, "Factory 范围越界");
 
             // Global 全放行（allowedFactories=null → SQL 不追加过滤）；
             // 非 Global → 下推 allowedFactories 到 SQL（BOM Issues 按 ExpectedFactory/ActualFactory；
@@ -82,16 +85,25 @@ public class BusinessFactIssueController : ControllerBase
             // 均无 Factory 归属 → 仅 Global 用户可见（fail-closed）
             var allowedFactories = scope.GetValues(DataScopeTypes.Factory);
 
-            var result = await _service.QueryAllAsync(
+            var skip = (pageIndex - 1) * pageSize;
+            var items = await _service.QueryAllAsync(
                 source, materialCode, factoryCode, severity, reviewStatus,
-                skip, take, cancellationToken, allowedFactories);
+                skip, pageSize, cancellationToken, allowedFactories);
+            var total = await _service.CountAllAsync(
+                source, materialCode, severity, reviewStatus, cancellationToken, allowedFactories);
 
-            return ApiResponse<List<BusinessFactIssueDto>>.Success(result);
+            return ApiResponse<PageResult<BusinessFactIssueDto>>.Success(new PageResult<BusinessFactIssueDto>
+            {
+                Items = items,
+                Total = total,
+                Page = pageIndex,
+                PageSize = pageSize
+            });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to query business fact issues");
-            return ApiResponse<List<BusinessFactIssueDto>>.Fail(500, $"Query failed: {ex.Message}");
+            return ApiResponse<PageResult<BusinessFactIssueDto>>.Fail(500, $"Query failed: {ex.Message}");
         }
     }
 }

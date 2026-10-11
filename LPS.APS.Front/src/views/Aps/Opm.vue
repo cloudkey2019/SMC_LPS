@@ -10,7 +10,7 @@
     DDL变更申请_v5.1.9终版（RoutingOperation.OperationPlanningMode 已加列，3号位 已落库）
 
   页面布局（与 Rules.vue / ManualEta.vue 同套 Skeleton）：
-    顶部：物料 ID 输入 + 「加载」按钮 + 三态 KPI（需资源 / 无约束 / 仅等待）
+    顶部：物料编码输入 + 「加载工序」按钮 + 紧凑三态摘要（hasList 时显示）
     主表格：RoutingOperation 列表（工序号 / 工序名 / 工艺类型 / 阶段码 / 部门 ID / 当前模式 / 行内修改）
     行内修改：ElSelect（FINITE_RESOURCE / UNCONSTRAINED / WAIT_ONLY）+ 「保存」按钮
     红线 ElAlert：
@@ -28,15 +28,13 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ElAlert,
+  ElAutocomplete,
   ElButton,
   ElCard,
-  ElCol,
   ElEmpty,
   ElForm,
   ElFormItem,
-  ElInput,
   ElOption,
-  ElRow,
   ElSelect,
   ElTable,
   ElTableColumn,
@@ -46,6 +44,8 @@ import {
 import {
   OPM_META,
   OPERATION_PLANNING_MODES,
+  materialLookupApi,
+  type MaterialLookupItem,
   type OperationPlanningMode,
   type RoutingOperationDto
 } from '@/api/aps-v1'
@@ -55,16 +55,40 @@ const store = useOpmStore()
 const { list, currentMaterialId, loading, saving, error, canView, canEdit, modeCounts } =
   storeToRefs(store)
 
-/* ===== 物料 Id 输入（页面 state；点击「加载」才发请求，对齐 ManualEta.vue 模式） ===== */
-const materialIdInput = ref<number | null>(null)
+/* ===== 物料编码输入（用户用编码查，自动补全 → 选中 → 取 masterId 调业务端点） ===== */
+const materialCodeInput = ref<string>('')
+const selectedMaterial = ref<MaterialLookupItem | null>(null)
+/** 防抖定时器句柄（避免每次按键都发请求） */
+let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null
+
+/** ElAutocomplete fetch-suggestions（带 250ms 防抖）
+ *  - queryString：当前输入框字符串（ElAutocomplete 透传）
+ *  - callback：候选列表回填钩子
+ *  - 类型由 Element Plus 的 AutocompleteFetchSuggestions prop 推断（不显式标注）
+ */
+function fetchMaterialSuggestions(
+  queryString: string,
+  callback: (items: MaterialLookupItem[]) => void
+): void {
+  if (searchDebounceHandle) clearTimeout(searchDebounceHandle)
+  searchDebounceHandle = setTimeout(async () => {
+    const items = await materialLookupApi.searchMaterials(queryString)
+    callback(items)
+  }, 250)
+}
+
+/** 选中候选：写 selectedMaterial + 同步显示编码（防 ElAutocomplete 因 value-key 替换字符串） */
+function onMaterialSelect(item: MaterialLookupItem): void {
+  selectedMaterial.value = item
+  materialCodeInput.value = item.code
+}
 
 async function onLoad(): Promise<void> {
-  const id = Number(materialIdInput.value)
-  if (!Number.isFinite(id) || id <= 0) {
-    ElMessage.warning('物料 ID 必须为正整数')
+  if (!selectedMaterial.value || selectedMaterial.value.masterId <= 0) {
+    ElMessage.warning('请先在上方选择物料编码（自动补全下拉）')
     return
   }
-  await store.load(id)
+  await store.load(selectedMaterial.value.masterId)
 }
 
 /* ===== 行内修改（每行维护一个 draftMode + draftDirty） ===== */
@@ -161,63 +185,50 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="opm-page">
-    <!-- 顶部：物料 Id 输入 + 加载按钮 -->
+    <!-- 顶部：物料编码输入 + 加载按钮 -->
     <ElCard class="opm-toolbar" shadow="never">
       <ElForm inline label-position="right" label-width="80px">
-        <ElFormItem label="物料 ID" required>
-          <ElInput
-            v-model.number="materialIdInput"
-            type="number"
-            :min="1"
-            placeholder="请输入物料 ID"
-            style="width: 240px"
+        <ElFormItem label="物料编码" required>
+          <ElAutocomplete
+            v-model="materialCodeInput"
+            :fetch-suggestions="fetchMaterialSuggestions"
+            value-key="code"
+            placeholder="请输入或选择物料编码"
+            style="width: 320px"
             clearable
+            :trigger-on-focus="true"
+            highlight-first-item
+            @select="onMaterialSelect"
             @keyup.enter="onLoad"
-          />
-          <span class="field-hint">必填；须为正整数</span>
+          >
+            <template #default="{ item }">
+              <span class="material-suggestion">
+                <span class="material-code">{{ item.code }}</span>
+                <span class="material-name">{{ item.name }}</span>
+                <span class="material-spec">{{ item.spec }} / {{ item.uom }}</span>
+              </span>
+            </template>
+          </ElAutocomplete>
         </ElFormItem>
         <ElFormItem>
           <ElButton type="primary" :loading="loading" @click="onLoad">加载工序</ElButton>
         </ElFormItem>
+        <ElFormItem v-if="hasList" class="opm-summary">
+          <ElTag :type="OPM_META.FINITE_RESOURCE.tagType" effect="dark" size="small">
+            {{ OPM_META.FINITE_RESOURCE.label }} {{ modeCounts.FINITE_RESOURCE }}
+          </ElTag>
+          <ElTag :type="OPM_META.UNCONSTRAINED.tagType" effect="dark" size="small">
+            {{ OPM_META.UNCONSTRAINED.label }} {{ modeCounts.UNCONSTRAINED }}
+          </ElTag>
+          <ElTag :type="OPM_META.WAIT_ONLY.tagType" effect="dark" size="small">
+            {{ OPM_META.WAIT_ONLY.label }} {{ modeCounts.WAIT_ONLY }}
+          </ElTag>
+          <span class="summary-total"
+            >共 <strong>{{ list.length }}</strong> 条</span
+          >
+        </ElFormItem>
       </ElForm>
     </ElCard>
-
-    <!-- 三态 KPI -->
-    <ElRow v-if="hasList" :gutter="12" class="opm-kpi">
-      <ElCol :span="8">
-        <ElCard shadow="never">
-          <div class="kpi-row">
-            <ElTag :type="OPM_META.FINITE_RESOURCE.tagType" effect="dark">
-              {{ OPM_META.FINITE_RESOURCE.label }}
-            </ElTag>
-            <span class="kpi-num">{{ modeCounts.FINITE_RESOURCE }}</span>
-          </div>
-          <div class="kpi-desc">{{ OPM_META.FINITE_RESOURCE.description }}</div>
-        </ElCard>
-      </ElCol>
-      <ElCol :span="8">
-        <ElCard shadow="never">
-          <div class="kpi-row">
-            <ElTag :type="OPM_META.UNCONSTRAINED.tagType" effect="dark">
-              {{ OPM_META.UNCONSTRAINED.label }}
-            </ElTag>
-            <span class="kpi-num">{{ modeCounts.UNCONSTRAINED }}</span>
-          </div>
-          <div class="kpi-desc">{{ OPM_META.UNCONSTRAINED.description }}</div>
-        </ElCard>
-      </ElCol>
-      <ElCol :span="8">
-        <ElCard shadow="never">
-          <div class="kpi-row">
-            <ElTag :type="OPM_META.WAIT_ONLY.tagType" effect="dark">
-              {{ OPM_META.WAIT_ONLY.label }}
-            </ElTag>
-            <span class="kpi-num">{{ modeCounts.WAIT_ONLY }}</span>
-          </div>
-          <div class="kpi-desc">{{ OPM_META.WAIT_ONLY.description }}</div>
-        </ElCard>
-      </ElCol>
-    </ElRow>
 
     <!-- 主表格 -->
     <ElCard class="opm-table-card" shadow="never">
@@ -233,7 +244,7 @@ onBeforeUnmount(() => {
 
       <ElEmpty
         v-if="!hasList && !loading"
-        description="尚未加载工序；请在上方输入物料 ID 后点击「加载工序」"
+        description="尚未加载工序；请在上方输入物料编码后点击「加载工序」"
       />
 
       <ElTable
@@ -323,28 +334,18 @@ onBeforeUnmount(() => {
 .opm-toolbar {
   margin-bottom: 12px;
 }
-.field-hint {
-  margin-left: 10px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-.opm-kpi {
-  margin-bottom: 12px;
-}
-.kpi-row {
-  display: flex;
+.opm-summary {
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: 6px;
 }
-.kpi-num {
-  font-size: 24px;
-  font-weight: 600;
+.opm-summary :deep(.el-tag) {
+  margin-right: 0;
 }
-.kpi-desc {
+.summary-total {
+  margin-left: 2px;
   color: var(--el-text-color-secondary);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 13px;
 }
 .opm-alert {
   margin-bottom: 12px;
@@ -357,6 +358,23 @@ onBeforeUnmount(() => {
 }
 .opm-table-card {
   margin-bottom: 12px;
+}
+.material-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.material-code {
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+.material-name {
+  color: var(--el-text-color-regular);
+}
+.material-spec {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 .table-header {
   display: flex;

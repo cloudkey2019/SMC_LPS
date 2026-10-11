@@ -534,9 +534,15 @@ public class LoadToPosition1AuditTest
         Say($"StartStageCode 无部门映射的需求={startMiss}/{demands.Count}" +
             $" RequiredStageCode 无部门映射的需求={reqMiss}" + (startMiss > 0 || reqMiss > 0 ? " ⚠（1号位 记 MISSING_PRODUCTION_DEPARTMENT_CONTEXT 并置 Unscheduled）" : ""));
 
-        var noChain = demands.Count(d => !chainByMat.ContainsKey(d.MaterialId));
-        Say($"无 Stage 链的需求物料={noChain}；需求物料数={demands.Select(d => d.MaterialId).Distinct().Count()}" +
-            (noChain > 0 ? " ⚠" : ""));
+        // ⚠ 两个数字必须分开报、不可相除：分子是**需求条数**、分母是**物料数**（2026-10-10 修正）——
+        // 旧写法 `无 Stage 链的需求物料=5661；需求物料数=12513` 会被读成 5661/12513=45%，
+        // 实际物料级缺口只有 132/12513≈1%，132 个料身上压了 5661 条需求。
+        var demandMats = demands.Select(d => d.MaterialId).Distinct().ToList();
+        var noChainMats = demandMats.Count(m => !chainByMat.ContainsKey(m));
+        var noChainDemands = demands.Count(d => !chainByMat.ContainsKey(d.MaterialId));
+        Say($"无 Stage 链：物料={noChainMats}/{demandMats.Count}（{noChainMats * 100.0 / Math.Max(demandMats.Count, 1):F1}%）" +
+            $" 需求条数={noChainDemands}/{demands.Count}（{noChainDemands * 100.0 / Math.Max(demands.Count, 1):F1}%）" +
+            (noChainMats > 0 ? " ⚠" : ""));
 
         Say("──────── §6 求解参数 / 冻结块投影 ────────");
         var p = req.StrategySnapshot.Parameters;

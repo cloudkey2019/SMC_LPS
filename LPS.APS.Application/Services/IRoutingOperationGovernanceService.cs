@@ -11,10 +11,14 @@ public interface IRoutingOperationGovernanceService
 {
     /// <summary>
     /// 按物料列工序（含当前 OPM 值），供 4号位 配置页面选择工序维护 OPM。
+    /// 0号位 再审核 3-NEW-P0-02：列表按操作人 Department Scope 过滤——Global 不过滤；非 Global 仅返回授权部门工序
+    /// （同物料 A/B 部门工序隔离，防跨部门读取工艺属性）；无任何部门授权 → fail-closed 空列表。
+    /// <paramref name="actorUserId"/> 为受信主体（Controller 从登录身份取）。
     /// </summary>
     /// <param name="materialId">物料主键（Material.Id），须 &gt; 0</param>
+    /// <param name="actorUserId">操作人用户 Id（后端从登录身份取，列表 Scope 过滤）</param>
     /// <param name="ct">取消令牌</param>
-    Task<IReadOnlyList<RoutingOperationDto>> ListOperationsAsync(int materialId, CancellationToken ct = default);
+    Task<IReadOnlyList<RoutingOperationDto>> ListOperationsAsync(int materialId, int actorUserId, CancellationToken ct = default);
 
     /// <summary>
     /// 维护指定工序的 OPM 值（治理侧直维护 + 审计）。三态非法 → 抛数据红线异常；工序不存在 → 抛资源不存在异常。

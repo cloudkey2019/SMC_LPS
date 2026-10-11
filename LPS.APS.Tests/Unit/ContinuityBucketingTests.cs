@@ -41,7 +41,8 @@ public class ContinuityBucketingTests
         };
 
     private static ExistingExecutionContextDto Ctx(
-        string pi, string wo, decimal remaining, string startStage = "MACH", string? startOp = null)
+        string pi, string wo, decimal remaining, string startStage = "MACH", string? startOp = null,
+        string? startOpName = null)
         => new()
         {
             ProductionInstructionNo = pi,
@@ -49,6 +50,7 @@ public class ContinuityBucketingTests
             WorkOrderStatus         = "IN_PROGRESS",
             StartStageCode          = startStage,
             StartOperationCode      = startOp,
+            StartOperationName      = startOpName,
             DerivedRemainingQty     = remaining,
             DataCutoffTime          = DateTime.Now
         };
@@ -68,6 +70,14 @@ public class ContinuityBucketingTests
         System.Action<PeggingOrchestrator.ContinuityOverCommitEvent>? onOverCommit = null)
         => PeggingOrchestrator.BucketContinuityShares(demands, contextsByPi, onOverCommit);
 
+    /// <summary>带 ERP PI 权威剩余（生产路径）——用于验 F-06 / R-21 的同 PI 累计额度。</summary>
+    private static List<LogicalProductionDemand> BucketWithPiRoot(
+        List<LogicalProductionDemand> demands,
+        Dictionary<string, IReadOnlyList<ExistingExecutionContextDto>> contextsByPi,
+        IReadOnlyDictionary<string, decimal> piRemaining,
+        System.Action<PeggingOrchestrator.ContinuityOverCommitEvent>? onOverCommit = null)
+        => PeggingOrchestrator.BucketContinuityShares(demands, contextsByPi, onOverCommit, piRemaining);
+
     [Fact]
     public void 单工单E小于Q_切出连续份额与自由份额()
     {
@@ -86,6 +96,35 @@ public class ContinuityBucketingTests
         var free = result.Single(d => !d.IsContinuation);
         free.NetOutputQty.Should().Be(70m);                             // Free = Q − E，非 Q 被扣小后的 40
         free.LogicalDemandKey.Should().Be("328_1/FREE");
+    }
+
+    [Fact]
+    public void 中间态只有工序名时_名进入片起点_交下游反查换真码()
+    {
+        // 5号位 取 A（2026-10-10）：DAG 前沿为空（前道完工、后道未开工，占 82%）时只吐
+        // `StartOperationName`、`StartOperationCode` 为 null。本处必须把**名**带进片起点，
+        // 否则下游「名→码 反查」循环（`ApplyContinuityBucketing`）拿不到输入 ⇒ 232 片恒缺码、
+        // 1号位 硬 Fail Closed 不产 Task。
+        // 注意断言的是**中间态**：此处装的仍是名，换码/留 null 由下游 resolver 负责（载荷里绝不出现名）。
+        var demands = new List<LogicalProductionDemand> { Demand("328_31", 31, "PI-C31", 100m) };
+        var ctxs = Map(Ctx("PI-C31", "WO301", 27m, "CN_ASSY", startOp: null, startOpName: "组装"));
+
+        var result = Bucket(demands, ctxs);
+
+        var continuation = result.Single(d => d.IsContinuation);
+        continuation.StartOperationCode.Should().Be("组装");   // 名，非码；下游 resolver 换取 M000
+        continuation.NetOutputQty.Should().Be(27m);
+    }
+
+    [Fact]
+    public void 有真码时_真码优先_不被名覆盖()
+    {
+        var demands = new List<LogicalProductionDemand> { Demand("328_32", 32, "PI-C32", 100m) };
+        var ctxs = Map(Ctx("PI-C32", "WO302", 27m, "CN_ASSY", startOp: "M103", startOpName: "活塞挤压"));
+
+        var result = Bucket(demands, ctxs);
+
+        result.Single(d => d.IsContinuation).StartOperationCode.Should().Be("M103");
     }
 
     [Fact]
@@ -280,5 +319,80 @@ public class ContinuityBucketingTests
 
         var free = result.Single(d => !d.IsContinuation && d.LogicalDemandKey.EndsWith("/FREE"));
         free.NetOutputQty.Should().Be(50m);                               // Free = 100 − (30+20) 必然同现
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // F-06 / PM T2-06.5 / T2-06.6（R-21）：C 桶自由侧必须受「PI 权威剩余累计」约束，
+    // 超出部分**登记**（不得只靠 Math.Min 悄悄丢掉未满足部分）。
+    // 以上全部用例不传 piRemainingByPi ⇒ 逐字旧行为；以下 4 条覆盖生产路径（带权威根）。
+    // ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Q超过PI权威剩余_自由侧封顶到PI剩余_登记不静默()
+    {
+        // F-06 缺陷面：Free = Q − ΣE 此前无上界 ⇒ Q=500 会一路照发 470，越过 PI 剩余 400。
+        var demands = new List<LogicalProductionDemand> { Demand("328_31", 31, "PI-C31", 500m) };
+        var ctxs = Map(Ctx("PI-C31", "WO001", 30m));
+        var over = new List<PeggingOrchestrator.ContinuityOverCommitEvent>();
+
+        var result = BucketWithPiRoot(demands, ctxs, new Dictionary<string, decimal> { ["PI-C31"] = 400m }, over.Add);
+
+        result.Single(d => d.IsContinuation).NetOutputQty.Should().Be(30m);
+        result.Single(d => d.LogicalDemandKey == "328_31/FREE").NetOutputQty.Should().Be(370m);  // 400 − 30，不是 470
+        result.Sum(d => d.NetOutputQty).Should().Be(400m);                                      // 合计 = PI 权威剩余
+        over.Should().ContainSingle(o => o.Kind == "PI_FREE_OVER_COMMIT" && o.ExcessQty == 100m);
+    }
+
+    [Fact]
+    public void 同PI多需求_自由侧累计不越过PI剩余_R21合规()
+    {
+        // R-21：同 PI 新增 C 批 300 + 200、合法自由份额 400 ⇒ 不允许累计 500。
+        // E=50 只由先到的需求承接一次（F-04），后到的需求整条走自由侧但受剩余额度 100 封顶。
+        var demands = new List<LogicalProductionDemand>
+        {
+            Demand("328_41", 41, "PI-C41", 300m),
+            Demand("328_42", 42, "PI-C41", 200m),
+        };
+        var ctxs = Map(Ctx("PI-C41", "WO001", 50m));
+        var over = new List<PeggingOrchestrator.ContinuityOverCommitEvent>();
+
+        var result = BucketWithPiRoot(demands, ctxs, new Dictionary<string, decimal> { ["PI-C41"] = 400m }, over.Add);
+
+        result.Sum(d => d.NetOutputQty).Should().Be(400m);                                      // 不是 500
+        result.Where(d => d.IsContinuation).Sum(d => d.NetOutputQty).Should().Be(50m);          // E 只计一次
+        result.Single(d => d.LogicalDemandKey == "328_41/FREE").NetOutputQty.Should().Be(250m); // 300 − 50
+        result.Single(d => d.LogicalDemandKey == "328_42").NetOutputQty.Should().Be(100m);      // 额度只剩 100，截小
+        over.Should().ContainSingle(o => o.Kind == "PI_FREE_OVER_COMMIT" && o.ExcessQty == 100m);
+        over.Should().Contain(o => o.Kind == "DUPLICATE_WO_SHARE");                             // 同工单份额不重复计提
+    }
+
+    [Fact]
+    public void 同PI多需求_额度充足_逐字旧行为不截()
+    {
+        var demands = new List<LogicalProductionDemand>
+        {
+            Demand("328_51", 51, "PI-C51", 100m),
+            Demand("328_52", 52, "PI-C51", 40m),
+        };
+        var ctxs = Map(Ctx("PI-C51", "WO910", 30m));
+        var over = new List<PeggingOrchestrator.ContinuityOverCommitEvent>();
+
+        var result = BucketWithPiRoot(demands, ctxs, new Dictionary<string, decimal> { ["PI-C51"] = 1_000m }, over.Add);
+
+        result.Sum(d => d.NetOutputQty).Should().Be(140m);          // 30 + 70 + 40，与无根口径一致
+        over.Should().NotContain(o => o.Kind == "PI_FREE_OVER_COMMIT");
+    }
+
+    [Fact]
+    public void 无权威根_不做同PI累计扣减_保持旧行为()
+    {
+        var demands = new List<LogicalProductionDemand> { Demand("328_61", 61, "PI-C61", 500m) };
+        var ctxs = Map(Ctx("PI-C61", "WO001", 30m));
+        var over = new List<PeggingOrchestrator.ContinuityOverCommitEvent>();
+
+        var result = Bucket(demands, ctxs, over.Add);               // 不传 piRemaining
+
+        result.Single(d => d.LogicalDemandKey == "328_61/FREE").NetOutputQty.Should().Be(470m);
+        over.Should().NotContain(o => o.Kind == "PI_FREE_OVER_COMMIT");
     }
 }

@@ -6,6 +6,8 @@
 **当前技术对齐基线**：《APS集成接口设计 v1.34》+《APS数据架构与防腐层设计方案 v1.45》  
 **当前状态**：正式变更态；待指导位Step 9复审，尚未冻结生效。
 
+> **勘误候选登记（2026-10-11 0号位 职责调整，待正式冻结回写与控制层收口）**：Routing ODS **事实**（Routing ODS 数据接入/同步、Routing Operation/Dependency/Eligibility 事实、真实 RouteCode/PathId 完整性、有效期与启停事实字段、数据质量）**Owner=3号位 特殊例外**，不属于本实施包 5号位 ODS 职责范围；5号位 继续承担 MES 执行事实与 Routing **回接**（ExistingExecution 工单级+Routing级+Slices[]）、多Slice、LastReportResourceCode、其余 ODS 及查询接口。本文件相关 Routing 契约表述（如 MaterialCode 标准化输出）属接口契约要求继续有效，不因 Owner 调整而改变。
+
 
 # 2026-10-05 本轮复杂事实与Routing回接回写
 

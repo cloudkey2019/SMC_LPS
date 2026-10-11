@@ -264,7 +264,7 @@ public class SetupWiringTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是 Setup 接线，非批决策 ⇒ 给一条 Material 级宽松策略（恒 1 批，不改变既有行为）。
-                BatchPolicies = TestBatchPolicy.Permissive(demands.Select(d => d.MaterialId)),
+                BatchPolicies = TestBatchPolicy.Permissive(demands.Select(d => d.MaterialId), 100),
                 SetupTransitionRules = rules
             }
         };
@@ -277,6 +277,7 @@ public class SetupWiringTests
         {
             LogicalDemandKey = key, PlanVersionId = 1L, DomainKey = "DOMAIN",
             AllocationSequence = alloc, DemandKey = key, MaterialId = materialId, FactoryId = 1,
+            StartStageCode = "STAGE1",
             NetOutputQty = 1m, PlannedProcessQty = 1m,
             RequiredAvailableTime = Day.AddDays(20), DemandSequence = seq
         };

@@ -61,10 +61,12 @@ public class ExecutionBatchDraftTests
         bool isContinuation = false,
         bool noSplitMerge = false,
         int materialId = MaterialId,
-        string startStageCode = "STAGE1")
+        string startStageCode = "STAGE1",
+        string? piNo = null)   // AUD-1-006：B-010 条件化保守兜底的前置①（唯一明确真实 MTS PI 来源）
         => new()
         {
             LogicalDemandKey = key,
+            ProductionInstructionNo = piNo,
             PlanVersionId = 1L,
             DomainKey = "DOMAIN",
             AllocationSequence = 1,
@@ -201,7 +203,7 @@ public class ExecutionBatchDraftTests
                 // P0-01（0号位 2026-10-08 §四）：C 桶缺有效 Batch Policy ⇒ Fail Closed。
                 //   默认给一条 Material 级宽松策略（恒 1 批，与 P0-01 之前行为逐字一致），
                 //   使**非批决策**类用例不受影响；验证 Fail Closed 本身的用例显式传 `Array.Empty<>()`。
-                BatchPolicies = batchPolicies ?? TestBatchPolicy.Permissive(MaterialId)
+                BatchPolicies = batchPolicies ?? TestBatchPolicy.Permissive(MaterialId, DeptId)
             }
         };
     }
@@ -320,6 +322,92 @@ public class ExecutionBatchDraftTests
     }
 
     /// <summary>
+    /// **AUD-1-006（0号位 2026-10-10《APS_V1_2_20261010.md》§3，P0/CONFIRMED）**：
+    ///   B-010 条件化保守兜底 —— **仅**「①唯一明确真实 MTS PI 来源 ②Policy 完全无匹配
+    ///   ③Stage 合法自由量可靠」三条**同时**成立的 C 桶，才按 `Q_C` 组织**一个** Stage 执行批候选；
+    ///   其余一律维持 Fail Closed（无 PI / 配置无效 / 无策略）。
+    ///
+    /// 本用例逐个反证五类边界：
+    ///   ① **无明确 PI 来源**（`ProductionInstructionNo` 为空）⇒ 兜底**不适用** ⇒ `IsPiContractPending=false`
+    ///      （走原 `BATCH_POLICY_MISSING`，不得因「可能是 PI」就造批）；
+    ///   ② **有 PI 来源、但前置③事实未投影**（`piFacts=null`，= 当前生产真实调用口径）⇒ 兜底适用但前置缺失
+    ///      ⇒ `IsPiContractPending=true`、不得凭空造批（`IsLegal=false`、0 批）；
+    ///   ③ **前置③成立且 `PiRemainingQty ≥ Q_C`** ⇒ 兜底**成立**：1 个 Stage 执行批候选、`Q_C` 原值
+    ///      （不伪造 Min/Max/Preferred、不额外优化拆合）；
+    ///   ④ **`Q_C > PiRemainingQty`** ⇒ 按 B-010「超出合法可用量须显式记录未满足」**不静默截断、不扩大**
+    ///      ⇒ `IsPiContractPending=true`、0 批；
+    ///   ⑤ **配置存在但无效**（`Min>Max`）⇒ `IsMissingPolicy=false` ⇒ 兜底**不得冒充**「无匹配」
+    ///      ⇒ `IsPiContractPending=false`（走原 `BATCH_POLICY_CONFLICT`）。
+    /// </summary>
+    [Fact]
+    public void PI保守兜底_仅在无匹配且有明确PI来源时适用_其余保持FailClosed()
+    {
+        // ① 无明确 PI 来源 ⇒ 兜底不适用
+        var noPi = PhaseTwoInitialScheduler.FormExecutionBatches(
+            Demand(netQty: 30m, piNo: null), policy: null);
+        Assert.False(noPi.IsLegal);
+        Assert.True(noPi.IsMissingPolicy);
+        Assert.False(noPi.IsPiContractPending);
+        Assert.Empty(noPi.Batches);
+        Assert.Contains("BATCH_POLICY_MISSING", noPi.ConflictReason);
+
+        // ② 有 PI 来源，但前置③（PI 权威剩余量事实）未投影 ⇒ 契约待核，不得造批
+        var pending = PhaseTwoInitialScheduler.FormExecutionBatches(
+            Demand(netQty: 30m, piNo: "PI-1"), policy: null, piFacts: null);
+        Assert.False(pending.IsLegal);
+        Assert.True(pending.IsPiContractPending);
+        Assert.Empty(pending.Batches);
+        Assert.Contains("B010_PI_QUANTITY_CONTRACT_PENDING", pending.ConflictReason);
+
+        // ③ 前置③成立且 PI 剩余量足量 ⇒ 兜底成立：一个 Stage 执行批候选、Q_C 原值
+        //   ⚠ V1_4 NEW-03：门禁的唯一性键 = PI 号 × 物料 × **工厂**（`Demand()` 夹具 `FactoryId = 1`）
+        //     ⇒ 事实行必须**显式**声明同厂，否则按「异厂同号 PI 不作本厂来源」拒（本夹具补全，非放宽判据）。
+        var facts = new[]
+        {
+            new PiRemainingFact
+            {
+                ProductionInstructionNo = "PI-1", MaterialId = MaterialId, FactoryId = 1,
+                PiQuantity = 100m, PiReceivedQty = 20m, PiRemainingQty = 80m
+            }
+        };
+        // V1_3 F-02：Stage 合法自由量是**独立**事实（不得以 PiRemainingQty 冒充）⇒ 必须显式给上下文。
+        var stageCtx = new PhaseTwoInitialScheduler.PiStageQuantityContext(
+            ProductionInstructionNo: "PI-1", MaterialId: MaterialId,
+            StageCode: "STAGE1", StageFreeEligibleQty: 80m);
+        var legal = PhaseTwoInitialScheduler.FormExecutionBatches(
+            Demand(netQty: 30m, piNo: "PI-1"), policy: null, piFacts: facts, piStageContext: stageCtx);
+        Assert.True(legal.IsLegal, legal.ConflictReason);
+        var single = Assert.Single(legal.Batches);
+        Assert.Equal(30m, single.NetOutputQty);
+        Assert.Equal(30m, single.PlannedProcessQty);
+
+        // ④ Q_C 超出 PI 权威剩余量 ⇒ 显式记录未满足，不静默截断
+        //   ⚠ Stage 自由量给**足**（80）⇒ 越限只可能来自 PI 量限本身，本用例才**判别在数量**上。
+        var shortFacts = new[]
+        {
+            new PiRemainingFact
+            {
+                ProductionInstructionNo = "PI-1", MaterialId = MaterialId, FactoryId = 1,
+                PiQuantity = 20m, PiReceivedQty = 0m, PiRemainingQty = 20m
+            }
+        };
+        var over = PhaseTwoInitialScheduler.FormExecutionBatches(
+            Demand(netQty: 30m, piNo: "PI-1"), policy: null, piFacts: shortFacts, piStageContext: stageCtx);
+        Assert.False(over.IsLegal);
+        Assert.True(over.IsPiContractPending);
+        Assert.Empty(over.Batches);
+        Assert.Contains("PI_LEGAL_QTY_OVER_LIMIT", over.ConflictReason);
+
+        // ⑤ 配置存在但无效（Min>Max）⇒ 不得冒充「无匹配」⇒ 不适用兜底
+        var invalid = PhaseTwoInitialScheduler.FormExecutionBatches(
+            Demand(netQty: 30m, piNo: "PI-1"), Policy(min: 6m, max: 2m), piFacts: facts);
+        Assert.False(invalid.IsLegal);
+        Assert.False(invalid.IsMissingPolicy);
+        Assert.False(invalid.IsPiContractPending);
+        Assert.Contains("BATCH_POLICY_CONFLICT", invalid.ConflictReason);
+    }
+
+    /// <summary>
     /// **0号位 (7).md 反证 ④**：`AllowSplit=false &amp;&amp; Qty &gt; Max` ⇒ **必须冲突**，**不得自行强拆**。
     ///
     /// 依据：v5.1.9 §7.3 `TaskSplitRuleConfig.AllowSplit` 逐字「0且Qty&gt;Max时返回 `BATCH_POLICY_CONFLICT`」。
@@ -412,17 +500,27 @@ public class ExecutionBatchDraftTests
     /// <summary>
     /// **0号位 (7).md 反证 ①**：同一 Domain 内**两个 Material** 用不同 Batch Policy，**不得串策略**。
     ///
-    /// 反证构造：策略集同时含 `Material 1 → Max=6` 与 `Material 2 → Max=100`。
+    /// 反证构造：策略集同时含 `Material 1 + Dept 100 → Max=6` 与 `Material 2 + Dept 100 → Max=100`。
     ///   旧实现（Domain 单值）无法区分 ⇒ 两物料共用同一策略 ⇒ 本用例 **红**；
-    ///   新实现：按 `(MaterialId, Dept)` 键控解析 ⇒ 各取各的 ⇒ 绿。
+    ///   新实现：按 `(MaterialId, 明确 Dept)` 键控解析 ⇒ 各取各的 ⇒ 绿。
+    ///
+    /// AUD-1-004 后续口径（0号位《APS_V1_2_20261010.md》§3）：两条策略都必须是**明确部门**行 ——
+    ///   请求侧传**空**默认策略集 + 补齐 Material 2 的部门上下文（否则部门解析不出 ⇒ `null`，
+    ///   与「不串策略」这一待验证命题混在一起，测试就不再鉴别）。
     /// </summary>
     [Fact]
     public void 策略解析_同Domain两物料不串策略()
     {
-        var request = BuildRequest();
+        var request = BuildRequest(
+            batchPolicies: Array.Empty<BatchPolicyRuleSnapshot>(),
+            stageDepts: new List<MaterialStageDepartmentContextDto>
+            {
+                new() { MaterialId = 1, StageCode = "STAGE1", ProductionDepartmentId = 100 },
+                new() { MaterialId = 2, StageCode = "STAGE1", ProductionDepartmentId = 100 }
+            });
         var constraints = new PhaseOneConstraintBuilder().BuildConstraints(request);
-        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, max: 6m));
-        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 2, deptId: null, max: 100m));
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, deptId: 100, max: 6m));
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 2, deptId: 100, max: 100m));
 
         var p1 = PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
             Demand(key: "D1", materialId: 1), request, constraints);
@@ -445,7 +543,9 @@ public class ExecutionBatchDraftTests
     [Fact]
     public void 策略解析_同物料不同部门不串策略()
     {
-        var request = BuildRequest(stageDepts: new List<MaterialStageDepartmentContextDto>
+        var request = BuildRequest(
+            batchPolicies: Array.Empty<BatchPolicyRuleSnapshot>(),
+            stageDepts: new List<MaterialStageDepartmentContextDto>
         {
             new() { MaterialId = 1, StageCode = "STAGE1", ProductionDepartmentId = 100 },
             new() { MaterialId = 1, StageCode = "STAGE2", ProductionDepartmentId = 200 }
@@ -465,33 +565,58 @@ public class ExecutionBatchDraftTests
     }
 
     /// <summary>
-    /// 解析回落顺序：**精确 (Material, Dept) 未命中 ⇒ 回落 (Material, null) Material 级默认**；
-    /// **都无 ⇒ null** ⇒ 调用方 **`BATCH_POLICY_MISSING` Fail Closed**
-    ///   （P0-01，0号位 2026-10-08 §四：**不得**降级成「不拆、恒 1 批」）。
-    /// **禁止**回落到「全局默认策略」（0号位 (7).md §十一 第 3 条）。
+    /// **AUD-1-004 反证**（0号位《APS_V1_2_20261010.md》§3，P0/CONFIRMED）：生效规则按
+    ///   `MaterialId + **明确** ProductionDepartmentId` **精确匹配**；
+    ///   `ProductionDepartmentId == null` 的历史行**只作兼容**，**不得**在 Solver 里重新变成
+    ///   「Material 级默认」。真实装载同口径：3号位 `TaskSplitRuleConfigProjector.Project`
+    ///   已按 v5.1.10 收口④**排除** NULL 部门行 ⇒ 快照里根本不存在 NULL 部门规则。
+    ///
+    /// 三类反证（裁词「精确匹配、NULL记录、配置存在但无效均做反证」）：
+    ///   ① **精确命中** ⇒ 返该策略；
+    ///   ② **只有 NULL 部门历史行** ⇒ **不生效** ⇒ `null`
+    ///      （旧实现把它当 Material 级默认返回 ⇒ 本断言 **红**）；
+    ///   ③ **配置存在但无效**（部门不匹配 / 物料不匹配）⇒ `null`，且**不**回落任何「全局默认」。
+    ///   ⇒ 调用方据 `null` 走 `BATCH_POLICY_MISSING` Fail Closed（P0-01），**不作**普通拆分，
+    ///     除非命中 B-010 的「唯一明确真实 MTS PI」条件化保守兜底（见 AUD-1-006，另件）。
     ///
     /// 本用例自行往 `constraints.ExecutionBatchPolicies` 里加策略 ⇒ 请求侧须传**空**策略集，
-    ///   否则夹具默认的 Material 级宽松策略会先被命中，掩盖本用例要验证的回落顺序。
+    ///   否则夹具默认策略会先被命中，掩盖本用例要验证的解析顺序。
     /// </summary>
     [Fact]
-    public void 策略解析_精确未命中回落物料级默认_再无则缺策略()
+    public void 策略解析_仅精确部门生效_NULL历史行与无效配置均不得生效()
     {
         var request = BuildRequest(batchPolicies: Array.Empty<BatchPolicyRuleSnapshot>());
         var constraints = new PhaseOneConstraintBuilder().BuildConstraints(request);
 
-        // 只有 Material 级默认（Dept=null）
-        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, deptId: null, max: 42m));
-
-        // Dept 100 精确未命中 ⇒ 回落 Material 级默认
+        // ① 精确命中 (Material 1, Dept 100) ⇒ 生效
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, deptId: 100, max: 42m));
         Assert.Equal(42m, PhaseTwoInitialScheduler
             .ResolveExecutionBatchPolicy(Demand(startStageCode: "STAGE1"), request, constraints)!
             .MaxExecutionBatchQty);
 
-        // 别的物料无任何策略 ⇒ null（缺策略，**不**回落全局默认）
+        // ② 只有 NULL 部门历史行 ⇒ **不得生效**（AUD-1-004 反证：旧实现本次会返回 999m ⇒ 红）
+        constraints.ExecutionBatchPolicies.Clear();
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, deptId: null, max: 999m));
+        Assert.Null(PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
+            Demand(startStageCode: "STAGE1"), request, constraints));
+
+        //   需求侧解析不出部门（StartStageCode 为空）⇒ 同样不得被 NULL 行兜住
+        Assert.Null(PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
+            Demand(startStageCode: ""), request, constraints));
+
+        // ③ 配置存在但无效 —— 部门不匹配（需求在 Dept 100，配置只给 200）⇒ null
+        constraints.ExecutionBatchPolicies.Clear();
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 1, deptId: 200, max: 7m));
+        Assert.Null(PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
+            Demand(startStageCode: "STAGE1"), request, constraints));
+
+        //   配置存在但无效 —— 物料不匹配 ⇒ null（**不**回落全局默认）
+        constraints.ExecutionBatchPolicies.Clear();
+        constraints.ExecutionBatchPolicies.Add(Policy(materialId: 9, deptId: 100, max: 7m));
         Assert.Null(PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
             Demand(key: "D9", materialId: 9), request, constraints));
 
-        // 空策略集 ⇒ null
+        // ④ 空策略集 ⇒ null
         constraints.ExecutionBatchPolicies.Clear();
         Assert.Null(PhaseTwoInitialScheduler.ResolveExecutionBatchPolicy(
             Demand(), request, constraints));
@@ -940,7 +1065,7 @@ public class ExecutionBatchDraftTests
             {
                 Parameters = new FiniteCapacityParameters { SchedulingDirection = "FORWARD" },
                 // P0-01（0号位 2026-10-08 §四）：缺有效 Batch Policy ⇒ Fail Closed。
-                BatchPolicies = batchPolicies ?? TestBatchPolicy.Permissive(MaterialId)
+                BatchPolicies = batchPolicies ?? TestBatchPolicy.Permissive(MaterialId, DeptId)
             }
         };
     }
@@ -1006,16 +1131,20 @@ public class ExecutionBatchDraftTests
     // ═══════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// **P1-01 机制层**：候选枚举**有界**，且 `PreferredBatchQty` / `MaxOptimizationSplitCount` /
-    ///   `MaxBatchCandidates` **真正被消费**（0号位 (7).md §八：三个字段「已经属于当前正式 Batch Policy」）。
+    /// **P1-01 机制层**：候选枚举**有界**，且 `PreferredBatchQty` 真正被消费；
+    ///   两个**技术预算**（`MaxOptimizationSplitCount` / `MaxBatchCandidates`）只收不放。
     ///
     /// 构造：`Qty=12 / Max=5 / AllowSplit` ⇒ `nMin = ceil(12/5) = 3`；`Min` 缺省 ⇒ `nMax = ∞`。
     ///   · `PreferredBatchQty=2` ⇒ `nPref = round(12/2) = 6`（合法 ⇒ 进候选）；
     ///   · 合法不拆（1）/ 2 批均 &lt; `nMin=3` ⇒ **越界被丢**（不得因优化候选越界就把需求判冲突）。
     ///   期望候选批数序列 = `[3, 6]`（首元素 = 基线）。
     ///
-    /// 反证点：三个上限字段若未被消费（旧实现「未真正参与候选搜索 / 未消费」），
-    ///   `[3,6]` 与两条 `Single` 断言**全部红**。
+    /// ⚠ **AUD-1-005 整改后口径**（0号位 2026-10-10《APS_V1_2_20261010.md》§3，P0/CONFIRMED）：
+    ///   技术预算**一律来自显式入参 `SolverBatchBudget`**，**不再从业务 `BatchPolicyRuleSnapshot` 读取**
+    ///   （B-007：旧 `Material+Department` 两列自 v5.1.10 收口① 起恒 null 且主链不得消费）。
+    ///   ⇒ 旧实现把预算写在业务策略上（`maxOptSplit` / `maxCandidates`）才会生效；本用例**显式传预算**。
+    ///
+    /// 反证点：预算若仍读业务字段 ⇒ 末段 `ignoringBusinessFields` 断言**红**（业务列设成 1 也裁不动候选）。
     /// </summary>
     [Fact]
     public void 优化候选_有界且消费Preferred与上限()
@@ -1023,25 +1152,37 @@ public class ExecutionBatchDraftTests
         var demand = Demand(netQty: 12m, routeCode: Route, pathId: Path);
         var policy = Policy(max: 5m, preferred: 2m);
 
+        // 显式技术预算（AUD-1-005）：预算给足 ⇒ 优化候选 6 不被裁。
+        static PhaseTwoInitialScheduler.SolverBatchBudget Budget(int maxOptSplit, int maxCandidates)
+            => new(maxOptSplit, maxCandidates, "test:AUD-1-005");
+
         var baseline = PhaseTwoInitialScheduler.FormExecutionBatches(demand, policy);
         Assert.True(baseline.IsLegal, baseline.ConflictReason);
         Assert.Equal(3, baseline.Batches.Count);
 
         // 候选 = 基线(3) + Preferred 附近(6)；1 / 2 批越界被丢
-        var list = PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(demand, policy, baseline);
+        var list = PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(
+            demand, policy, baseline, Budget(8, 8));
         Assert.Equal(new[] { 3, 6 }, list.Select(f => f.Batches.Count));
 
         // 上限①：MaxOptimizationSplitCount=4 ⇒ 优化候选 6 > 4 被裁掉 ⇒ 只剩基线
         var cappedBySplit = PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(
-            demand, Policy(max: 5m, preferred: 2m, maxOptSplit: 4), baseline);
+            demand, policy, baseline, Budget(4, 8));
         Assert.Single(cappedBySplit);
         Assert.Equal(3, cappedBySplit[0].Batches.Count);
 
         // 上限②：MaxBatchCandidates=1 ⇒ 只评估基线
         var cappedByCandidates = PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(
-            demand, Policy(max: 5m, preferred: 2m, maxCandidates: 1), baseline);
+            demand, policy, baseline, Budget(8, 1));
         Assert.Single(cappedByCandidates);
         Assert.Equal(3, cappedByCandidates[0].Batches.Count);
+
+        // ── AUD-1-005 反证：预算**不再从业务 Batch Policy 读取** ──
+        //   业务策略上把两列压到 1（旧实现会裁到只剩基线），显式预算给足 ⇒ 候选仍是 [3,6]。
+        //   ⇒ 若实现回退成「读业务字段」，本条**红**（B-007：历史业务列不得重新变成生效默认）。
+        var ignoringBusinessFields = PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(
+            demand, Policy(max: 5m, preferred: 2m, maxOptSplit: 1, maxCandidates: 1), baseline, Budget(8, 8));
+        Assert.Equal(new[] { 3, 6 }, ignoringBusinessFields.Select(f => f.Batches.Count));
 
         // 不展开的条件：无策略 / A/B
         Assert.Single(PhaseTwoInitialScheduler.EnumerateLegalBatchPlanCandidates(demand, null, baseline));

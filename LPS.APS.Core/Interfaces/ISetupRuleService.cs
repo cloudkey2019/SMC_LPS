@@ -11,11 +11,19 @@ namespace LPS.APS.Core.Interfaces;
 /// </summary>
 public interface ISetupRuleService
 {
-    /// <summary>按版本 + 类型列出规则（#1 GET setup-rules/exact / #5 GET setup-rules/default）</summary>
-    Task<IReadOnlyList<SetupRuleDto>> ListAsync(long ruleSetVersionId, string ruleType, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 按版本 + 类型列出规则（#1 GET setup-rules/exact / #5 GET setup-rules/default）。
+    /// 0号位 再审核 3-NEW-P0-01：列表按操作人 Department Scope 过滤——Global 不过滤；非 Global 仅返回授权部门规则；
+    /// 无任何部门授权 → fail-closed 空列表（禁止先全量再前端隐藏）。<paramref name="actorUserId"/> 为受信主体（Controller 从登录身份取）。
+    /// </summary>
+    Task<IReadOnlyList<SetupRuleDto>> ListAsync(long ruleSetVersionId, string ruleType, int actorUserId, CancellationToken cancellationToken = default);
 
-    /// <summary>按 Id 查询单条规则（读模型回执）</summary>
-    Task<SetupRuleDto?> GetByIdAsync(long id, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 按 Id 查询单条规则（读模型回执）。
+    /// 0号位 再审核 3-NEW-P0-01：非 Global 用户目标规则部门不在授权 → 抛 <see cref="Exceptions.ScopeViolationException"/>（403，
+    /// 防通过规则 Id 窥探他部门规则）。<paramref name="actorUserId"/> 为受信主体。
+    /// </summary>
+    Task<SetupRuleDto?> GetByIdAsync(long id, int actorUserId, CancellationToken cancellationToken = default);
 
     /// <summary>新增 EXACT 规则（#2）</summary>
     Task<SetupRuleDto> CreateExactAsync(SetupRuleExactInput input, int actorUserId, string actorUserCode, CancellationToken cancellationToken = default);

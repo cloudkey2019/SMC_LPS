@@ -175,7 +175,7 @@ const applyConfig = () => {
   gantt.config.drag_move = !props.readonly
   gantt.config.drag_progress = !props.readonly && props.allowProgress
   gantt.config.open_tree_initially = true
-  gantt.config.grid_width = 380
+  gantt.config.grid_width = 580
   gantt.config.bar_height = 28
   gantt.config.grid_resize = true
   gantt.config.show_progress = false // 禁用内置进度条，使用自定义进度显示
@@ -192,8 +192,7 @@ const applyConfig = () => {
     ;(gantt as any).showEvent = function () {}
   }
   gantt.config.columns = [
-    { name: 'text', label: '任务 / 订单', tree: true, width: 180 },
-    { name: 'materialName', label: '物料', align: 'left', width: 110 },
+    { name: 'text', label: '任务 / 订单 / 物料', tree: true, width: 360 },
     { name: 'start_date', label: '开始', align: 'center', width: 140 },
     { name: 'duration', label: '时长(h)', align: 'center', width: 80 }
   ]
@@ -230,7 +229,7 @@ const applyConfig = () => {
   }
 
   gantt.templates.tooltip_text = (_, __, task) => {
-    const lines = [`任务：${task.text || '-'}`, `物料：${task.materialName || '-'}`]
+    const lines = [`任务：${task.text || '-'}`]
     const note = task.changeReason || task.details
     if (note) lines.push(`说明：${note}`)
     return lines.join('<br/>')

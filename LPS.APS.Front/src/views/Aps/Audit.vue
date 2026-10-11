@@ -25,7 +25,6 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { formatUtcDateTimeSec } from '@/utils/datetime'
 import {
-  ElAlert,
   ElButton,
   ElDatePicker,
   ElDescriptions,
@@ -221,13 +220,6 @@ function prettyValue(v: string | null | undefined): string {
       <h2 class="audit-title">审计日志</h2>
       <ElButton :loading="loading" @click="loadLogs">刷新</ElButton>
     </div>
-
-    <ElAlert type="info" :closable="false" show-icon class="audit-hint">
-      <template #title>
-        回答「谁在什么时候，对什么对象，做了什么，结果如何？」。 记录只读呈现、原文展示（不展示密码
-        / Token 等敏感内容）。 登录 / 登出动作当前未纳入审计，故动作筛选中无此二项。
-      </template>
-    </ElAlert>
 
     <!-- ===== 筛选栏（4 参数与后端契约一一对应；无 Result 筛选=契约不支持） ===== -->
     <div class="audit-filters">
@@ -454,9 +446,6 @@ function prettyValue(v: string | null | undefined): string {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-}
-.audit-hint {
-  margin-bottom: 16px;
 }
 .audit-filters {
   display: flex;

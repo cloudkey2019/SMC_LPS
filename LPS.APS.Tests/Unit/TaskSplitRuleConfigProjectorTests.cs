@@ -2,6 +2,7 @@ using FluentAssertions;
 using LPS.APS.Application.Models;
 using LPS.APS.Core.Dto;
 using LPS.APS.Core.Entities.APS;
+using LPS.APS.Core.Exceptions;
 using Xunit;
 
 namespace LPS.APS.Tests.Unit;
@@ -147,16 +148,19 @@ public class TaskSplitRuleConfigProjectorTests
     }
 
     [Fact]
-    public void ExtractRules_子块缺失为空或损坏_返回空列表_failOpen装载()
+    public void ExtractRules_B010三态_缺失与空配置返回空列表_损坏抛红线异常()
     {
-        // ⑧ 为非必填块，装载 fail-open（05契约 §6.10.5，与⑦ Setup 同轨）：缺子块/为空/损坏 → 空列表。
+        // B-010 三态（3-NEW-P0-04，0号位 再审核 2026-10-10）：
+        // ① 缺子块/null/空串 → 空列表（合法未配置，非装载失败）；② 显式空配置 "BatchPolicy":[] → 空列表（明确空配置）；
+        // ③ JSON 结构损坏 → 显式失败（抛 SetupRuleDataRedLineException，不再静默空列表——「完全无匹配」≠「已有配置但损坏」）。
         // 冻结 §十五 fail-closed 属匹配终端 ④（1号位 消费侧 Strategy Snapshot 校验），装载端不承载信号位。
         TaskSplitRuleConfigProjector.ExtractRules(null).Should().BeEmpty();
         TaskSplitRuleConfigProjector.ExtractRules(string.Empty).Should().BeEmpty();
         TaskSplitRuleConfigProjector.ExtractRules("{\"Lock\":{}}").Should().BeEmpty();
         TaskSplitRuleConfigProjector.ExtractRules("{\"BatchPolicy\":null}").Should().BeEmpty();
         TaskSplitRuleConfigProjector.ExtractRules("{\"BatchPolicy\":[]}").Should().BeEmpty();
-        TaskSplitRuleConfigProjector.ExtractRules("{{{bad json").Should().BeEmpty();
+        Action act = () => TaskSplitRuleConfigProjector.ExtractRules("{{{bad json");
+        act.Should().Throw<SetupRuleDataRedLineException>();
     }
 
     [Fact]
@@ -164,5 +168,37 @@ public class TaskSplitRuleConfigProjectorTests
     {
         TaskSplitRuleConfigProjector.ExtractRules("{\"BatchPolicy\":[{\"MaterialId\":100,\"AllowSplit\":true}]}")
             .Should().ContainSingle().Which.MaterialId.Should().Be(100);
+    }
+
+    // ---------- R02（0号位 再审核反证 2026-10-10）生效窗口重叠判定（纯函数，零 DB） ----------
+
+    [Fact]
+    public void FindOverlappingWindowIds_同键重叠窗口_列出双方Id()
+    {
+        // 同 (MaterialId, Dept) 生效窗口重叠（半开区间、NULL 无界）：[2026-01-01, 2026-12-31) 与 [2026-06-01, NULL)。
+        var a = Rule(id: 1, materialId: 100, deptId: 10, effectiveFrom: new DateTime(2026, 1, 1), effectiveTo: new DateTime(2026, 12, 31));
+        var b = Rule(id: 2, materialId: 100, deptId: 10, effectiveFrom: new DateTime(2026, 6, 1), effectiveTo: null);
+
+        TaskSplitRuleConfigProjector.FindOverlappingWindowIds(new[] { a, b }).Should().BeEquivalentTo(new[] { 1, 2 });
+    }
+
+    [Fact]
+    public void FindOverlappingWindowIds_相切不重叠_返回空()
+    {
+        // 半开区间 [10:00,11:00) 与 [11:00,12:00) 相切不重叠（严格 <，与写路径唯一有效期同口径）。
+        var a = Rule(id: 1, materialId: 100, deptId: 10, effectiveFrom: new DateTime(2026, 1, 1, 10, 0, 0), effectiveTo: new DateTime(2026, 1, 1, 11, 0, 0));
+        var b = Rule(id: 2, materialId: 100, deptId: 10, effectiveFrom: new DateTime(2026, 1, 1, 11, 0, 0), effectiveTo: new DateTime(2026, 1, 1, 12, 0, 0));
+
+        TaskSplitRuleConfigProjector.FindOverlappingWindowIds(new[] { a, b }).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FindOverlappingWindowIds_不同部门或物料_不视为重叠()
+    {
+        var a = Rule(id: 1, materialId: 100, deptId: 10, effectiveFrom: new DateTime(2026, 1, 1), effectiveTo: null);
+        var b = Rule(id: 2, materialId: 100, deptId: 20, effectiveFrom: new DateTime(2026, 1, 1), effectiveTo: null);
+        var c = Rule(id: 3, materialId: 200, deptId: 10, effectiveFrom: new DateTime(2026, 1, 1), effectiveTo: null);
+
+        TaskSplitRuleConfigProjector.FindOverlappingWindowIds(new[] { a, b, c }).Should().BeEmpty();
     }
 }

@@ -156,4 +156,107 @@ public class MapPositionSnapshotsTests
         rows.Should().BeEmpty();
         issues.Should().ContainSingle(i => i.Contains("PI-1") && i.Contains("位置缺失"));
     }
+
+    // ── F-08 第二层：权威 ERP 入参自洽（PM回复1009 / T2-04.4）─────────────────────────
+
+    private static PiRemainingFact Fact(string pi, decimal qty, decimal? received) => new()
+    {
+        ProductionInstructionNo = pi,
+        MaterialId = 1001,
+        MaterialCode = "MAT-1",
+        PiQuantity = qty,
+        PiReceivedQty = received,
+        PiRemainingQty = Math.Max(qty - (received ?? 0m), 0m),
+        // 与 LoadPiRemainingFactsAsync 同口径：两个标记由源数据算出，不是调用方随手填的
+        HasMissingReceivedQty = received is null,
+        HasOverReceivedQty = received is { } r && r > qty
+    };
+
+    private static (List<ProductionInstructionPositionSnapshot> Rows, List<string> Issues) MapWithFacts(
+        decimal erpIn, PiRemainingFact? fact)
+        => PeggingOrchestrator.MapPositionSnapshots(
+            7, 42,
+            new List<ProductionInstructionPositionInput>
+            {
+                new() { ProductionInstructionNo = "PI-1", MaterialId = 1001, ErpRemainingQty = erpIn }
+            },
+            new Dictionary<string, ProductionInstructionPositionResult>
+            {
+                ["PI-1"] = new()
+                {
+                    ProductionInstructionNo = "PI-1",
+                    IsSuccess = true,
+                    Positions = new[] { Slice(PositionType.UNLOCATED, erpIn, unlocated: true) }
+                }
+            },
+            new Dictionary<string, string> { ["PI-1"] = "MAT-1" },
+            fact is null
+                ? new Dictionary<string, PiRemainingFact>()
+                : new Dictionary<string, PiRemainingFact> { ["PI-1"] = fact });
+
+    [Fact]
+    public void 第二层_入参与权威ERP一致_不打源侧异常码()
+    {
+        // ΣPosition 与入参闭合，且入参 = max(Quantity−Received,0) ⇒ 两层都干净
+        var (rows, issues) = MapWithFacts(60m, Fact("PI-1", 100m, 40m));
+
+        rows.Should().OnlyContain(r => r.IssueCode == null);
+        issues.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void 第二层_入参与权威ERP不一致_即使Position闭合也要打ERP_SOURCE_MISMATCH()
+    {
+        // 关键点：ΣPosition(=70) 与入参(=70) 闭合 ⇒ 旧实现判「无异常」；但入参本身是错的
+        // （权威应为 max(100−40,0)=60）⇒ 必须登记，这正是 F-08 说的「只证明内部闭合」。
+        var (rows, issues) = MapWithFacts(70m, Fact("PI-1", 100m, 40m));
+
+        rows.Should().OnlyContain(r => r.IssueCode == "ERP_SOURCE_MISMATCH");
+        issues.Should().ContainSingle(i => i.Contains("ERP 入参不自洽"));
+        rows.Sum(r => r.Quantity).Should().Be(70m); // 不修正事实
+    }
+
+    [Fact]
+    public void 第二层_Received倒挂_打ERP_QUANTITY_INVALID()
+    {
+        // Quantity=100 Received=130 ⇒ 权威剩余被压成 0，入参 0 与权威一致，但 Received 倒挂要留证
+        var (rows, issues) = MapWithFacts(0m, Fact("PI-1", 100m, 130m));
+
+        rows.Should().OnlyContain(r => r.IssueCode == "ERP_QUANTITY_INVALID");
+        issues.Should().ContainSingle(i => i.Contains("Received 倒挂"));
+    }
+
+    [Fact]
+    public void 第二层_入参PI查不到权威事实_打ERP_FACT_MISSING()
+    {
+        var (rows, issues) = MapWithFacts(100m, null);
+
+        rows.Should().OnlyContain(r => r.IssueCode == "ERP_FACT_MISSING");
+        issues.Should().ContainSingle(i => i.Contains("ERP 权威事实缺失"));
+    }
+
+    [Fact]
+    public void 第二层_不传权威事实_退回旧行为()
+    {
+        // piFactByPi = null ⇒ 只做 Position 侧闭合，既有调用方零行为变化
+        var (rows, issues) = PeggingOrchestrator.MapPositionSnapshots(
+            7, 42,
+            new List<ProductionInstructionPositionInput>
+            {
+                new() { ProductionInstructionNo = "PI-1", MaterialId = 1001, ErpRemainingQty = 100m }
+            },
+            new Dictionary<string, ProductionInstructionPositionResult>
+            {
+                ["PI-1"] = new()
+                {
+                    ProductionInstructionNo = "PI-1",
+                    IsSuccess = true,
+                    Positions = new[] { Slice(PositionType.UNLOCATED, 100m, unlocated: true) }
+                }
+            },
+            new Dictionary<string, string> { ["PI-1"] = "MAT-1" });
+
+        rows.Should().OnlyContain(r => r.IssueCode == null);
+        issues.Should().BeEmpty();
+    }
 }

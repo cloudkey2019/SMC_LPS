@@ -223,7 +223,7 @@
     apsCandidate: 'Candidate 对比与确认',
     apsRules: '规则与参数维护',
     apsPi: 'PI Position/供给追溯',
-    apsManualEta: '人工到货 ETA',
+    apsManualEta: '人工到货时间',
     apsDemandProtection: '需求保护释放'
   },
   permission: {

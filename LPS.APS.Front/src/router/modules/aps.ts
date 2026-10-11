@@ -113,7 +113,7 @@ export const apsV1Routes: AppRouteRecordRaw[] = [
         component: () => import('@/views/Aps/Ctp.vue'),
         name: 'ApsCtp',
         meta: {
-          title: 'CTP/插单评估',
+          title: '插单评估',
           icon: 'vi-mdi:target',
           stage: 'B',
           acceptance: 'U08 / U09 / U11 / U15',
@@ -191,7 +191,7 @@ export const apsV1Routes: AppRouteRecordRaw[] = [
         component: () => import('@/views/Aps/ManualEta.vue'),
         name: 'ApsManualEta',
         meta: {
-          title: '人工到货 ETA',
+          title: '人工到货时间',
           icon: 'vi-mdi:truck-delivery-outline',
           stage: 'D',
           acceptance: 'P1-7 / 4号位文档第 11 节',
@@ -220,10 +220,11 @@ export const apsV1Routes: AppRouteRecordRaw[] = [
         }
       },
 
-      /* ===== 阶段 C：策略配置（v1.4 §十八.10 长期欠账收口；独立路由不混入 Rules.vue）=====
+      /* ===== 阶段 C：策略配置（v1.6 4号位 补登，待 0号位 拍板；历史引用 v1.4 §十八.10）=====
+       * @see frontNew/docs/project_strategy_profile_audit.md（10-10 审查报告 + 7 项问题）
        * 后端 12 端点全在 /api/governance/strategy-profile/* + /api/governance/strategy-profiles
        * 6 态状态机 + IsDefault 红线（UQ_StrategyProfileVersion_DefaultPublished）
-       * 权限码：aps.strategy.{view, edit, publish}（不要用 aps.rule.* 错位）
+       * 权限码：aps.strategy.{view, edit, publish}（DDL 真值见 PermissionCodes.cs:54-58）
        *   - VIEWER 仅持 view，可读
        *   - aps.admin.aps 持 view + edit，可维护 DRAFT
        *   - aps.admin.system 持全部，可发布
@@ -237,7 +238,7 @@ export const apsV1Routes: AppRouteRecordRaw[] = [
           icon: 'vi-mdi:tune-variant',
           noCache: true,
           stage: 'C',
-          acceptance: 'v1.4 §十八.10',
+          acceptance: 'v1.6 4号位 补登',
           // 路由守卫 OR 语义：持任一权限码即可访问（VIEWER 持 view 可进）
           apsRequiredPermissions: ['aps.strategy.view', 'aps.strategy.edit', 'aps.strategy.publish']
         }
@@ -391,6 +392,33 @@ export const apsV1Routes: AppRouteRecordRaw[] = [
           // 路由守卫 OR 语义：持任一权限码即可访问
           //  - aps.rule.view（VIEWER / RULE_ADMIN / RULE_PUBLISHER / SYSTEM_ADMIN 全持）
           //  - aps.rule.edit（仅 RULE_ADMIN / RULE_PUBLISHER / SYSTEM_ADMIN 持）
+          apsRequiredPermissions: ['aps.rule.view', 'aps.rule.edit']
+        }
+      },
+
+      /* ===== 阶段 C：TaskSplitRuleConfig / Batch Policy 批量策略治理（3号位 2026-10-07 v1.0 契约）=====
+       *  - 后端 4 端点：GET/POST /api/governance/task-split-rule-configs + PUT/DELETE /{id}
+       *  - 业务键：MaterialId + ProductionDepartmentId（NULL 部门 = Material 级默认）
+       *  - 两级承接：主题表 CRUD 即最终态 + 发布时投影进 FrozenStrategySnapshot.BatchPolicy 子块
+       *  - 权限：view=aps.rule.view / edit=aps.rule.edit（**复用 Rule 码**，零权限种子变更）
+       *  - 路由级 OR 语义：持任一权限码即可访问（VIEWER 持 view 可进）
+       *  - 红线（v5.1.8.3 §）：
+       *    #5 接口即契约：本路由不嵌入 Rules.vue，独立维护页（避免混入规则参数主表）
+       *    #6 仅 DML（POST/PUT/DELETE/GET），无 DDL；列扩展由 2号位 owner
+       *    兼容字段 ResourceGroupId / MOQ / EOQ 不进 DTO/Request
+       *  - 依据：frontNew/docs/3号位致4号位_TaskSplitRuleConfig维护接口契约_v1.0_20261007.md
+       */
+      {
+        path: 'task-split-rule-config',
+        component: () => import('@/views/Aps/TaskSplitRuleConfig.vue'),
+        name: 'ApsTaskSplitRuleConfig',
+        meta: {
+          title: '批策略',
+          icon: 'vi-mdi:stack-exchange',
+          noCache: true,
+          stage: 'C',
+          acceptance: '3号位 v1.0 契约 / Batch Policy 治理 / DB-003',
+          // 路由守卫 OR 语义：持任一权限码即可访问（与 OPM 一致，复用 Rule 码）
           apsRequiredPermissions: ['aps.rule.view', 'aps.rule.edit']
         }
       },

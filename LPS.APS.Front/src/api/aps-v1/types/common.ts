@@ -98,11 +98,13 @@ export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
 /**
  * 4号位文档第 15 节：PlanVersion 状态机
  *
- *  - BUILDING    排程构建中
- *  - ACTIVE      当前生效版本（PMC 只读这个）
- *  - CANDIDATE   候选版本（PMC 可对比 + 最小人工确认）
- *  - FAILED      构建失败
- *  - ARCHIVED    已归档
+ *  - BUILDING       排程构建中
+ *  - ACTIVE         当前生效版本（PMC 只读这个）
+ *  - CANDIDATE      候选版本（PMC 可对比 + 最小人工确认）
+ *  - FAILED         构建失败
+ *  - ARCHIVED       已归档
+ *  - Computed       D7 候选执行完成终态（2号位 ExecuteDomainAsync 写，@see lps/.../SchedulingOrchestrator.cs:601）
+ *  - ComputeFailed  D8 失败终态（同上 isSuccess=false 分支；SchedulingOrchestrator.cs:685）
  *
  * 注：CTP / INSERT_IMPACT_ANALYSIS 永远不能成为 PlanVersion（验收 U11/U12），
  *     因此枚举里也不包含这两种业务用途。
@@ -112,7 +114,9 @@ export const PLAN_VERSION_STATUSES = [
   'ACTIVE',
   'CANDIDATE',
   'FAILED',
-  'ARCHIVED'
+  'ARCHIVED',
+  'Computed',
+  'ComputeFailed'
 ] as const
 
 export type PlanVersionStatus = (typeof PLAN_VERSION_STATUSES)[number]
@@ -123,7 +127,23 @@ export const PLAN_VERSION_STATUS_LABELS: Record<PlanVersionStatus, string> = {
   ACTIVE: '生效中',
   CANDIDATE: '候选',
   FAILED: '构建失败',
-  ARCHIVED: '已归档'
+  ARCHIVED: '已归档',
+  Computed: '已求解',
+  ComputeFailed: '求解失败'
+}
+
+/** UI 层用：PlanVersion 状态 → ElTag type（4号位 全前端 owner：版本切换条 / Overview 状态徽章共用） */
+export const PLAN_VERSION_STATUS_TAG: Record<
+  PlanVersionStatus,
+  'success' | 'primary' | 'warning' | 'info' | 'danger'
+> = {
+  BUILDING: 'primary',
+  ACTIVE: 'success',
+  CANDIDATE: 'warning',
+  FAILED: 'danger',
+  ARCHIVED: 'info',
+  Computed: 'success',
+  ComputeFailed: 'danger'
 }
 
 /** 4号位文档第 6 节：Task 不可移动标识（UI 显示，不允许拖动改库） */

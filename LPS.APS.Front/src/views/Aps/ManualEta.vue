@@ -23,13 +23,21 @@
  *  - 当前状态：与 9月13日 撤销状态一致
  */
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useManualEtaStore } from '@/store/modules/aps/manualEta'
 import { useApsAuthStore } from '@/store/modules/aps/auth'
-import type { ManualEtaDto, ManualEtaListFilter, ManualEtaUpsertInput } from '@/api/aps-v1'
+import { materialLookupApi } from '@/api/aps-v1/materialLookup'
+import { manualEtaApi } from '@/api/aps-v1/manualEta'
+import type {
+  ManualEtaDto,
+  ManualEtaListFilter,
+  ManualEtaUpsertInput,
+  MaterialLookupItem,
+  WarehouseOption
+} from '@/api/aps-v1'
 
 import {
   ElAlert,
@@ -44,6 +52,7 @@ import {
   ElFormItem,
   ElInput,
   ElOption,
+  ElPagination,
   ElSelect,
   ElSwitch,
   ElTable,
@@ -64,7 +73,10 @@ const {
   activeCount,
   cancelledCount,
   distinctPoNos,
-  distinctMaterialCodes
+  distinctMaterialCodes,
+  pageIndex,
+  pageSize,
+  total
 } = storeToRefs(store)
 
 /* ===== 权限门控（v1.2 §23.1 权限码门控）=====
@@ -82,14 +94,18 @@ const selectedMaterialCodes = ref<string[]>([])
 function syncFilterDraft(): void {
   filterDraft.value = {
     poNos: selectedPoNos.value.length ? [...selectedPoNos.value] : undefined,
-    materialIds: undefined, // DTO 是 materialIds（number[]），UI 用 code 选，简单起见先传 undefined
+    materialIds: undefined, // 物料编码路径：UI 用 code 选 → 后端 materialCodes 筛（10-07 ME10）
+    materialCodes: selectedMaterialCodes.value.length
+      ? [...selectedMaterialCodes.value]
+      : undefined,
     activeOnly: activeOnlyDraft.value
   }
 }
 
 async function applyFilter(): Promise<void> {
   syncFilterDraft()
-  await store.load(filterDraft.value)
+  // 筛选条件变化 → 重置到第 1 页（避免留在第 N 页时筛选无交集导致空态错觉）
+  await store.load({ ...filterDraft.value, pageIndex: 1 })
 }
 
 function resetFilters(): void {
@@ -100,6 +116,16 @@ function resetFilters(): void {
 
 async function refresh(): Promise<void> {
   await store.load()
+}
+
+/** 分页：当前页切换 */
+async function onPageChange(p: number): Promise<void> {
+  await store.load({ ...store.lastFilter, pageIndex: p })
+}
+
+/** 分页：每页条数切换 → 回到第 1 页 */
+async function onSizeChange(s: number): Promise<void> {
+  await store.load({ ...store.lastFilter, pageIndex: 1, pageSize: s })
 }
 
 /* ===== 状态映射 ===== */
@@ -132,21 +158,101 @@ const formRef = ref<{
 /** Drawer 表单（新增 + 编辑 共用）
  *  - materialId / receivingWarehouse 后端必填（@see lps/LPS.APS.Core/Dto/ProcurementManualEtaOverride.cs）
  *  - 编辑时由 dto 回填；新增时由"取上一行"或 manualEtaApi.getByPoLine 预填
+ *  - materialKey：物料下拉选中的 masterId（number）；watch 同步 → materialId + materialCode
  */
 const form = ref({
   poNo: '',
   lineNo: 1,
   materialId: 0,
   materialCode: '',
+  materialKey: null as number | null,
   receivingWarehouse: '',
   manualEta: new Date(Date.now() + 7 * 86400_000).toISOString(),
   remark: ''
 })
+
+/** 物料下拉数据源（real API，10-07 接入）
+ *  - 端点：GET /api/governance/lookups/materials?activeOnly=true
+ *  - 复用 materialLookupApi.listActiveMaterials（与 CTP 同源）
+ *  - 失败兜底：空数组（下拉空态提示「暂无物料主数据」）
+ */
+const materialOptions = ref<MaterialLookupItem[]>([])
+async function loadMaterialOptions(): Promise<void> {
+  try {
+    materialOptions.value = await materialLookupApi.listActiveMaterials()
+  } catch {
+    materialOptions.value = []
+  }
+}
+
+/** 收货仓库下拉数据源（5号位 2026-10-08 落地）
+ *  - 端点：GET /api/procurement-manual-eta/warehouses?search=（非 /api/governance/lookups/warehouses）
+ *  - 数据源 ext_MES_ProcessCode_View；返回 [{ code, name }]
+ *  - 失败兜底：空数组（提示「暂无仓库数据」）
+ */
+const warehouseOptions = ref<WarehouseOption[]>([])
+async function loadWarehouseOptions(): Promise<void> {
+  try {
+    warehouseOptions.value = await manualEtaApi.listWarehouses()
+  } catch {
+    warehouseOptions.value = []
+  }
+}
+
+/** 仓库编码 → name 映射（用于表格列展示）
+ *  - 数据源 warehouseOptions（已通过 listWarehouses 异步加载）
+ *  - 兜底：name 找不到时只显示 code（脏数据 / 测试输入 / view 未覆盖）
+ */
+const warehouseNameMap = computed(() => {
+  const m = new Map<string, string>()
+  for (const w of warehouseOptions.value) m.set(w.code, w.name)
+  return m
+})
+
+/** 物料下拉 watch：选中 masterId → 同步 materialId + materialCode */
+watch(
+  () => form.value.materialKey,
+  (key) => {
+    if (key == null) {
+      form.value.materialId = 0
+      form.value.materialCode = ''
+      return
+    }
+    const found = materialOptions.value.find((m) => m.masterId === key)
+    if (found) {
+      form.value.materialId = found.masterId
+      form.value.materialCode = found.code
+    }
+  }
+)
+
+/** 兜底 watch：options 异步加载完后，若 materialKey 还是 null 但 materialId 有值（编辑态），反查填回 */
+watch(
+  () => materialOptions.value,
+  (opts) => {
+    if (form.value.materialKey == null && form.value.materialId > 0) {
+      const found = opts.find((m) => m.masterId === form.value.materialId)
+      if (found) form.value.materialKey = found.masterId
+    }
+  }
+)
+
+/** 物料下拉 v-model 包装：null ↔ undefined 转换（ElSelect 类型不允许 null，但 form 内部用 null 区分"未选"）
+ *  - getter：form.materialKey ?? undefined
+ *  - setter：v → form.materialKey = v ?? null
+ */
+const materialKeyModel = computed<number | undefined>({
+  get: () => form.value.materialKey ?? undefined,
+  set: (v) => {
+    form.value.materialKey = v ?? null
+  }
+})
+
 /** 字段级错误 */
 const formRules = {
   poNo: [
-    { required: true, message: '请输入 PO 号', trigger: 'blur' },
-    { min: 3, message: 'PO 号至少 3 个字符', trigger: 'blur' }
+    { required: true, message: '请输入采购订单', trigger: 'blur' },
+    { min: 3, message: '采购订单至少 3 个字符', trigger: 'blur' }
   ],
   lineNo: [
     { required: true, type: 'number' as const, min: 1, message: '行号 ≥ 1', trigger: 'blur' }
@@ -154,11 +260,12 @@ const formRules = {
   materialId: [
     { required: true, type: 'number' as const, min: 1, message: '物料 ID ≥ 1', trigger: 'blur' }
   ],
+  materialKey: [{ required: true, message: '请选择物料', trigger: 'change' }],
   receivingWarehouse: [
-    { required: true, message: '请输入收货仓库', trigger: 'blur' },
+    { required: true, message: '请选择收货仓库', trigger: 'change' },
     { min: 2, message: '仓库编码至少 2 个字符', trigger: 'blur' }
   ],
-  manualEta: [{ required: true, message: '请选择 ETA 时间', trigger: 'change' }]
+  manualEta: [{ required: true, message: '请选择到货时间', trigger: 'change' }]
 }
 
 function openCreate(): void {
@@ -168,6 +275,7 @@ function openCreate(): void {
     lineNo: 1,
     materialId: 0,
     materialCode: '',
+    materialKey: null,
     receivingWarehouse: '',
     manualEta: new Date(Date.now() + 7 * 86400_000).toISOString(),
     remark: ''
@@ -178,11 +286,14 @@ function openCreate(): void {
 
 function openEdit(dto: ManualEtaDto): void {
   drawerMode.value = 'edit'
+  // 编辑态：优先用 materialId 反查 materialKey；若 options 还没加载完（异步），留 null 由 watch 兜底回填
+  const found = materialOptions.value.find((m) => m.masterId === dto.materialId)
   form.value = {
     poNo: dto.poNo,
     lineNo: dto.lineNo,
     materialId: dto.materialId,
     materialCode: dto.materialCode ?? '',
+    materialKey: found ? found.masterId : null,
     receivingWarehouse: dto.receivingWarehouse ?? '',
     manualEta: dto.manualEta,
     remark: dto.remark ?? ''
@@ -262,7 +373,11 @@ async function handleCancel(dto: ManualEtaDto): Promise<void> {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  loadMaterialOptions()
+  loadWarehouseOptions()
+})
 </script>
 
 <template>
@@ -270,23 +385,14 @@ onMounted(refresh)
     <!-- ===== 顶部 ===== -->
     <div class="page-header">
       <div>
-        <h2 class="page-title">人工到货 ETA</h2>
-        <p class="page-sub"> PO 行级人工到货时间 —— 只写人工填写的值，有效到货时间由系统计算 </p>
+        <h2 class="page-title">人工到货时间</h2>
+        <p class="page-sub">仅人工值；有效到货时间由系统计算</p>
       </div>
       <ElButton :loading="loading" @click="refresh">
         <Icon icon="vi-ep:refresh" />
         刷新
       </ElButton>
     </div>
-
-    <!-- ===== 文档约束提示 ===== -->
-    <ElAlert type="info" :closable="false" show-icon class="hint-bar">
-      <template #title>使用说明</template>
-      <span class="hint-text">
-        本页只维护人工填写的到货时间。有效到货时间、最终可用时间由系统计算，不在此页维护。 每次新增
-        / 更新 / 取消都会留下审计记录，可在「审计日志」中追溯。
-      </span>
-    </ElAlert>
 
     <!-- ===== 错误条 ===== -->
     <ElAlert v-if="error" type="error" :closable="false" show-icon :title="`加载失败：${error}`" />
@@ -324,7 +430,7 @@ onMounted(refresh)
       </template>
       <div class="filter-row">
         <div class="filter-item">
-          <label>PO 号</label>
+          <label>采购订单</label>
           <ElSelect
             v-model="selectedPoNos"
             multiple
@@ -338,7 +444,7 @@ onMounted(refresh)
           </ElSelect>
         </div>
         <div class="filter-item">
-          <label>物料编码</label>
+          <label>物料</label>
           <ElSelect
             v-model="selectedMaterialCodes"
             multiple
@@ -370,7 +476,7 @@ onMounted(refresh)
     <ElCard class="panel">
       <template #header>
         <div class="panel-header">
-          <span>人工到货时间列表（{{ list.length }} 条）</span>
+          <span>人工到货时间列表（{{ list.length }} 条 / 共 {{ total }} 条）</span>
           <span class="hint-text">点击行可编辑 / 取消</span>
         </div>
       </template>
@@ -386,22 +492,27 @@ onMounted(refresh)
         row-class-name="row-clickable"
         style="width: 100%"
       >
-        <ElTableColumn label="PO 号" prop="poNo" width="140" />
+        <ElTableColumn label="采购订单" prop="poNo" width="140" />
         <ElTableColumn label="行号" prop="lineNo" width="70" align="center" />
-        <ElTableColumn label="物料编码" prop="materialCode" width="110" />
-        <ElTableColumn label="物料名称" prop="materialName" min-width="140">
+        <ElTableColumn label="物料" min-width="160">
           <template #default="{ row }">
-            <span v-if="row?.materialName">{{ row.materialName }}</span>
-            <span v-else class="muted">-</span>
+            <span>{{ row?.materialCode ?? '-' }}</span>
+            <span v-if="row?.materialName" class="muted small"> · {{ row.materialName }}</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="收货仓库" prop="receivingWarehouse" width="120">
+        <ElTableColumn label="收货仓库" min-width="160">
           <template #default="{ row }">
             <span v-if="row?.receivingWarehouse">{{ row.receivingWarehouse }}</span>
             <span v-else class="muted">-</span>
+            <span
+              v-if="row?.receivingWarehouse && warehouseNameMap.get(row.receivingWarehouse)"
+              class="muted small"
+            >
+              · {{ warehouseNameMap.get(row.receivingWarehouse) }}
+            </span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="人工 ETA" width="150">
+        <ElTableColumn label="到货时间" width="150">
           <template #default="{ row }">
             <span :class="{ expired: isExpired(row.manualEta) && row.isActive }">
               {{ dayjs(row.manualEta).format('YYYY-MM-DD') }}
@@ -448,6 +559,18 @@ onMounted(refresh)
           </template>
         </ElTableColumn>
       </ElTable>
+      <div v-if="total > 0" class="pagination-bar">
+        <ElPagination
+          :current-page="pageIndex"
+          :page-size="pageSize"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @current-change="onPageChange"
+          @size-change="onSizeChange"
+        />
+      </div>
     </ElCard>
 
     <!-- ===== 新增 / 编辑 Drawer ===== -->
@@ -460,11 +583,6 @@ onMounted(refresh)
       @close="closeDrawer"
     >
       <div class="manual-eta-drawer">
-        <ElAlert type="info" :closable="false" show-icon class="form-hint">
-          <template #title>{{ drawerMode === 'new' ? '新增' : '编辑' }}（Upsert）</template>
-          <span> 按采购单号 + 行号去重：同一个采购单行再次保存会覆盖原记录，无需先删除。 </span>
-        </ElAlert>
-
         <ElForm
           ref="formRef"
           :model="form"
@@ -473,19 +591,12 @@ onMounted(refresh)
           label-position="right"
           class="manual-eta-form"
         >
-          <ElFormItem label="PO 号" prop="poNo">
+          <ElFormItem label="采购订单" prop="poNo">
             <ElInput
               v-model="form.poNo"
               :disabled="drawerMode === 'edit'"
               placeholder="例如：PO-2026-1001"
             />
-            <div class="field-hint">
-              {{
-                drawerMode === 'edit'
-                  ? '编辑态下 PO + 行号不可改（复合主键）'
-                  : '与 LineNo 组成复合主键'
-              }}
-            </div>
           </ElFormItem>
           <ElFormItem label="行号" prop="lineNo">
             <ElInput
@@ -496,23 +607,40 @@ onMounted(refresh)
               placeholder="≥ 1"
             />
           </ElFormItem>
-          <ElFormItem label="物料 ID" prop="materialId">
-            <ElInput
-              v-model.number="form.materialId"
-              type="number"
-              :min="1"
-              placeholder="例如：200"
-            />
-            <div class="field-hint">必填</div>
-          </ElFormItem>
-          <ElFormItem label="物料编码" prop="materialCode">
-            <ElInput v-model="form.materialCode" placeholder="可选：M-001（前端展示用）" />
+          <ElFormItem label="物料" prop="materialKey">
+            <ElSelect
+              v-model="materialKeyModel"
+              :disabled="drawerMode === 'edit'"
+              placeholder="选择物料"
+              filterable
+              clearable
+              style="width: 100%"
+            >
+              <ElOption
+                v-for="m in materialOptions"
+                :key="m.masterId"
+                :label="`${m.code} / ${m.name}`"
+                :value="m.masterId"
+              />
+            </ElSelect>
           </ElFormItem>
           <ElFormItem label="收货仓库" prop="receivingWarehouse">
-            <ElInput v-model="form.receivingWarehouse" placeholder="例如：WH-SUZ-01" />
-            <div class="field-hint">必填</div>
+            <ElSelect
+              v-model="form.receivingWarehouse"
+              placeholder="请选择收货仓库"
+              filterable
+              clearable
+              style="width: 100%"
+            >
+              <ElOption
+                v-for="w in warehouseOptions"
+                :key="w.code"
+                :label="`${w.code} / ${w.name}`"
+                :value="w.code"
+              />
+            </ElSelect>
           </ElFormItem>
-          <ElFormItem label="人工 ETA" prop="manualEta">
+          <ElFormItem label="到货时间" prop="manualEta">
             <ElDatePicker
               v-model="form.manualEta"
               type="datetime"
@@ -520,14 +648,13 @@ onMounted(refresh)
               placeholder="选择到货预期时间"
               style="width: 100%"
             />
-            <div class="field-hint">仅人工值；有效 ETA / 可用时间由系统计算</div>
           </ElFormItem>
           <ElFormItem label="备注">
             <ElInput
               v-model="form.remark"
               type="textarea"
               :rows="3"
-              placeholder="可选（写入审计）"
+              placeholder="可选"
               maxlength="200"
               show-word-limit
             />
@@ -659,6 +786,12 @@ onMounted(refresh)
   padding: 20px 0;
 }
 
+.pagination-bar {
+  display: flex;
+  padding: 16px 0 4px;
+  justify-content: flex-end;
+}
+
 .muted {
   color: #94a3b8;
 }
@@ -724,20 +857,10 @@ onMounted(refresh)
   gap: 12px;
 }
 
-.form-hint {
-  margin-bottom: 4px;
-}
-
 .manual-eta-form {
   :deep(.el-form-item) {
     margin-bottom: 14px;
   }
-}
-
-.field-hint {
-  margin-top: 4px;
-  font-size: 11px;
-  color: #94a3b8;
 }
 
 .audit-block {

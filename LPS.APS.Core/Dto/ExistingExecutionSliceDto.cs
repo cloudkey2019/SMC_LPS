@@ -35,6 +35,15 @@ public sealed class ExistingExecutionSliceDto
     public string? StartOperationCode { get; init; }
 
     /// <summary>
+    /// 该执行起点工序名（MES 工序名；可空）
+    ///
+    /// 用途：DAG 拓扑前沿为空（如"前道完工、后道未开工"——唯一未完工工序 GoodQty=0 不构成前沿）时，
+    ///      StartOperationCode 为 null，消费方（2号位）按「该 PI 路由集内 名→码 + 本工单 RouteCode 消歧」反查。
+    /// ⚠️ 只装工序名，不得在此填码；取不到就留 null。
+    /// </summary>
+    public string? StartOperationName { get; init; }
+
+    /// <summary>
     /// 该执行起点要继续生产的数量（MES 执行剩余切片的份额）
     ///
     /// 来源：OperationProgress.RemainingQty 或 StageProgress 比例拆分

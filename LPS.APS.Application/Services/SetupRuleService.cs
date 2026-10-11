@@ -64,15 +64,34 @@ public sealed class SetupRuleService : ISetupRuleService
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<SetupRuleDto>> ListAsync(long ruleSetVersionId, string ruleType, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SetupRuleDto>> ListAsync(long ruleSetVersionId, string ruleType, int actorUserId, CancellationToken ct = default)
     {
         var version = await GetVersionOrThrowAsync(ruleSetVersionId, ct);
         var rules = SetupTransitionRuleProjector.ExtractRules(version.ContentSnapshotJson);
         var codes = new MasterDataCodeCache(_masterDataLookup, ct);
 
+        // 3-NEW-P0-01（0号位 再审核）：列表按操作人 Department Scope 过滤——Global 不过滤；
+        // 非 Global 仅返回授权部门规则（越权部门规则隐藏，防通过版本 Id 窥探）；无任何部门授权 → fail-closed 空列表。
+        var allowedDeptCodes = await ResolveAllowedDeptCodesAsync(actorUserId, ct);
+
         var result = new List<SetupRuleDto>();
         foreach (var rule in rules.Where(r => r.RuleType == ruleType))
         {
+            if (allowedDeptCodes is not null)
+            {
+                if (allowedDeptCodes.Count == 0)
+                {
+                    // 非 Global 且无任何 Department 授权 → fail-closed 空列表（禁止先全量返回再前端隐藏）。
+                    return new List<SetupRuleDto>();
+                }
+
+                var deptCode = await codes.DepartmentCodeAsync(rule.ProductionDepartmentId);
+                if (string.IsNullOrWhiteSpace(deptCode) || !allowedDeptCodes.Contains(deptCode))
+                {
+                    continue;
+                }
+            }
+
             result.Add(await ProjectAsync(rule, version.Status, codes));
         }
 
@@ -80,7 +99,7 @@ public sealed class SetupRuleService : ISetupRuleService
     }
 
     /// <inheritdoc />
-    public async Task<SetupRuleDto?> GetByIdAsync(long id, CancellationToken ct = default)
+    public async Task<SetupRuleDto?> GetByIdAsync(long id, int actorUserId, CancellationToken ct = default)
     {
         var (ruleSetVersionId, _) = SetupTransitionRuleProjector.ParseRuleId(id);
         var version = await GetVersionOrThrowAsync(ruleSetVersionId, ct);
@@ -88,6 +107,17 @@ public sealed class SetupRuleService : ISetupRuleService
         if (rule is null)
         {
             return null;
+        }
+
+        // 3-NEW-P0-01：非 Global 用户目标规则部门不在授权 → 403（防通过规则 Id 窥探他部门规则）。
+        var allowedDeptCodes = await ResolveAllowedDeptCodesAsync(actorUserId, ct);
+        if (allowedDeptCodes is not null)
+        {
+            var deptCode = await _masterDataLookup.GetDepartmentCodeAsync(rule.ProductionDepartmentId, ct);
+            if (allowedDeptCodes.Count == 0 || string.IsNullOrWhiteSpace(deptCode) || !allowedDeptCodes.Contains(deptCode))
+            {
+                throw new ScopeViolationException(DataScopeTypes.Department, rule.ProductionDepartmentId.ToString());
+            }
         }
 
         return await ProjectAsync(rule, version.Status, new MasterDataCodeCache(_masterDataLookup, ct));
@@ -589,6 +619,28 @@ public sealed class SetupRuleService : ISetupRuleService
         var (ruleSetVersionId, _) = SetupTransitionRuleProjector.ParseRuleId(id);
         var version = await GetVersionOrThrowAsync(ruleSetVersionId, ct);
         return SetupTransitionRuleProjector.ExtractRules(version.ContentSnapshotJson).FirstOrDefault(r => r.Id == id);
+    }
+
+    /// <summary>
+    /// 解析当前用户在 Department 维度可查询的部门码集合（3-NEW-P0-01，查询 Scope）。
+    /// Global → null（不过滤，全放行）；非 Global → 授权 DeptCode 集合（无任何 Department 授权 → 空集合，fail-closed 空列表）。
+    /// 与写路径 <see cref="EnsureDepartmentScopeAsync"/>（按目标对象单点校验）互补：查询侧按集合过滤。
+    /// </summary>
+    private async Task<IReadOnlySet<string>?> ResolveAllowedDeptCodesAsync(int actorUserId, CancellationToken ct)
+    {
+        var ctx = await _dataScopeService.ResolveScopeAsync(actorUserId, ct);
+        if (ctx.IsGlobal)
+        {
+            return null;
+        }
+
+        var deptCodes = ctx.GetValues(DataScopeTypes.Department);
+        if (deptCodes is null || deptCodes.Count == 0)
+        {
+            return new HashSet<string>();
+        }
+
+        return deptCodes.ToHashSet();
     }
 
     /// <summary>

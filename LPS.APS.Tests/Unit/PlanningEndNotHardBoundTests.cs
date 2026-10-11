@@ -302,6 +302,7 @@ public class PlanningEndNotHardBoundTests
                 DemandKey = d.Key,
                 MaterialId = MaterialId,
                 FactoryId = 1,
+                StartStageCode = "STAGE1",
                 NetOutputQty = d.Qty,
                 PlannedProcessQty = d.Qty,
                 RequiredAvailableTime = d.Due ?? PlanningStart.AddDays(20),
@@ -335,7 +336,7 @@ public class PlanningEndNotHardBoundTests
                     AllowMerge = allowMerge,
                     AllowSplit = allowSplit
                 },
-                BatchPolicies = TestBatchPolicy.Permissive(new[] { MaterialId }, allowMerge, allowSplit)
+                BatchPolicies = TestBatchPolicy.Permissive(new[] { MaterialId }, DeptId, allowMerge, allowSplit)
             }
         };
     }

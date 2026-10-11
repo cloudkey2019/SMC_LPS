@@ -144,19 +144,43 @@ const pickStatus = (seed: number): TaskStatus => TASK_STATUSES[seed % TASK_STATU
 const TASKS: GanttTaskDto[] = (() => {
   const list: GanttTaskDto[] = []
   const orders = [
-    { orderNo: 'ORD-2026-0001', material: '电机壳体-A', orderId: 101 },
-    { orderNo: 'ORD-2026-0002', material: '机柜上盖-B', orderId: 102 },
-    { orderNo: 'ORD-2026-0003', material: '控制箱-C', orderId: 103 },
-    { orderNo: 'ORD-2026-0004', material: '标准泵-D', orderId: 104 },
-    { orderNo: 'ORD-2026-0005', material: '包装套件-E', orderId: 105 },
-    { orderNo: 'ORD-2026-0006', material: '机架焊接件-F', orderId: 106 }
+    {
+      orderNo: 'ORD-2026-0001',
+      material: '电机壳体-A / 铝合金ADC12 / 6.5kg / 静电喷涂黑',
+      orderId: 101
+    },
+    {
+      orderNo: 'ORD-2026-0002',
+      material: '机柜上盖-B / 镀锌钢板1.2mm / 600×400mm / 折弯成型',
+      orderId: 102
+    },
+    {
+      orderNo: 'ORD-2026-0003',
+      material: '控制箱-C / 钢结构壳体 / 0.8mm冷板 / 喷塑RAL7035',
+      orderId: 103
+    },
+    {
+      orderNo: 'ORD-2026-0004',
+      material: '标准泵-D / 铸铁HT200 / DN80 / 法兰连接',
+      orderId: 104
+    },
+    {
+      orderNo: 'ORD-2026-0005',
+      material: '包装套件-E / 蜂窝纸板+PE膜 / 850×600×400 / VCI防锈',
+      orderId: 105
+    },
+    {
+      orderNo: 'ORD-2026-0006',
+      material: '机架焊接件-F / Q235B型材 / 1200×800×1800 / 二保焊',
+      orderId: 106
+    }
   ]
   const operations = [
-    { code: 'OP10', seq: 10, name: '切割' },
-    { code: 'OP20', seq: 20, name: '焊接' },
-    { code: 'OP30', seq: 30, name: '喷涂' },
-    { code: 'OP40', seq: 40, name: '装配' },
-    { code: 'OP50', seq: 50, name: '测试' }
+    { code: 'OP10', seq: 10, name: '切割下料' },
+    { code: 'OP20', seq: 20, name: '焊接成型' },
+    { code: 'OP30', seq: 30, name: '表面处理' },
+    { code: 'OP40', seq: 40, name: '总装调试' },
+    { code: 'OP50', seq: 50, name: '出厂测试' }
   ]
   let taskId = 1000
   for (let i = 0; i < 60; i++) {
@@ -166,7 +190,21 @@ const TASKS: GanttTaskDto[] = (() => {
     const startDays = (i % 14) - 3 // -3 ~ 10
     const status = pickStatus(i)
     const plannedStart = dayOffset(startDays, 8 + (i % 8))
-    const plannedEnd = dayOffset(startDays, 8 + (i % 8) + 4)
+    // 时长多样化：4h ~ 32h，按 i 分段（OP10 切割 4-8h / OP20 焊接 8-16h / OP30 喷涂 6-12h
+    //   / OP40 总装 10-20h / OP50 测试 4-8h；少量跨日 24-32h）
+    const opDurations: Record<string, number[]> = {
+      OP10: [4, 6, 8, 4, 6],
+      OP20: [10, 12, 14, 16, 8],
+      OP30: [6, 8, 10, 12, 6],
+      OP40: [12, 16, 20, 14, 10],
+      OP50: [4, 6, 8, 6, 4]
+    }
+    const opDur = opDurations[op.code] ?? [4, 6, 8]
+    let durationH = opDur[i % opDur.length]
+    // 偶发跨日长 Task（i%11===2 → 24-32h，跨 2-3 天；让甘特条更长更好看）
+    if (i % 11 === 2) durationH = 24 + (i % 3) * 4 // 24/28/32
+    const plannedEndHours = 8 + (i % 8) + durationH
+    const plannedEnd = dayOffset(startDays + Math.floor(plannedEndHours / 24), plannedEndHours % 24)
     const isDelayed = i % 7 === 0 // 与下方根因类型选择器 i % 5 解耦，确保 5 类根因都能展开
 
     // U05：净需求 + 计划加工（含良率补偿）
@@ -207,8 +245,13 @@ const TASKS: GanttTaskDto[] = (() => {
       const seg1Qty = Math.ceil(plannedProcessQty * 0.6)
       const seg2Qty = plannedProcessQty - seg1Qty
       const seg1Start = plannedStart
-      const seg1End = dayOffset(startDays, 8 + (i % 8) + 2)
-      const seg2Start = dayOffset(startDays + 2, 10)
+      // 段 1 占用 60% 时长（向上取整），段 2 补剩余 40%
+      const seg1Hours = Math.ceil(durationH * 0.6)
+      const seg1End = dayOffset(
+        startDays + Math.floor((8 + (i % 8) + seg1Hours) / 24),
+        (8 + (i % 8) + seg1Hours) % 24
+      )
+      const seg2Start = seg1End
       const seg2End = plannedEnd
       taskSegments = [
         {

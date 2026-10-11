@@ -1,5 +1,9 @@
 <!--
-  APS V1 4号位 — 策略配置独立维护页（v1.4 §十八.10 / 长期欠账 v1.0/v1.1/v1.2 收口）
+  APS V1 4号位 — 策略配置独立维护页（v1.6 4号位 补登，待 0号位 拍板；历史引用 v1.4 §十八.10）
+
+  @see frontNew/docs/project_strategy_profile_audit.md（10-10 审查报告 + 7 项问题）
+  @see lps/LPS.APS.Web/Controllers/GovernanceController.cs（12 端点全在 3号位 控制器）
+  @see lps/LPS.APS.Core/Authorization/PermissionCodes.cs（DDL 三码真值 aps.strategy.{view,edit,publish}）
 
   复用 RBAC 4 页架构（加载 / 过滤 / 表格 / Dialog / 二次确认 / 红线注释 五段式）
   + Rules.vue Publish Dialog 模式（changeReason 必填 + ElMessageBox 二次确认 + ElAlert 红线）
@@ -347,11 +351,11 @@ const statusTagEffect = (s: StrategyVersionStatus): 'light' | 'dark' | 'plain' |
     </ElAlert>
 
     <ElRow :gutter="16" class="page-body">
-      <!-- 左侧：Profile 列表 -->
+      <!-- 左侧：策略包列表 -->
       <ElCol :span="8">
-        <ElCard shadow="hover" header="策略 Profile 列表">
+        <ElCard shadow="hover" header="策略包列表">
           <template v-if="profiles.length === 0 && !listLoading">
-            <ElEmpty description="暂无 Profile" :image-size="80" />
+            <ElEmpty description="暂无策略包" :image-size="80" />
           </template>
           <div v-else class="profile-list">
             <div
@@ -391,8 +395,19 @@ const statusTagEffect = (s: StrategyVersionStatus): 'light' | 'dark' | 'plain' |
                 <span class="profile-name-lg">{{ currentProfile.strategyProfileName }}</span>
               </div>
               <div class="profile-head-actions">
-                <ElTooltip content="仅创建草稿版本，不允许其它状态" placement="top">
-                  <ElButton type="primary" :disabled="!canWrite" @click="openCreateDraft">
+                <ElTooltip
+                  :content="
+                    !currentProfile.isActive
+                      ? '策略包已停用，无法新建草稿（7号 §5.5 IsActive=0 = 停用）'
+                      : '仅创建草稿版本，不允许其它状态'
+                  "
+                  placement="top"
+                >
+                  <ElButton
+                    type="primary"
+                    :disabled="!canWrite || !currentProfile.isActive"
+                    @click="openCreateDraft"
+                  >
                     新建草稿
                   </ElButton>
                 </ElTooltip>

@@ -506,8 +506,8 @@ internal class PhaseThreeDiagnostics
     /// 计算资源利用率
     /// </summary>
     /// <remarks>
-    /// OWN-P0-01（2026-10-10）：<paramref name="planningEnd"/> **不再参与分母计算**（90 天非资源时间终点），
-    /// 形参**保留仅为签名一致**（与 <c>PhaseTwoInitialScheduler.FindForwardSlot</c> 同惯例），避免改动调用点。
+    /// OWN-P0-01（2026-10-10）：<paramref name="planningEnd"/> **不再单独决定分母**（90 天非资源时间终点）；
+    /// 形参保留为**统计窗的默认上界**（见下方 AUD-1-R03），调用点不变。
     /// </remarks>
     private Dictionary<int, decimal> CalculateResourceUtilization(
         List<FinalTaskDraft> tasks,
@@ -518,6 +518,21 @@ internal class PhaseThreeDiagnostics
         var utilization = new Dictionary<int, decimal>();
 
         var tasksByResource = tasks.GroupBy(t => t.ResourceId);
+
+        // ── AUD-1-R03（0号位 2026-10-10《APS_V1_2_20261010.md》§4，RISK_UNVERIFIED）：**合理统计区间** ──
+        //   复审疑点（本号位核对：**成立**）：OWN-P0-01 把分母从 `[planningStart, planningEnd]` 扩到
+        //     「全部未来日历窗」（上界 = ∞）后，若维护日历延伸到数年之后，分母被**无限放大** ⇒ 利用率被
+        //     **稀释**到近 0 ⇒ Auto 瓶颈识别（`> BottleneckUtilizationThreshold`）失效、产能短缺根因失真。
+        //   修法 = 统计窗 **下界不变**（`planningStart`）、**上界 = max(planningEnd, 本轮全部任务的最晚完成)**：
+        //     · 全部任务落在 `[planningStart, planningEnd]` 内（既有测试与常见几何）⇒ 与**整改前逐字相同**（零回归）；
+        //     · 任务合法落到 90 天之后（P0-01 修复后的新几何）⇒ 窗口随真实负荷延长，**既不高估（不 >1）也不稀释**；
+        //     · **不**把 90 天重新当作排程硬截止 —— 这里只是**诊断统计窗**，不参与任何
+        //       可行性 / 搜索 / Merge / Repair / Unscheduled 判定（与 `FindForwardSlot` 的时间口径不冲突）。
+        var horizonEnd = planningEnd;
+        foreach (var t in tasks)
+        {
+            if (t.PlannedEndTime > horizonEnd) horizonEnd = t.PlannedEndTime;
+        }
 
         foreach (var group in tasksByResource)
         {
@@ -532,17 +547,16 @@ internal class PhaseThreeDiagnostics
             var availableMinutes = 0.0;
             if (constraints.ResourceCalendars.TryGetValue(resourceId, out var calendar))
             {
-                // ── OWN-P0-01 连带一致性修正（0号位 2026-10-10《APS_V1_1_20261010.md》§三）──
-                //   90 天是**需求进入本轮求解的范围**，**不是资源时间终点**（与 `FindForwardSlot` 同口径）。
-                //   P0-01 修复后任务可合法落在 90 天之后 ⇒ 若分母只统计 `[planningStart, planningEnd]` 内的窗，
-                //   利用率会被**高估**（可 > 1，误判瓶颈 / 误判产能短缺根因）。
-                //   现按**真实维护日历**统计：取与 `[planningStart, ∞)` 相交的窗，窗起点裁到 `planningStart`。
-                //   ⚠ 本项**仅影响诊断展示与根因归类**，不参与可行性 / 搜索 / Merge / Repair / Unscheduled 判定
-                //     ⇒ 不属复审 §三 点名的整改面，此处为**连带口径一致性**修正。
-                //   · 窗完全落在 `[planningStart, planningEnd]` 内（既有测试的常见几何）⇒ 新旧逐字相同（零回归）。
-                availableMinutes = calendar
-                    .Where(c => c.End > planningStart)
-                    .Sum(c => (c.End - (c.Start > planningStart ? c.Start : planningStart)).TotalMinutes);
+                foreach (var window in calendar)
+                {
+                    // 与统计窗 `[planningStart, horizonEnd]` 求交后累加（空交 ⇒ 不计）。
+                    var start = window.Start > planningStart ? window.Start : planningStart;
+                    var end = window.End < horizonEnd ? window.End : horizonEnd;
+                    if (end > start)
+                    {
+                        availableMinutes += (end - start).TotalMinutes;
+                    }
+                }
             }
 
             if (availableMinutes > 0)

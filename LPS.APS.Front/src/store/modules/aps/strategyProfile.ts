@@ -11,13 +11,13 @@
  *  - runTrace：Run 引用追溯
  *  - loading 系列：UI 态
  *
- * 权限（前端按钮显隐，对齐后端 PermissionCodes.cs 三码）：
+ * 权限（前后端一致，DDL 真值见 lps/LPS.APS.Core/Authorization/PermissionCodes.cs:54-58）：
  *  - aps.strategy.view     → 查看（列表 / 详情 / Diff / Trace / Default / Published）
  *  - aps.strategy.edit     → 编辑（创建 DRAFT / 更新 DRAFT / Disable）
  *  - aps.strategy.publish  → 发布（POST /publish）
- *  - 注：后端类级用 [Authorize(StrategyView/RuleMaintain/RulePublish)] 三码对应
- *    （RuleMaintain = edit 权限码，RulePublish = publish 权限码；命名上后端用 Rule.* 复用，
- *     前端通过策略包专属的 aps.strategy.* 三码 OR 组合表达，与路由 meta 保持一致）
+ *  - 注：后端 .NET 常量名是 StrategyView / StrategyEdit / StrategyPublish（PascalCase），
+ *    但 DDL PermissionCode 字符串值与前端 aps.strategy.* 三码完全一致（10-10 审查
+ *    确认非错位；store 历史注释的「RuleMaintain/RulePublish」实为常量名误读）
  *
  * 红线：
  *  - 已发布/退役/归档版本不可编辑（前端按钮 disabled + 后端 400 双保险）

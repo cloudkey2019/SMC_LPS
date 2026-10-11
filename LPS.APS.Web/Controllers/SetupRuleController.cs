@@ -37,7 +37,7 @@ public class SetupRuleController : ControllerBase
     private string GetCurrentUserCode()
         => User.FindFirst(ClaimTypes.Name)?.Value ?? string.Empty;
 
-    /// <summary>统一错误映射：422 数据红线 / 404 不存在 / 400 状态红线与参数；未知异常上抛由框架处理（500）</summary>
+    /// <summary>统一错误映射：422 数据红线 / 404 不存在 / 400 状态红线与参数 / 403 业务范围越界；未知异常上抛由框架处理（500）</summary>
     private IActionResult HandleError(Exception ex, string action)
     {
         _logger.LogWarning(ex, "Setup 换型规则 {Action} 失败", action);
@@ -45,6 +45,8 @@ public class SetupRuleController : ControllerBase
         {
             SetupRuleDataRedLineException data => UnprocessableEntity(ApiResponse.Fail(422, data.Message)),
             ResourceNotFoundException missing => NotFound(ApiResponse.Fail(404, missing.Message)),
+            // 3-NEW-P1-02（0号位 再审核）：Scope 越界必须映射 403（原未知异常走 500），与 TaskSplitRuleConfigController / StageLeadTimeParamController 一致。
+            ScopeViolationException scope => StatusCode(403, ApiResponse.Fail(403, scope.Message)),
             InvalidOperationException state => BadRequest(ApiResponse.Fail(400, state.Message)),
             _ => throw ex,
         };
@@ -64,7 +66,7 @@ public class SetupRuleController : ControllerBase
 
         try
         {
-            var data = await _setupRuleService.ListAsync(ruleSetVersionId, SetupTransitionRuleType.Exact, ct);
+            var data = await _setupRuleService.ListAsync(ruleSetVersionId, SetupTransitionRuleType.Exact, GetCurrentUserId(), ct);
             return Ok(ApiResponse<IReadOnlyList<SetupRuleDto>>.Success(data));
         }
         catch (Exception ex)
@@ -137,7 +139,7 @@ public class SetupRuleController : ControllerBase
 
         try
         {
-            var data = await _setupRuleService.ListAsync(ruleSetVersionId, SetupTransitionRuleType.Default, ct);
+            var data = await _setupRuleService.ListAsync(ruleSetVersionId, SetupTransitionRuleType.Default, GetCurrentUserId(), ct);
             return Ok(ApiResponse<IReadOnlyList<SetupRuleDto>>.Success(data));
         }
         catch (Exception ex)

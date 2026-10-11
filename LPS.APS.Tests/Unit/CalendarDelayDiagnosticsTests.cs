@@ -174,6 +174,7 @@ public class CalendarDelayDiagnosticsTests
             {
                 LogicalDemandKey = "M1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = 1, DemandKey = "M1", MaterialId = 1, FactoryId = 1,
+                StartStageCode = stage,
                 NetOutputQty = 1m, PlannedProcessQty = 1m,
                 RequiredAvailableTime = requiredAvailableTime, DemandSequence = 1
             }
@@ -239,7 +240,7 @@ public class CalendarDelayDiagnosticsTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是日历/延期诊断，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
-                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId)),
+                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId), deptId),
                 SolverStrategy = new SolverStrategyBlock
                 {
                     BottleneckMode = DynamicBottleneckMode.Auto,
@@ -270,6 +271,7 @@ public class CalendarDelayDiagnosticsTests
             {
                 LogicalDemandKey = "M1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = 1, DemandKey = "M1", MaterialId = 1, FactoryId = 1,
+                StartStageCode = stage,
                 NetOutputQty = 1m, PlannedProcessQty = 1m,
                 RequiredAvailableTime = requiredAvailableTime, DemandSequence = 1
             }
@@ -354,7 +356,7 @@ public class CalendarDelayDiagnosticsTests
                     AllowSplit = false
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
-                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId)),
+                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId), deptId),
                 SolverStrategy = new SolverStrategyBlock
                 {
                     BottleneckMode = DynamicBottleneckMode.Auto,

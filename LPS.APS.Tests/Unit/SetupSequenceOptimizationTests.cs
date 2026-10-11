@@ -294,6 +294,7 @@ public class SetupSequenceOptimizationTests
         {
             LogicalDemandKey = key, PlanVersionId = 1L, DomainKey = "DOMAIN",
             AllocationSequence = alloc, DemandKey = key, MaterialId = materialId, FactoryId = 1,
+            StartStageCode = "STAGE1",
             NetOutputQty = 1m, PlannedProcessQty = 1m,
             RequiredAvailableTime = due ?? Day.AddDays(20), DemandSequence = seq
         };
@@ -387,7 +388,7 @@ public class SetupSequenceOptimizationTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是 Setup 序列优化，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
-                BatchPolicies = TestBatchPolicy.Permissive(materials),
+                BatchPolicies = TestBatchPolicy.Permissive(materials, 100),
                 SetupTransitionRules = rules
             }
         };

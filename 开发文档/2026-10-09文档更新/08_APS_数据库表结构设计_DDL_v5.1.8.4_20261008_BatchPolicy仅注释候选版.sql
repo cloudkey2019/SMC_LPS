@@ -17,6 +17,18 @@
 -- 5) 不新增Continuation/ExecutionBatch/FinalMaterial第二平台。
 -- 6) FINAL业务裁决已完成：ODS/Material标准化层对出口库/最终可销售层级输出FINAL_标准MaterialCode；本DDL不新增IsFinal/MaterialState/WarehouseType/FinalFlag第二业务真相。
 -- ============================================================
+-- 【2026-10-11 勘误候选（0号位 裁决：#4）】RuleSetVersion / ParameterSetVersion 缺列 ContentSnapshotJson / IsDefault / UpdatedAt / UpdatedBy / Remarks
+--   0号位 2026-10-11 正式回复：#4 G1 冻结载体缺列——认可物理库/代码/正式 DDL 一致性缺口，
+--   但 v5.1.8.4 已纳入唯一冻结基线索引，**不得在同版本下直接修改正式文件**。
+--   本块及下表体补列=勘误候选及核对证据，**不视为已生效正式修改**；
+--   正式变更按冻结文档勘误流程生成新版本（如 v5.1.8.5+），以正式勘误后版本为准。
+--   核对证据（物理库实测，INFORMATION_SCHEMA + sys.default_constraints）：
+--     ① ContentSnapshotJson NVARCHAR(MAX) NULL —— 代码实体已映射属性且治理写路径已写入（P0-02 六块+SetupTransitionRules+BatchPolicy 快照载体）；
+--     ② Remarks NVARCHAR(1000/500) NULL —— 代码实体已映射属性（RSV=1000，PSV=500，物理实测），治理写路径未写；
+--     ③ IsDefault BIT NOT NULL DEFAULT (0) / UpdatedAt DATETIME2 NULL / UpdatedBy NVARCHAR(100) NULL —— 物理已存在/代码未映射，
+--       默认语义归 StrategyProfileVersion，RSV/PSV 本列当前仅 seed 直插，治理写路径未维护（不因物理列存在而赋予新版本治理语义）。
+--   待勘误项确认：逐项核实五列真实物理状态与业务用途 → 按正式勘误流程生成新版本 → P0-02 闭环验证（2号位 按 Run 装载+历史追溯）。
+-- ============================================================
 
 -- ============================================================
 -- 【历史版本继承记录】2026-09-15 v5.1.7 白天业务场景 / Candidate人工调整冻结对齐
@@ -8978,6 +8990,13 @@ CREATE TABLE RuleSetVersion (
     ApprovedBy      NVARCHAR(100)  NULL,
     CreatedAt       DATETIME2      NOT NULL DEFAULT GETDATE(),
     CreatedBy       NVARCHAR(100)  NULL,
+    -- P0-02 统一内容快照（2026-10-11 3号位 补登记；物理库已存在，代码 RuleSetVersion 实体已映射属性且治理写路径已写入）
+    ContentSnapshotJson NVARCHAR(MAX) NULL,
+    -- 物理已存在/代码未映射（2026-10-11 补登记）：默认语义归 StrategyProfileVersion；本列当前仅 seed 直插，治理写路径未维护
+    IsDefault       BIT            NOT NULL DEFAULT 0,
+    UpdatedAt       DATETIME2      NULL,
+    UpdatedBy       NVARCHAR(100)  NULL,
+    Remarks         NVARCHAR(1000) NULL,
     CONSTRAINT FK_RuleSetVersion_RuleSet FOREIGN KEY (RuleSetId) REFERENCES RuleSet(Id),
     CONSTRAINT UQ_RuleSetVersion UNIQUE (RuleSetId, VersionCode),
     CONSTRAINT CK_RuleSetVersion_Status CHECK (Status IN ('DRAFT','SUBMITTED','APPROVED','PUBLISHED','DISABLED','ARCHIVED'))
@@ -9017,6 +9036,13 @@ CREATE TABLE ParameterSetVersion (
     ApprovedBy      NVARCHAR(100)  NULL,
     CreatedAt       DATETIME2      NOT NULL DEFAULT GETDATE(),
     CreatedBy       NVARCHAR(100)  NULL,
+    -- P0-02 统一内容快照（2026-10-11 3号位 补登记；物理库已存在，代码 ParameterSetVersion 实体已映射属性且治理写路径已写入）
+    ContentSnapshotJson NVARCHAR(MAX) NULL,
+    -- 物理已存在/代码未映射（2026-10-11 补登记）：默认语义归 StrategyProfileVersion；本列当前仅 seed 直插，治理写路径未维护
+    IsDefault       BIT            NOT NULL DEFAULT 0,
+    UpdatedAt       DATETIME2      NULL,
+    UpdatedBy       NVARCHAR(100)  NULL,
+    Remarks         NVARCHAR(500)  NULL,
     CONSTRAINT FK_ParameterSetVersion_ParameterSet FOREIGN KEY (ParameterSetId) REFERENCES ParameterSet(Id),
     CONSTRAINT UQ_ParameterSetVersion UNIQUE (ParameterSetId, VersionCode),
     CONSTRAINT CK_ParameterSetVersion_Status CHECK (Status IN ('DRAFT','SUBMITTED','APPROVED','PUBLISHED','DISABLED','ARCHIVED'))

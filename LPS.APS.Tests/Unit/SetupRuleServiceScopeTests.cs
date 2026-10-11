@@ -269,4 +269,99 @@ public class SetupRuleServiceScopeTests
         await act.Should().ThrowAsync<InvalidOperationException>();
         _versionRepo.Verify(r => r.UpdateAsync(It.IsAny<RuleSetVersion>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ---------- 3-NEW-P0-01（0号位 再审核 2026-10-10）列表/详情 Department Scope ----------
+
+    [Fact]
+    public async Task ListAsync_非Global仅返回授权部门规则()
+    {
+        // Arrange：版本含 DEPT-A(10) 与 DEPT-B(20) 两条 EXACT 规则；授权仅 DEPT-A
+        _versionRepo.Setup(r => r.GetByIdAsync(VersionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildDraftVersion(BuildExactRule(1, DeptInScope), BuildExactRule(2, DeptOldOutOfScope)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Department, "DEPT-A") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.ListAsync(VersionId, SetupTransitionRuleType.Exact, ActorUserId, CancellationToken.None);
+
+        // Assert：仅 DEPT-A 规则返回，DEPT-B 规则被隐藏（防通过版本 Id 窥探）
+        result.Should().ContainSingle();
+        result[0].ProductionDepartmentId.Should().Be(DeptInScope);
+    }
+
+    [Fact]
+    public async Task ListAsync_非Global无部门授权_返回空列表()
+    {
+        // Arrange：仅 Factory 授权（无 Department）
+        _versionRepo.Setup(r => r.GetByIdAsync(VersionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildDraftVersion(BuildExactRule(1, DeptInScope)));
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Factory, "BJ") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.ListAsync(VersionId, SetupTransitionRuleType.Exact, ActorUserId, CancellationToken.None);
+
+        // Assert：fail-closed 空列表（禁止先全量返回再前端隐藏）
+        result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListAsync_Global返回全量()
+    {
+        // Arrange：Global 用户不过滤
+        _versionRepo.Setup(r => r.GetByIdAsync(VersionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildDraftVersion(BuildExactRule(1, DeptInScope), BuildExactRule(2, DeptOldOutOfScope)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.Global);
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.ListAsync(VersionId, SetupTransitionRuleType.Exact, ActorUserId, CancellationToken.None);
+
+        // Assert：DEPT-A 与 DEPT-B 规则均返回
+        result.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_目标规则部门越权_抛ScopeViolationException()
+    {
+        // Arrange：目标规则属 DEPT-B（越权）；授权仅 DEPT-A
+        _versionRepo.Setup(r => r.GetByIdAsync(VersionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildDraftVersion(BuildExactRule(1, DeptOldOutOfScope)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Department, "DEPT-A") }));
+        var svc = CreateService();
+        var ruleId = SetupTransitionRuleProjector.BuildRuleId(VersionId, 1);
+
+        // Act
+        var act = () => svc.GetByIdAsync(ruleId, ActorUserId, CancellationToken.None);
+
+        // Assert：防通过规则 Id 窥探他部门规则 → 403
+        await act.Should().ThrowAsync<ScopeViolationException>();
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_Global放行()
+    {
+        // Arrange：Global 用户不过滤
+        _versionRepo.Setup(r => r.GetByIdAsync(VersionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildDraftVersion(BuildExactRule(1, DeptOldOutOfScope)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.Global);
+        var svc = CreateService();
+        var ruleId = SetupTransitionRuleProjector.BuildRuleId(VersionId, 1);
+
+        // Act
+        var result = await svc.GetByIdAsync(ruleId, ActorUserId, CancellationToken.None);
+
+        // Assert：放行返回 DTO
+        result.Should().NotBeNull();
+        result!.Id.Should().Be(ruleId);
+    }
 }

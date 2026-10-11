@@ -22,7 +22,8 @@ public static class ApplicationServiceExtensions
                     t.Namespace != null &&
                     t.Namespace.StartsWith("LPS.APS.Application.Services") &&
                     !t.Namespace.StartsWith("LPS.APS.Application.Services.Fixtures") &&
-                    t.DeclaringType == null))
+                    t.DeclaringType == null &&
+                    !typeof(Exception).IsAssignableFrom(t))) // 异常类排除：防 Scrutor 把伴生异常（如 SnapshotRunResolutionException）误当 Scoped 服务注册，ValidateOnBuild 因构造参数无法解析而启动失败
                 .AsImplementedInterfaces()
                 .WithScopedLifetime()
         );

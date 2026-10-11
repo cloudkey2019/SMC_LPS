@@ -65,6 +65,58 @@ internal static class SolverDiagnostics
         /// </summary>
         public long Phase5SetupSegmentsOptimized;
 
+        /// <summary>
+        /// V1_3 F-01：合批落定失败 / 交期违约时，按插入身份回滚占用表**未命中**的条目数累计。
+        ///   **正常恒为 0** —— 非 0 说明有代码路径绕过 <c>AddOccupancyWindow</c> 的 `insertLog` 直写占用表
+        ///   （⇒ 该窗不会被回滚 ⇒ 幽灵占用）。纯观测、不参与任何业务判定。
+        /// </summary>
+        public long OccupancyRollbackUnmatched;
+
+        /// <summary>
+        /// V1_3 F-03：B-009 合法量门禁**因输入整体未投影而不可评估**的批形成次数累计
+        ///   （`piFacts is null`）。纯观测、不参与任何业务判定；**非 0 即表示生产态该门禁不可达**。
+        /// </summary>
+        public long PiLegalQuantityGateUnevaluated;
+
+        /// <summary>V1_3 F-03：B-009 合法量门禁**判越限/事实不可信并 Fail Closed**的次数。纯观测。</summary>
+        public long PiLegalQuantityGateBlocked;
+
+        /// <summary>
+        /// V1_3 F-04：本 Run **实际生效**的 <c>SolverBatchBudget</c> 快照 —— 版本号
+        ///   （<c>SolverBatchBudget/v1</c>）、取源（`…:SplitParams` / `…:default`）与两个**生效值**。
+        ///   供「Run 快照 / 追踪证据」逐 Run 复现「到底用了什么技术预算」。
+        ///   ⚠ 只记录**实际生效值**；业务旧列（`BatchPolicyRuleSnapshot.MaxOptimizationSplitCount` /
+        ///     `MaxBatchCandidates`）**不参与**，改动它们不得改变本快照（B-007 单源可追溯）。
+        /// </summary>
+        public string? SolverBatchBudgetVersion;
+
+        /// <summary>V1_3 F-04：本 Run 生效技术预算的**取源**标识（单源可追溯）。</summary>
+        public string? SolverBatchBudgetSource;
+
+        /// <summary>V1_3 F-04：本 Run 生效的 `MaxOptimizationSplitCount`。</summary>
+        public long SolverBatchBudgetMaxOptimizationSplitCount;
+
+        /// <summary>V1_3 F-04：本 Run 生效的 `MaxBatchCandidates`。</summary>
+        public long SolverBatchBudgetMaxBatchCandidates;
+
+        /// <summary>
+        /// V1_4 NEW-05：MIXED「倒排部分成功后失败 ⇒ 转正排」时，按插入身份撤销的**倒排残留占用窗**数累计。
+        ///   **正常 ≥0 且只在倒排确实写过窗后失败时非 0**（例：倒排最后一道成功、上一道失败）。
+        ///   与 <see cref="OccupancyRollbackUnmatched"/> 的区别：后者是「该撤却撤不掉」的**异常**计数，
+        ///   本项是「**确实撤销了多少**」的**正常**计数 —— 若本项长期恒 0 而 MIXED 走回落，说明回落路径**未撤销**（旧缺陷）。
+        ///   纯观测、不参与任何业务判定。
+        /// </summary>
+        public long MixedBackwardRollbackWindows;
+
+        /// <summary>
+        /// V1_4 NEW-04：本 Run 内**新增 Stage 执行批**对 (PI × 物料 × Stage) 余额的累计登记次数
+        ///   （<c>PiStageCommitLedger.Commit</c> 成功次数）。纯观测、不参与任何业务判定。
+        /// </summary>
+        public long PiStageLedgerCommits;
+
+        /// <summary>V1_4 NEW-04：本 Run 内累计登记被**按身份回滚**（候选试排隔离 / 需求未落定）的次数。纯观测。</summary>
+        public long PiStageLedgerRollbacks;
+
         /// <summary>Phase 1（硬约束构建）耗时 ms。</summary>
         public long Phase1Ms;
 
@@ -124,7 +176,15 @@ internal static class SolverDiagnostics
     private static readonly AsyncLocal<Counters?> Current = new();
 
     /// <summary>
+    /// V1_4 NEW-06：当前**是否已有**计数作用域。供 <c>FiniteCapacitySolver.SolveAsync</c> 判断
+    ///   是否需要**自动建立**作用域（生产 Run 也产生可追溯 Run 快照），已开则由调用方作用域沿用。
+    /// </summary>
+    internal static bool HasScope => Current.Value is not null;
+
+    /// <summary>
     /// 建立计数作用域。**必须在调用 `SolveAsync` 之前**建立（ExecutionContext 在 async 方法入口捕获）。
+    /// ⚠ V1_4 NEW-06 起：`SolveAsync` **自身会在未开作用域时自动建立**（生产 Run 亦可追溯）；
+    ///   调用方显式建立的作用域仍然优先（压测工装按此读本次 Run 的计数器）。
     /// </summary>
     internal static Scope BeginScope() => new();
 
@@ -221,6 +281,141 @@ internal static class SolverDiagnostics
     internal static void CountPhase5SetupSegmentOptimized()
     {
         if (Current.Value is { } c) c.Phase5SetupSegmentsOptimized++;
+    }
+
+    /// <summary>V1_3 F-01：按插入身份回滚占用表时**未命中**条目数 +n。纯观测，不参与判定。</summary>
+    internal static void CountOccupancyRollbackUnmatched(int n)
+    {
+        if (n > 0 && Current.Value is { } c) c.OccupancyRollbackUnmatched += n;
+    }
+
+    /// <summary>V1_4 NEW-05：MIXED 回落正排时按身份撤销的倒排残留占用窗数 +n。纯观测，不参与判定。</summary>
+    internal static void CountMixedBackwardRollbackWindows(int n)
+    {
+        if (n > 0 && Current.Value is { } c) c.MixedBackwardRollbackWindows += n;
+    }
+
+    /// <summary>V1_4 NEW-04：本 Run 累计登记账 <c>Commit</c> 次数 +1。纯观测，不参与判定。</summary>
+    internal static void CountPiStageLedgerCommit()
+    {
+        if (Current.Value is { } c) c.PiStageLedgerCommits++;
+    }
+
+    /// <summary>V1_4 NEW-04：本 Run 累计登记账按身份回滚次数 +1。纯观测，不参与判定。</summary>
+    internal static void CountPiStageLedgerRollback()
+    {
+        if (Current.Value is { } c) c.PiStageLedgerRollbacks++;
+    }
+
+    /// <summary>V1_3 F-03：B-009 合法量门禁因输入未投影而不可评估 +1。纯观测，不参与判定。</summary>
+    internal static void CountPiLegalQuantityGateUnevaluated()
+    {
+        if (Current.Value is { } c) c.PiLegalQuantityGateUnevaluated++;
+    }
+
+    /// <summary>V1_3 F-03：B-009 合法量门禁判越限/事实不可信并 Fail Closed +1。纯观测，不参与判定。</summary>
+    internal static void CountPiLegalQuantityGateBlocked()
+    {
+        if (Current.Value is { } c) c.PiLegalQuantityGateBlocked++;
+    }
+
+    /// <summary>
+    /// V1_4 NEW-06：**可检索的 Run 预算正式快照**（进程级，**未开 scope 也可读**）。
+    ///
+    /// 【为什么需要它】V1_3 F-04 把预算快照写进 <see cref="Counters"/>，而 `Counters` 挂在
+    ///   <see cref="AsyncLocal{T}"/> 上、**只有调用方显式 <see cref="BeginScope"/> 才存在** ⇒
+    ///   正常生产 Run（`FiniteCapacitySolver.SolveAsync` 未自动开 scope）**根本没有任何记录** ⇒
+    ///   复审 NEW-06 判「预算诊断不是生产 Run 正式快照」成立。
+    ///   ⇒ 本记录**无论是否开 scope 都写**，并携带可追溯的 Run 版本源三元组
+    ///     （`ScheduleRunId` / `StrategyProfileVersionId` / `ParameterSetVersionId`）。
+    ///
+    /// ⚠ 仍**不是**持久化载体：真正的 Run 快照落盘（`ScheduleRun` 表）归 2号位。
+    ///   1号位 提供的是**进程内可检索**的正式快照（版本源 + 生效值），供联验 / 日志 / 诊断读取；
+    ///   持久化与 Run 上下文完整性属 1↔2 契约（见回执归口）。
+    /// </summary>
+    internal sealed record SolverRunBudgetSnapshot(
+        long? ScheduleRunId,
+        long? StrategyProfileVersionId,
+        long? ParameterSetVersionId,
+        string BudgetVersion,
+        string BudgetSource,
+        int MaxOptimizationSplitCount,
+        int MaxBatchCandidates,
+        long ResolvedAtUtcTicks);
+
+    private static SolverRunBudgetSnapshot? _lastRunBudgetSnapshot;
+
+    /// <summary>
+    /// V1_4 NEW-06：**按 Run 可检索**的预算正式快照（键 = `DomainSolveRequest.ScheduleRunId`）。
+    ///
+    /// 【为什么在 `LastRunBudgetSnapshot` 之外还要这一份】`LastRunBudgetSnapshot` 是「最后写入者胜」
+    ///   的**进程级单槽** ⇒ 并发求解（生产多域并行 / 测试集合并行）下会被**别的 Run 覆盖**，
+    ///   拿到的快照**不再属于你要查的那个 Run** ⇒ 不满足复审判词的「**可检索**」。
+    ///   本表按 `ScheduleRunId` 分槽 ⇒ 每个 Run 的快照**互不覆盖**，可事后按 Run Id 精确检索。
+    ///   `ConcurrentDictionary` 保证并发写入安全（读-改-写均原子）。
+    ///
+    /// ⚠ 仍**不是**持久化载体（进程内）；落盘 `ScheduleRun` 归 2号位。
+    /// ⚠ `ScheduleRunId` 为 null 或 0 时**不入表**（无 Run 身份 ⇒ 无可检索键），只写单槽。
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, SolverRunBudgetSnapshot>
+        _runBudgetSnapshotsById = new();
+
+    /// <summary>
+    /// V1_4 NEW-06：最近一次**已解析**的 Run 预算正式快照（进程级单槽）。
+    /// **未开 scope 也非 null**（只要本进程跑过 `ResolveSolverBatchBudget`）。
+    /// 并发求解下为「最后写入者胜」—— 需要**按 Run 精确检索**请用
+    /// <see cref="TryGetRunBudgetSnapshot"/>（不被并发覆盖）。
+    /// </summary>
+    internal static SolverRunBudgetSnapshot? LastRunBudgetSnapshot => _lastRunBudgetSnapshot;
+
+    /// <summary>
+    /// V1_4 NEW-06：按 <paramref name="scheduleRunId"/> **精确检索**该 Run 的预算正式快照；
+    ///   无该 Run 的记录（未跑过 / 未给 Run Id）返回 <c>null</c>。
+    ///   与 <see cref="LastRunBudgetSnapshot"/> 不同，本方法的结果**不受其它 Run 并发写入影响**。
+    /// </summary>
+    internal static SolverRunBudgetSnapshot? TryGetRunBudgetSnapshot(long scheduleRunId)
+        => _runBudgetSnapshotsById.TryGetValue(scheduleRunId, out var snapshot) ? snapshot : null;
+
+    /// <summary>V1_4 NEW-06：仅供测试复位进程级快照与按 Run 检索表（避免用例间串味）。</summary>
+    internal static void ResetLastRunBudgetSnapshotForTest()
+    {
+        _lastRunBudgetSnapshot = null;
+        _runBudgetSnapshotsById.Clear();
+    }
+
+    /// <summary>
+    /// V1_3 F-04 + V1_4 NEW-06：登记本 Run **实际生效**的技术预算快照（版本 / 取源 / 两个生效值 +
+    ///   Run 版本源三元组）。**三写**：scope 打开时写 <see cref="Counters"/>（按 Run 隔离），
+    ///   同时**无条件**写进程级 <see cref="LastRunBudgetSnapshot"/>（单槽，最后写入者胜），
+    ///   并按 <paramref name="scheduleRunId"/> 写 <see cref="_runBudgetSnapshotsById"/>（按 Run 可检索）。
+    /// </summary>
+    internal static void RecordSolverBatchBudget(
+        long? scheduleRunId,
+        long? strategyProfileVersionId,
+        long? parameterSetVersionId,
+        string version,
+        string source,
+        int maxOptimizationSplitCount,
+        int maxBatchCandidates)
+    {
+        var snapshot = new SolverRunBudgetSnapshot(
+            scheduleRunId, strategyProfileVersionId, parameterSetVersionId,
+            version, source, maxOptimizationSplitCount, maxBatchCandidates,
+            DateTime.UtcNow.Ticks);
+
+        _lastRunBudgetSnapshot = snapshot;
+
+        // 按 Run 身份分槽（无 Run 身份不入表）—— 使「未开 scope 也**可按 Run 检索**」成立。
+        if (scheduleRunId is { } runId && runId != 0L)
+        {
+            _runBudgetSnapshotsById[runId] = snapshot;
+        }
+
+        if (Current.Value is not { } c) return;
+        c.SolverBatchBudgetVersion = version;
+        c.SolverBatchBudgetSource = source;
+        c.SolverBatchBudgetMaxOptimizationSplitCount = maxOptimizationSplitCount;
+        c.SolverBatchBudgetMaxBatchCandidates = maxBatchCandidates;
     }
 
     // ══════════════════════════════════════════════════════════════════

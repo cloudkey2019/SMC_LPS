@@ -88,6 +88,7 @@ public class BottleneckModeTests
             {
                 LogicalDemandKey = "M1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = 1, DemandKey = "M1", MaterialId = 1, FactoryId = 1,
+                StartStageCode = stage,
                 NetOutputQty = 1m, PlannedProcessQty = 1m,
                 RequiredAvailableTime = PlanningStart.AddDays(20), DemandSequence = 1
             },
@@ -95,6 +96,7 @@ public class BottleneckModeTests
             {
                 LogicalDemandKey = "M2", PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = 2, DemandKey = "M2", MaterialId = 2, FactoryId = 1,
+                StartStageCode = stage,
                 NetOutputQty = 1m, PlannedProcessQty = 1m,
                 RequiredAvailableTime = PlanningStart.AddDays(20), DemandSequence = 2
             }
@@ -154,7 +156,7 @@ public class BottleneckModeTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是瓶颈识别，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
-                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId)),
+                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId), deptId),
                 SolverStrategy = new SolverStrategyBlock
                 {
                     BottleneckMode = mode,

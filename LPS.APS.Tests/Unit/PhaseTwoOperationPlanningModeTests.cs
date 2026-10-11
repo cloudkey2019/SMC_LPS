@@ -33,6 +33,7 @@ public class PhaseTwoOperationPlanningModeTests
             {
                 new() { LogicalDemandKey = "D1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                     AllocationSequence = 1, DemandKey = "D1", MaterialId = 1, FactoryId = 1,
+                    StartStageCode = "STAGE1",
                     NetOutputQty = 1m, PlannedProcessQty = 1m,
                     RequiredAvailableTime = day.AddDays(20), DemandSequence = 1 }
             },
@@ -65,7 +66,7 @@ public class PhaseTwoOperationPlanningModeTests
             {
                 Parameters = new FiniteCapacityParameters { SchedulingDirection = "FORWARD" },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
-                BatchPolicies = TestBatchPolicy.Permissive(1)
+                BatchPolicies = TestBatchPolicy.Permissive(1, 100)
             }
         };
     }
@@ -128,6 +129,7 @@ public class PhaseTwoOperationPlanningModeTests
             {
                 new() { LogicalDemandKey = "D1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                     AllocationSequence = 1, DemandKey = "D1", MaterialId = 1, FactoryId = 1,
+                    StartStageCode = "STAGE1",
                     NetOutputQty = 1m, PlannedProcessQty = 1m,
                     RequiredAvailableTime = day.AddDays(20), DemandSequence = 1 }
             },
@@ -163,7 +165,7 @@ public class PhaseTwoOperationPlanningModeTests
             {
                 Parameters = new FiniteCapacityParameters { SchedulingDirection = "FORWARD" },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
-                BatchPolicies = TestBatchPolicy.Permissive(1)
+                BatchPolicies = TestBatchPolicy.Permissive(1, 100)
             }
         };
     }

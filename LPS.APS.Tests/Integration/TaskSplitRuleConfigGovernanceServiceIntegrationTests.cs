@@ -487,6 +487,88 @@ VALUES (@MaterialId, @Dept, 10, 100, NULL, 1, 1, 1, NULL, NULL, GETDATE(), GETDA
     }
 
     [Fact]
+    public async Task GetActiveRulesForSnapshotAsync_存量Min负值行_阻断发布()
+    {
+        // 3-NEW-P0-03（0号位 再审核 2026-10-10）：存量 MinExecutionBatchQty<0 行不得静默进快照——发布须阻断并列 Id。
+        _testMaterialId = await PickFreeMaterialIdAsync();
+        var deptId = await PickAnyDepartmentIdAsync();
+
+        // 直连 SQL 注入一条 MinExecutionBatchQty=-5 的存量行（绕过治理写路径的 Min 非负校验）。
+        var insertedId = await _connectionManager.QueryFirstOrDefaultAsync<int>(@"
+INSERT INTO TaskSplitRuleConfig
+(MaterialId, ProductionDepartmentId, MinExecutionBatchQty, MaxExecutionBatchQty, PreferredBatchQty,
+ AllowSplit, AllowMerge, IsActive, EffectiveFrom, EffectiveTo, CreatedAt, UpdatedAt)
+OUTPUT INSERTED.Id
+VALUES (@MaterialId, @Dept, -5, 100, 50, 1, 1, 1, NULL, NULL, GETDATE(), GETDATE())",
+            new { MaterialId = _testMaterialId, Dept = deptId }, db: DatabaseId.APS);
+
+        var act = async () => await _service.GetActiveRulesForSnapshotAsync(CancellationToken.None);
+        var ex = await act.Should().ThrowAsync<SetupRuleDataRedLineException>();
+        ex.Which.Message.Should().Contain(insertedId.ToString());
+
+        await _connectionManager.ExecuteAsync(
+            "DELETE FROM TaskSplitRuleConfig WHERE Id = @Id", new { Id = insertedId }, db: DatabaseId.APS);
+    }
+
+    [Fact]
+    public async Task ListAsync_非Global授权多部门显式传部门_仅返回该部门()
+    {
+        // 3-NEW-P1-01（0号位 再审核 2026-10-10）：非 Global 查询同时尊重「授权集合」与「用户显式条件」——
+        // 授权 A+B + 显式传 A → Items/Total 只含 A（等值过滤，不再返回 A+B；COUNT 与页结果一致）。
+        var deptA = await PickAnyDepartmentIdAsync();
+        var deptBCode = (string?)null;
+        var deptAId = deptA;
+        var deptACode = await _connectionManager.QueryFirstOrDefaultAsync<string?>(
+            "SELECT DeptCode FROM ProductionDepartment WHERE Id = @Id", new { Id = deptAId }, db: DatabaseId.APS);
+        deptACode.Should().NotBeNullOrWhiteSpace();
+
+        var deptB = await _connectionManager.QueryFirstOrDefaultAsync<int?>(
+            "SELECT TOP 1 Id FROM ProductionDepartment WHERE Id <> @Id AND DeptCode IS NOT NULL", new { Id = deptAId }, db: DatabaseId.APS);
+        deptB.Should().NotBeNull();
+        deptBCode = await _connectionManager.QueryFirstOrDefaultAsync<string?>(
+            "SELECT DeptCode FROM ProductionDepartment WHERE Id = @Id", new { Id = deptB.Value }, db: DatabaseId.APS);
+        deptBCode.Should().NotBeNullOrWhiteSpace();
+
+        _testMaterialId = await PickFreeMaterialIdAsync();
+        await _service.CreateAsync(new SaveTaskSplitRuleConfigRequest
+        {
+            MaterialId = _testMaterialId,
+            ProductionDepartmentId = deptAId,
+            PreferredBatchQty = 50m,
+            AllowSplit = true,
+            AllowMerge = true,
+        }, actorUserId: 1, actorUserCode: "test", CancellationToken.None);
+        await _service.CreateAsync(new SaveTaskSplitRuleConfigRequest
+        {
+            MaterialId = _testMaterialId,
+            ProductionDepartmentId = deptB.Value,
+            PreferredBatchQty = 60m,
+            AllowSplit = true,
+            AllowMerge = true,
+        }, actorUserId: 1, actorUserCode: "test", CancellationToken.None);
+
+        // 授权 A+B 两个部门。
+        _dataScope.Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[]
+            {
+                (DataScopeTypes.Department, deptACode!),
+                (DataScopeTypes.Department, deptBCode!),
+            }));
+
+        // 显式传部门 A → 结果/Total 只含 A（IN∩=）。
+        var page = await _service.ListAsync(
+            materialId: _testMaterialId, productionDepartmentId: deptAId, isActive: null,
+            actorUserId: 1, pageIndex: 1, pageSize: 20, CancellationToken.None);
+
+        page.Items.Should().ContainSingle().Which.ProductionDepartmentId.Should().Be(deptAId);
+        page.Total.Should().Be(1);
+
+        // 清理自建数据（Dispose 亦会按 MaterialId 兜底清理）。
+        await _connectionManager.ExecuteAsync(
+            "DELETE FROM TaskSplitRuleConfig WHERE MaterialId = @MaterialId", new { MaterialId = _testMaterialId }, db: DatabaseId.APS);
+    }
+
+    [Fact]
     public async Task DeactivateAsync_NULL部门历史记录_非Global用户_403()
     {
         // P1-01（0号位 审核 §五 P1-01）：NULL 部门历史记录无法按部门鉴权——仅 Global 授权可停用

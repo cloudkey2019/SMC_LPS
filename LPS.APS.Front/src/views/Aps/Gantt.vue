@@ -213,7 +213,7 @@ const lanes = computed<Lane[]>(() => {
   if (groupBy.value === 'resource') {
     return data.resources.map((r) => ({
       id: `lane-${r.resourceId}`,
-      label: `${r.resourceCode} | ${r.resourceName}`,
+      label: `${r.resourceCode} | ${r.resourceName} | ${r.factoryName} / ${r.productionDepartmentName}`,
       color: '#e2e8f0',
       textColor: '#1e293b'
     }))
@@ -484,7 +484,9 @@ const dhxTasks = computed<DhxGanttTask[]>(() => {
     const resource = resourceMap.get(t.resourceId ?? -1)
     const baseRow: DhxGanttTask & Record<string, unknown> = {
       id: t.taskId,
-      text: `${t.taskNo}${t.orderNo ? ' | ' + t.orderNo : ''}`,
+      text: t.materialName
+        ? `${t.taskNo}${t.orderNo ? ' | ' + t.orderNo : ''} | ${t.materialName}`
+        : `${t.taskNo}${t.orderNo ? ' | ' + t.orderNo : ''}`,
       start_date: formatDate(t.plannedStartTime),
       duration: hoursBetween(t.plannedStartTime!, t.plannedEndTime!),
       parent: getTaskGroupKey(t, resourceMap),

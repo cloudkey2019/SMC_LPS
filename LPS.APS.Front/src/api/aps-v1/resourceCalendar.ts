@@ -211,7 +211,11 @@ async function listResourceCandidates(): Promise<ResourceCandidateResult> {
   }
 }
 
-/** 生产部门候选（G2 未决：正式端点缺失，从过渡资源池去重） */
+/** 生产部门候选（**过渡实现**：仅 Resource 页用；TaskSplitRuleConfig 等用正式端点 departmentLookupApi.listDepartments）
+ *  - ⚠️ G2 正式端点已落地（GET /api/governance/lookups/departments，3 号位 SetupRuleController.cs:299）
+ *  - 本函数保留为 Resource 页（G1 仍为资源主数据过渡）的内部派生，仅取「被排到的资源」所属部门
+ *  - 调用方迁移路径：调 departmentLookupApi.listDepartments()（全量生产部门主数据）
+ */
 export interface DepartmentCandidate {
   productionDepartmentId: number
   productionDepartmentName?: string

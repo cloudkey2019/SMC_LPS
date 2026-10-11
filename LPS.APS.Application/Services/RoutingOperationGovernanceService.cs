@@ -60,22 +60,65 @@ public sealed class RoutingOperationGovernanceService : IRoutingOperationGoverna
         await _dataScopeService.EnsureInScopeAsync(actorUserId, DataScopeTypes.Department, deptCode, ct);
     }
 
+    /// <summary>
+    /// 3-NEW-P0-02：解析当前用户在 Department 维度可查询的部门 Id 集合（照 TaskSplit 同款模式）。
+    /// Global → null（不过滤，全放行）；非 Global → 授权 DeptCode 映射为 ProductionDepartment.Id 列表；
+    /// 无任何 Department 授权 → 空列表（fail-closed 空页，调用方不查库）。
+    /// </summary>
+    private async Task<IReadOnlyList<int>?> ResolveAllowedDepartmentIdsAsync(int actorUserId, CancellationToken ct)
+    {
+        var ctx = await _dataScopeService.ResolveScopeAsync(actorUserId, ct);
+        if (ctx.IsGlobal)
+        {
+            return null;
+        }
+
+        var deptCodes = ctx.GetValues(DataScopeTypes.Department);
+        if (deptCodes is null || deptCodes.Count == 0)
+        {
+            return new List<int>();
+        }
+
+        var ids = await _connectionManager.QueryAsync<int>(
+            "SELECT Id FROM ProductionDepartment WHERE DeptCode IN @Codes",
+            new { Codes = deptCodes },
+            db: DatabaseId.APS);
+
+        return ids.ToList();
+    }
+
     /// <inheritdoc />
-    public async Task<IReadOnlyList<RoutingOperationDto>> ListOperationsAsync(int materialId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RoutingOperationDto>> ListOperationsAsync(int materialId, int actorUserId, CancellationToken ct = default)
     {
         if (materialId <= 0)
         {
             throw new ArgumentException("materialId 须大于 0。", nameof(materialId));
         }
 
-        var rows = await _connectionManager.QueryAsync<RoutingOperationDto>(
-            @"SELECT Id, MaterialId, ProductionDepartmentId, RouteCode, PathId, OperationCode,
-                     OperationName, ProcessType, StageCode, OperationPlanningMode
-              FROM RoutingOperation
-              WHERE IsActive = 1 AND MaterialId = @MaterialId
-              ORDER BY RouteCode, PathId, OperationCode",
-            new { MaterialId = materialId },
-            db: DatabaseId.APS);
+        // 3-NEW-P0-02（0号位 再审核）：列表按操作人 Department Scope 过滤——Global 不过滤；
+        // 非 Global 授权部门 IN 约束（同物料 A/B 部门工序隔离，防跨部门读取工艺属性）；无任何 Department 授权 → fail-closed 空列表（不查库）。
+        var allowedDeptIds = await ResolveAllowedDepartmentIdsAsync(actorUserId, ct);
+        if (allowedDeptIds is not null && allowedDeptIds.Count == 0)
+        {
+            return new List<RoutingOperationDto>();
+        }
+
+        var sql = @"SELECT Id, MaterialId, ProductionDepartmentId, RouteCode, PathId, OperationCode,
+                           OperationName, ProcessType, StageCode, OperationPlanningMode
+                    FROM RoutingOperation
+                    WHERE IsActive = 1 AND MaterialId = @MaterialId";
+        var p = new DynamicParameters();
+        p.Add("MaterialId", materialId);
+
+        if (allowedDeptIds is not null)
+        {
+            sql += " AND ProductionDepartmentId IN @AllowedDeptIds";
+            p.Add("AllowedDeptIds", allowedDeptIds.ToList());
+        }
+
+        sql += " ORDER BY RouteCode, PathId, OperationCode";
+
+        var rows = await _connectionManager.QueryAsync<RoutingOperationDto>(sql, p, db: DatabaseId.APS);
 
         return rows.ToList();
     }

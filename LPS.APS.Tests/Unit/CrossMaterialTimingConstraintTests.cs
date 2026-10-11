@@ -303,6 +303,7 @@ public class CrossMaterialTimingConstraintTests
             DemandKey = d.Key,
             MaterialId = d.MaterialId,
             FactoryId = 1,
+            StartStageCode = stage,
             NetOutputQty = 1m,
             PlannedProcessQty = 1m,
             RequiredAvailableTime = d.RequiredAvailableTime,
@@ -399,7 +400,7 @@ public class CrossMaterialTimingConstraintTests
             {
                 Parameters = new FiniteCapacityParameters { SchedulingDirection = direction },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
-                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId))
+                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId), deptId)
             }
         };
     }

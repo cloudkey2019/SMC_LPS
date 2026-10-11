@@ -54,8 +54,18 @@ export interface ManualEtaDto {
 export interface ManualEtaListFilter {
   poNos?: string[]
   materialIds?: number[]
+  /**
+   * 物料编码筛选（10-07 ME10 修复：UI 物料下拉选 code → 后端 ?materialCodes= 逗号分隔）
+   *  - 后端 `ProcurementManualEtaController.cs:47` 接受 `?materialCodes=` 逗号分隔字符串
+   *  - 与 materialIds 二选一：UI 选 code（语义友好），materialIds 保留供后续按需扩展
+   */
+  materialCodes?: string[]
   /** 仅返回 isActive=true */
   activeOnly?: boolean
+  /** 分页：1 基页码（5号位 2026-10-08 分页落地） */
+  pageIndex?: number
+  /** 分页：每页条数；后端硬上限 200 */
+  pageSize?: number
 }
 
 /**
@@ -93,4 +103,24 @@ export interface ManualEtaCancelInput {
   receivingWarehouse: string
   /** 当前操作人（→ 后端 updatedBy） */
   actor: string
+}
+
+/** 收货仓库下拉项（5号位 ManualEta 控制器 GET /api/procurement-manual-eta/warehouses）
+ *  - 数据源 ext_MES_ProcessCode_View（processcode → code / processname → name）
+ *  - 复用 ManualEtaView 权限；不带 ID
+ */
+export interface WarehouseOption {
+  code: string
+  name: string
+}
+
+/** ManualETA 列表分页响应（5号位 2026-10-08 落地；@see ProcurementManualEtaController.cs）
+ *  - 注意：刻意不复用 common.ts 的 PageResult<T>——5号位 契约字段为 `page`（与 RbacPageResult 同模式）
+ *  - page 从 1 起；pageSize 默认 20，硬上限 200（@see §一）
+ */
+export interface ManualEtaPageResult<T> {
+  items: T[]
+  total: number
+  page: number
+  pageSize: number
 }

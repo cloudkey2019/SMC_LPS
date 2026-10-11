@@ -32,9 +32,20 @@ public class AuditLogRepository : IAuditLogRepository
 
     public async Task EnsureWritableAsync(CancellationToken cancellationToken = default)
     {
-        // 预检（F-G4 跨库一致性兜底）：开事务并立即回滚，探测「可连接 + 可开启写事务」，不落任何数据。
+        // P1-03（0号位 再审核 2026-10-10）：真实写探针——事务内 INSERT 一条 PROBE 审计记录并回滚。
+        // 原「开事务+回滚」只能证明可连接/可开事务，无法发现只读库、表缺列、触发器阻断 INSERT 等真实写障碍
+        // （0号位 源码引用：AuditLogRepository.cs:26-38）。探测失败 → 抛异常，调用方治理 DML 前置整操作失败、业务零变更
+        // （fail-before-write）；回滚保证探测零留痕（AuditLog append-only 不受污染）。
         await using var tx = await _context.Database.BeginTransactionAsync(cancellationToken);
+        await _context.AuditLogs.AddAsync(new AuditLog
+        {
+            ActionCode = "PROBE",
+            OccurredAt = DateTime.UtcNow,
+            Remark = "EnsureWritableAsync 写探针（事务内回滚，零留痕）。",
+        }, cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
         await tx.RollbackAsync(cancellationToken);
+        _context.ChangeTracker.Clear();
     }
 
     public async Task<IEnumerable<AuditLog>> GetLogsByUserAsync(int userId, int pageIndex, int pageSize, CancellationToken cancellationToken = default)

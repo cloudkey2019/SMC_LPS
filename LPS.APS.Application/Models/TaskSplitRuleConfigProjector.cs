@@ -1,6 +1,7 @@
 using System.Text.Json;
 using LPS.APS.Core.Dto;
 using LPS.APS.Core.Entities.APS;
+using LPS.APS.Core.Exceptions;
 
 namespace LPS.APS.Application.Models;
 
@@ -10,7 +11,8 @@ namespace LPS.APS.Application.Models;
 ///   * SetRules / ExtractRules：ContentSnapshotJson.BatchPolicy 子块编解码（与 SetupTransitionRules 同轨，零 DDL）。
 /// 发布编排在 GovernanceVersionService.PublishParameterSetVersionAsync（读表 active 规则 → Project → 注入第⑧块源）；
 /// 装载在 FrozenStrategySnapshotProvider.DeserializeBatchPolicy（ContentSnapshotJson.BatchPolicy 子块 → 第⑧块）。
-/// 装载 fail-open（缺子块/为空/损坏 → 空列表：⑧ 为非必填块，与⑦ Setup 同轨，05契约 §6.10.5）；
+/// 装载 B-010 三态（3-NEW-P0-04，0号位 再审核 2026-10-10）：缺子块/null/显式空配置 → 空列表（合法未配置）；
+/// JSON 损坏 → 显式失败（抛 SetupRuleDataRedLineException，⑧ 为非必填块但损坏≠缺配）；
 /// 匹配终端（某 Material+Dept 经 ①②③ 仍无命中）按冻结 §十五 ④ fail-closed，由 1号位 消费侧在 Strategy Snapshot 校验阶段执行，装载端不承载信号位。
 /// 开发者：3号位
 /// </summary>
@@ -21,7 +23,7 @@ public static class TaskSplitRuleConfigProjector
 
     /// <summary>
     /// 把 active + 生效区间内规则投影为快照（去审计字段 Id/Created/Updated/IsActive + 兼容字段，仅业务键 + 参数）。
-    /// 生效区间以 asOf 判定（发布时传入，默认当前 UTC），采用**半开区间 [EffectiveFrom, EffectiveTo)**——
+    /// 生效区间以 asOf 判定（发布时传入，默认当前本地时间，R03 与实现 DateTime.Now 对齐），采用**半开区间 [EffectiveFrom, EffectiveTo)**——
     /// P0-04（0号位 审核 2026-10-09）：与治理写路径有效期排重（严格 &lt; 判定相切不重叠）保持一致——
     /// 相切窗口 [10:00,11:00) + [11:00,12:00) 同一瞬间至多一条有效，杜绝投影重复键；
     /// IsActive=false、超出生效窗或 ProductionDepartmentId 为 NULL 的行排除
@@ -59,8 +61,48 @@ public static class TaskSplitRuleConfigProjector
         => ExtractRules(contentSnapshotJson);
 
     /// <summary>
+    /// R02（0号位 再审核反证 2026-10-10）：找出 (MaterialId, ProductionDepartmentId) 分组内生效窗口重叠的规则 Id
+    ///（组内两两判定，O(n²)，组内行数少）。与治理写路径唯一有效期（EnsureUniqueEffectiveWindowAsync）同口径：
+    /// 半开区间 [EffectiveFrom, EffectiveTo)、NULL 无界、严格 &lt; 相切不重叠。纯函数、零 DB——发布前对存量行全量判定。
+    /// </summary>
+    public static IReadOnlyList<int> FindOverlappingWindowIds(IEnumerable<TaskSplitRuleConfig> rules)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+        var rows = rules.ToList();
+        var overlapIds = new HashSet<int>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            for (var j = i + 1; j < rows.Count; j++)
+            {
+                var a = rows[i];
+                var b = rows[j];
+                if (a.MaterialId != b.MaterialId || a.ProductionDepartmentId != b.ProductionDepartmentId)
+                {
+                    continue;
+                }
+
+                if (!Overlaps(a, b))
+                {
+                    continue;
+                }
+
+                overlapIds.Add(a.Id);
+                overlapIds.Add(b.Id);
+            }
+        }
+
+        return overlapIds.ToList();
+    }
+
+    /// <summary>半开区间重叠判定（[EffectiveFrom, EffectiveTo)，NULL 无界；严格 &lt; 相切不重叠——与 EnsureUniqueEffectiveWindowAsync SQL 口径一致）。</summary>
+    private static bool Overlaps(TaskSplitRuleConfig a, TaskSplitRuleConfig b)
+        => (a.EffectiveFrom is null || b.EffectiveTo is null || a.EffectiveFrom < b.EffectiveTo)
+           && (b.EffectiveFrom is null || a.EffectiveTo is null || b.EffectiveFrom < a.EffectiveTo);
+
+    /// <summary>
     /// 提取 BatchPolicy 子块（反序列化 BatchPolicyRuleSnapshot 列表）。
-    /// 装载 fail-open：缺子块/为空/损坏 → 空列表（⑧ 为非必填块，与⑦ Setup 同轨，05契约 §6.10.5）。
+    /// B-010 三态（3-NEW-P0-04，0号位 再审核 2026-10-10）：缺子块/null/显式空配置 → 空列表（合法未配置）；
+    /// JSON 结构损坏 → 抛 <see cref="Exceptions.SetupRuleDataRedLineException"/>（显式失败，不再静默空列表）。
     /// 冻结 §十五 fail-closed 属匹配终端 ④（某 Material+Dept 经 ①②③ 仍无命中 → Strategy Snapshot 校验失败），
     /// 由 1号位 消费侧执行，本装载端不承载信号位。
     /// </summary>
@@ -68,6 +110,7 @@ public static class TaskSplitRuleConfigProjector
     {
         if (string.IsNullOrWhiteSpace(contentSnapshotJson))
         {
+            // B-010 三态①：子块缺失 / null / 空串 → 该版本未配置批量策略（合法，非装载失败）。
             return [];
         }
 
@@ -77,17 +120,19 @@ public static class TaskSplitRuleConfigProjector
             if (!doc.RootElement.TryGetProperty(BatchPolicyBlockName, out var block)
                 || block.ValueKind == JsonValueKind.Null)
             {
-                // 子块缺失或为 null → 该版本未配置批量策略（合法，非装载失败）。
+                // B-010 三态①：子块缺失或为 null → 该版本未配置批量策略（合法，非装载失败）。
                 return [];
             }
 
+            // B-010 三态②：显式空配置 "BatchPolicy":[] → 空列表（明确空配置，合法）。
             return block.Deserialize<List<BatchPolicyRuleSnapshot>>(JsonOptions) ?? [];
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            // JSON 损坏 → 空列表（fail-open）。兜底由匹配终端 ④ fail-closed 承担（1号位 消费侧），
-            // 装载端不静默产出"版本追溯失真"假数据、也不承载信号位。
-            return [];
+            // B-010 三态③（3-NEW-P0-04）：JSON 结构损坏 → 显式失败。「完全无匹配」≠「已有配置但损坏」；
+            // 损坏子块不再被误当「缺配兜底」消费，版本追溯不失真（调用方 422 数据红线）。
+            throw new SetupRuleDataRedLineException(
+                $"ContentSnapshotJson.BatchPolicy 子块 JSON 损坏，无法装载批量策略快照：{ex.Message}", ex);
         }
     }
 

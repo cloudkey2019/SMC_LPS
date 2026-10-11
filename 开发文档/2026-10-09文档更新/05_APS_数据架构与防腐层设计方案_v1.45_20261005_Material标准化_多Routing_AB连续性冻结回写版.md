@@ -10,6 +10,8 @@
 **当前技术对齐基线**：《APS集成接口设计 v1.34》+《APS数据库字段说明文档 v5.1.9》+《DDL v5.1.8.3》  
 **当前状态**：正式变更态；待指导位Step 9复审，尚未冻结生效。
 
+> **勘误候选登记（2026-10-11 0号位 职责调整，待正式冻结回写与控制层收口）**：Routing ODS **事实**（Routing ODS 数据接入/同步、Routing Operation/Dependency/Eligibility 事实、真实 RouteCode/PathId 完整性、有效期与启停事实字段、数据质量）**Owner=3号位 特殊例外**；Routing 运行装载（装载筛选/身份保持/版本一致性/RoutingCandidates[]）=2号位；动态 Path 选择=1号位；5号位 继续 MES 执行回接及原 ODS。本文件「5号位MES事实（WO + 真实Routing + Slices[]…）」链指 MES 执行回接事实，不受本调整影响；Routing 优先级/路径偏好/动态选择仍不得建设第二套 Routing 平台。
+
 ## 历史版本变化说明（v1.43，2026-09-15）
 
 **修改依据**：业务基线v1.6 + 接口v1.32 + 核心走查V3.22  

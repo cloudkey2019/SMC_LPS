@@ -25,9 +25,9 @@
 |R-001|0号位负责项目总体业务裁决、范围控制和最终冻结确认|0|业务基线v1.10、0号位v1.7|
 |R-002|1号位负责有限产能求解与FinalTask生成：Resource、Start/End、Direction、C桶Batch、Routing选择、Setup、TaskDependency、Explanation；零APS DB I/O、零MES直读|1|业务基线v1.10、有限产能v1.8、1号位v1.7|
 |R-003|2号位负责运行主流程、Demand/Supply/Pegging/Allocation/Q、A/B/C、ContinuationKey、Solver调用、FinalTask结果校验/持久化、TaskNo/MES身份闭环|2|业务基线v1.10、2号位v2.1、接口v1.35|
-|R-004|3号位负责Auth/RBAC/Scope、Rule/Parameter/Strategy、Batch Policy、Direction治理、StageLeadTimeParam与Run/Candidate治理|3|3号位v1.9、字段v5.1.10|
+|R-004|3号位负责Auth/RBAC/Scope、Rule/Parameter/Strategy、Batch Policy、Direction治理、StageLeadTimeParam与Run/Candidate治理，以及**Routing ODS 事实（特殊例外，2026-10-11 0号位 职责调整）**：Routing ODS 数据接入/同步、Operation/Dependency/Eligibility ODS 事实、真实 RouteCode/PathId 完整性、有效期与启停事实字段、数据质量；**不负责**Routing 优先级/路径偏好/动态路径选择，不建设第二套 Routing 治理/选择平台|3|3号位v1.9、字段v5.1.10|
 |R-005|4号位负责页面、用户操作入口和展示；不计算Pegging/Solver/权限真相，不直接写核心运行DB|4|4号位v1.6|
-|R-006|5号位负责ODS、PI Position、MES执行事实、多Slice、Routing回接、LastReportResourceCode与查询接口；不负责Pegging/Q/A-B-C/TaskNo/Solver/StageLeadTimeParam治理|5|5号位v1.7、字段v5.1.10|
+|R-006|5号位负责ODS（**Routing ODS 事实专项除外——2026-10-11 0号位 职责调整归3号位特殊例外**）、PI Position、MES执行事实、多Slice、Routing回接、LastReportResourceCode与查询接口；不负责Pegging/Q/A-B-C/TaskNo/Solver/StageLeadTimeParam治理|5|5号位v1.7、字段v5.1.10|
 
 ## 三、ScheduleRun / PlanVersion / Domain / Candidate
 

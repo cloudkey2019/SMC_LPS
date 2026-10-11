@@ -26,6 +26,12 @@ export interface CtpInput {
   customerCode?: string
   /** 业务用途标签（CTP / INSERT_IMPACT_ANALYSIS — 后端不允许激活） */
   purpose: 'CTP' | 'INSERT_IMPACT_ANALYSIS'
+  /**
+   * 事业部 / 业务域键（前端不再传，2026-09-30 撤下拉后由后端按 materialCode+factoryCode 自动 resolve）
+   *  - 后端 CtpEvaluateRequest.DomainKey 改 optional（契约登记 v1.0 §3.2）
+   *  - F-G4 业务范围校验不撤：resolve 后的 domainKey 仍走 _dataScopeService.EnsureInScopeAsync
+   *  - 多域歧义 / 无匹配 → 后端 400「无法自动确定 DomainKey」（红线 #4）
+   */
 }
 
 /** CTP 受影响订单 */

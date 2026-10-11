@@ -39,7 +39,7 @@ public class RoutingOperationController : ControllerBase
     private string GetCurrentUserCode()
         => User.FindFirst(ClaimTypes.Name)?.Value ?? string.Empty;
 
-    /// <summary>统一错误映射：422 数据红线 / 404 不存在 / 400 参数；未知异常上抛由框架处理（500）</summary>
+    /// <summary>统一错误映射：422 数据红线 / 404 不存在 / 400 参数 / 403 业务范围越界；未知异常上抛由框架处理（500）</summary>
     private IActionResult HandleError(Exception ex, string action)
     {
         _logger.LogWarning(ex, "工序工艺属性治理 {Action} 失败", action);
@@ -47,6 +47,8 @@ public class RoutingOperationController : ControllerBase
         {
             SetupRuleDataRedLineException data => UnprocessableEntity(ApiResponse.Fail(422, data.Message)),
             ResourceNotFoundException missing => NotFound(ApiResponse.Fail(404, missing.Message)),
+            // 3-NEW-P1-02（0号位 再审核）：Scope 越界必须映射 403（原未知异常走 500），与 SetupRuleController / TaskSplitRuleConfigController 一致。
+            ScopeViolationException scope => StatusCode(403, ApiResponse.Fail(403, scope.Message)),
             ArgumentException argument => BadRequest(ApiResponse.Fail(400, argument.Message)),
             _ => throw ex,
         };
@@ -64,7 +66,7 @@ public class RoutingOperationController : ControllerBase
 
         try
         {
-            var data = await _service.ListOperationsAsync(materialId, ct);
+            var data = await _service.ListOperationsAsync(materialId, GetCurrentUserId(), ct);
             return Ok(ApiResponse<IReadOnlyList<RoutingOperationDto>>.Success(data));
         }
         catch (Exception ex)

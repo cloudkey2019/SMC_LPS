@@ -21,10 +21,10 @@ import {
   ORDER_SUMMARY_STATUS_LABELS,
   ESTIMATED_BADGE_TEXT,
   PLAN_VERSION_STATUS_LABELS,
+  PLAN_VERSION_STATUS_TAG,
   SETUP_SOURCES,
   SETUP_SOURCE_META,
-  type OrderSummaryStatus,
-  type PlanVersionStatus
+  type OrderSummaryStatus
 } from '@/api/aps-v1/types'
 
 import {
@@ -62,20 +62,6 @@ const ORDER_STATUS_ORDER: OrderSummaryStatus[] = [
   'ESTIMATED_ONLY',
   'UNSCHEDULED'
 ]
-
-/* ===== 版本状态标签（从 common.ts 共享 6 态中文映射） ===== */
-const VERSION_STATUS_LABELS = PLAN_VERSION_STATUS_LABELS
-
-const VERSION_STATUS_COLORS: Record<
-  PlanVersionStatus,
-  'success' | 'primary' | 'warning' | 'info' | 'danger'
-> = {
-  ACTIVE: 'success',
-  BUILDING: 'primary',
-  CANDIDATE: 'warning',
-  FAILED: 'danger',
-  ARCHIVED: 'info'
-}
 
 /* ===== Domain 异常标签 ===== */
 const ISSUE_LABELS: Record<string, string> = {
@@ -186,11 +172,8 @@ onMounted(refresh)
           <div v-for="v in data.activeVersions" :key="v.planVersionId" class="version-card">
             <div class="version-card-head">
               <div class="version-code">{{ v.versionCode }}</div>
-              <ElTag
-                :type="VERSION_STATUS_COLORS[v.status as PlanVersionStatus] || 'info'"
-                size="small"
-              >
-                {{ VERSION_STATUS_LABELS[v.status as PlanVersionStatus] || v.status }}
+              <ElTag :type="PLAN_VERSION_STATUS_TAG[v.status]" size="small">
+                {{ PLAN_VERSION_STATUS_LABELS[v.status] }}
               </ElTag>
             </div>
             <ElDescriptions :column="2" size="small" class="version-desc">

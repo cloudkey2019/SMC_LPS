@@ -21,16 +21,19 @@ using Microsoft.Extensions.Logging;
 namespace LPS.APS.Tests.Integration;
 
 /// <summary>
-/// 主链 BFS 只读探针（用户 2026-09-18 裁决弃旧 DFS）：RunBfsOnlyAsync 对真实 PlanVersion 328 跑整域全量订单，
-/// 验证新 BFS 展开耗时 + I1/I2 红线校验（ValidatePeggingResult）。不落库、不 Solver，可反复跑。
+/// 主链 BFS 只读探针（用户 2026-09-18 裁决弃旧 DFS）：RunBfsOnlyAsync 对**动态解析出的订单最多 PlanVersion**
+/// 跑整域全量订单，验证新 BFS 展开耗时 + I1/I2 红线校验（ValidatePeggingResult）。不落库、不 Solver，可反复跑。
 /// 1 单探针已证：BFS 展开 12ms（21 节点，重复展开 0）+ 红线全过；本测试验证整域（含病态共享子件订单）不拖垮。
 /// </summary>
+/// <remarks>
+/// 【2026-10-10 修复】原写死 <c>PlanVersionId = 328</c>（FAMILY_X），该版本 09-29 清理后已不存在
+/// ⇒ 测试必失败。改为动态解析，口径见 <see cref="PlanVersionTestFixture"/>；解析不到 = 环境态 ⇒ <c>Skip</c>。
+/// </remarks>
 public class BomBfsMainchainProbeTest
 {
-    private const int PlanVersionId = 328;             // FAMILY_X（DomainKey 从库读，不硬编码）
     private const long StrategyProfileVersionId = 251L; // SP-DEMO-V2.0
 
-    [Fact(DisplayName = "BFS主链整域只读：全量订单展开耗时+I1/I2红线")]
+    [SkippableFact(DisplayName = "BFS主链整域只读：全量订单展开耗时+I1/I2红线")]
     public async Task BfsMainchain_AllOrders()
     {
         var services = new ServiceCollection();
@@ -56,18 +59,24 @@ public class BomBfsMainchainProbeTest
         var orchestrator = sp.GetRequiredService<IPeggingOrchestrator>();
         var conn = sp.GetRequiredService<DatabaseConnectionManager>();
 
+        var planVersionId = await PlanVersionTestFixture.ResolveMostPopulatedAsync(conn);
+        Skip.If(planVersionId is null, "库内无任何带订单的 PlanVersion —— 环境态，非缺陷。");
+        Skip.IfNot(await PlanVersionTestFixture.IsPublishedStrategyProfileVersionAsync(conn, StrategyProfileVersionId),
+            $"StrategyProfileVersion {StrategyProfileVersionId} 不存在或非 PUBLISHED —— 环境态，非缺陷。");
+        var pv = planVersionId!.Value;
+
         var domainKey = await conn.QueryFirstOrDefaultAsync<string>(
-            "SELECT DomainKey FROM PlanVersion WHERE Id=@p", new { p = PlanVersionId }, db: DatabaseId.APS);
+            "SELECT DomainKey FROM PlanVersion WHERE Id=@p", new { p = pv }, db: DatabaseId.APS);
         var orderIds = (await conn.QueryAsync<long>(
             "SELECT Id FROM [Order] WHERE PlanVersionId=@p ORDER BY Id",
-            new { p = PlanVersionId }, db: DatabaseId.APS)).ToList();
+            new { p = pv }, db: DatabaseId.APS)).ToList();
 
-        Console.WriteLine($"整域探针 Domain={domainKey} 订单数={orderIds.Count}");
+        Console.WriteLine($"[夹具] 动态解析 PlanVersion={pv} Domain={domainKey} 订单数={orderIds.Count}");
 
         var now = DateTime.Now;
         var request = new PeggingExecutionRequest
         {
-            PlanVersionId      = PlanVersionId,
+            PlanVersionId      = pv,
             DomainKey          = domainKey ?? string.Empty,
             OrderIds           = orderIds,
             SnapshotAt         = now,

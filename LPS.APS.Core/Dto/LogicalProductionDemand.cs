@@ -168,8 +168,17 @@ public sealed class LogicalProductionDemand
     /// 与 <see cref="PathId"/> 成对使用；**A/B 缺值应 Fail Closed，不得回退猜唯一 Path**（0号位 2026-10-07 裁决 §三）。
     ///
     /// ⚠ 2026-10-09：由 <c>init</c> 放开为 <c>set</c> —— 分桶（<c>ApplyContinuityBucketing</c>）发生在
-    ///   <c>LoadRoutingContextAsync</c> **之前**，切片构造时拿不到路由上下文，只能在路由装载后由
+    ///   <c>LoadRoutingContextAsync</c> **之前**，切片构造时无法拿到路由上下文，只能在路由装载后由
     ///   <c>FillContinuationRouteIdentities</c> 统一回填（与 <see cref="StartStageCode"/> 同款理由）。
+    ///
+    /// 🔴 **桥接期取值 ≠ 业务真值**：该回填的取值源是上游刚被 <c>NormalizeToSingleRoute</c> 就地改写的路由载荷
+    ///   ⇒ 当前实际回填的是 **`DEFAULT / 1`**（1号位 技术适配值）。冻结 <c>11_2号位v2.1</c> 执行红线 <b>Q1</b>
+    ///   明令「`DEFAULT / 1` **不得**作为归一化后的业务真值」「A/B 向 1号位 发送固定**真实** Route/Path，
+    ///   **禁止预先压成 DEFAULT/1**」⇒ 本字段在桥接期**仅供 1号位 查图，不得当作持久化/FinalTask/Task/MES
+    ///   执行身份的真实路径来源**。终态 = ① 1号位 去 <c>StageTimingNodeBuilder.GetRoutelessStages</c> 的
+    ///   <c>RouteCode != "DEFAULT"</c> 判断（我方归一化删除补丁已备好、压住不发）+ ② 5号位 按 slice 交付
+    ///   真实 <c>RouteCode / PathId</c>（Q-1008-1）。两者齐备后 <c>FillContinuationRouteIdentities</c> 因
+    ///   「已带真值即跳过」自动失效，本字段即为真值。桥接期每次 Run 都有 WARNING 留痕，不静默。
     /// </summary>
     public string? RouteCode { get; set; }
 

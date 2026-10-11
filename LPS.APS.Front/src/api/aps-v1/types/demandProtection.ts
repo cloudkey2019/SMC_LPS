@@ -4,13 +4,19 @@
  * @see 4号位文档第 13 节（手工释放需求保护）
  * @see 审核报告 P1-11 / 4号位 → 5号位 → 2号位 链路
  *
- * 端点路径（**前瞻性约定**，5号位 Controller 当前不存在；待落地后复核）：
- *  - GET  /api/demand-protection                       列表（list = preview：每条带 lockIds + lockedQty）
- *  - POST /api/demand-protection/release               释放（输入 demandKey + lockIds + reason + actor）
+ * 端点路径（10-09 lps/ 落地后，对齐 5号位 Controller 契约）：
+ *  - GET    /api/demand-protection                       列表（per-lock 扁平，与后端 DemandProtectionDto 一一对应）
+ *  - GET    /api/demand-protection/summary               汇总（KPI 4 卡：Total/Active/Released/Broken + TotalLockedQty）
+ *  - POST   /api/demand-protection/release               释放（输入 lockIds + reason + actor）
+ *
+ * 后端契约（10-09 lps/ 落地后）：
+ *  - 列表是**per-lock**扁平结构（一行 = 一个 DemandSupplyHardLock），5号位 不在 5号位 端聚合
+ *  - 聚合（按 demandKey group by + PARTIALLY_RELEASED 派生）由**前端 store 完成**（见 5号位 R1 回执）
+ *  - KPI 4 卡由 /summary 端点给权威数（DB COUNT/SUM）；前端不本地推算
  *
  * 4号位职责边界：
- *  - 不计算保护数量（lockedQty 由 5号位聚合，4号位只展示）
- *  - 不计算 status 派生态（ACTIVE / RELEASED / PARTIALLY_RELEASED 由 5号位聚合）
+ *  - 不计算保护数量（lockedQty 由 5号位 真聚合在原始行；前端仅在聚合视图上求和）
+ *  - 不计算 status 派生态（ACTIVE / RELEASED / PARTIALLY_RELEASED 由前端 store 聚合；详见 5号位 2026-10-09 函件 R1 回执）
  *  - 不写锁表（5号位转发给 2号位 `IDemandSupplyHardLockRepository.ReleaseLocksAsync`）
  *  - actor 仅作回显/审计参考，真实身份以 5号位 JWT 校验为准
  *
@@ -19,7 +25,7 @@
  *
  * 命名冲突警告：
  *  - `types/common.ts` 已导出 `SUPPLY_TYPES` / `SupplyType`（9 值，来自文档第 13 节 Supply 追溯口径）
- *  - 2号位 Entity `DemandSupplyHardLock` 的 SupplyType 是 6 值集合（INVENTORY / WIP / PIPELINE / PI / PURCHASE_ORDER / VMI）
+ *  - 后端 Entity `DemandSupplyHardLock` 的 SupplyType 是 6 值集合（INVENTORY / WIP / PIPELINE / PI / PURCHASE_ORDER / VMI）
  *  - 两者**不同集合**；`types/index.ts` 用 `export *` 再导出时同名会触发 TS2308，故用 `HARD_LOCK_SUPPLY_TYPES` / `HardLockSupplyType` 前缀隔离
  *  - `DemandType` 同样用 `DemandProtectionDemandType` 前缀避免与 common 中的同名标识冲突
  */
@@ -81,12 +87,13 @@ export const HARD_LOCK_SUPPLY_TYPE_LABELS: Record<HardLockSupplyType, string> = 
 }
 
 /**
- * 聚合 DTO 自身的 status（由 5号位根据明细 lockDetail.status 派生）：
+ * 聚合 DTO 自身的 status（由前端 store applyReleaseResultsToList 根据明细 lockDetail.status 派生）：
  *  - ACTIVE              全部 lockDetail.status = ACTIVE
  *  - RELEASED            全部 lockDetail.status = RELEASED
  *  - PARTIALLY_RELEASED  混合
  *
  * 注意：4号位 Full Release 后聚合 status 必为 RELEASED；PARTIALLY_RELEASED 仅用于展示历史数据。
+ * 实际写入：[store/modules/aps/demandProtection.ts:172-174](frontNew/src/store/modules/aps/demandProtection.ts#L172-L174)。
  */
 export type DemandProtectionStatus = 'ACTIVE' | 'RELEASED' | 'PARTIALLY_RELEASED'
 
@@ -98,7 +105,67 @@ export const DEMAND_PROTECTION_STATUS_LABELS: Record<DemandProtectionStatus, str
 
 /* ===== 接口 ===== */
 
-/** Lock 明细（只读） */
+/**
+ * 后端 per-lock 原始 DTO（直映 lps/LPS.APS.Core/Dto/DemandProtectionDtos.cs DemandProtectionDto）
+ *  - 一行 = 一个 DemandSupplyHardLock；后端不聚合
+ *  - 5号位 全仓不存 `DemandProtectionStatus 4 态` 派生；这是前端 store 的事
+ *  - 字段集合：Id / LockType / DemandType / DemandKey / SupplyType / SupplyKey / LockedQty / Status / CreatedAt/CreatedBy / ReleasedAt/ReleasedBy/ReleaseReason / SourcePlanVersionId / SourceAllocationSequence
+ *  - 序列化方向：lps/ Program.cs JsonNamingPolicy.CamelCase（@see lps/LPS.APS.Web/Program.cs:93）→ 全部字段小写驼峰
+ *
+ * 4号位 视角：
+ *  - store 取 BackendDemandProtectionRow[] 后按 demandKey group by → 构造 DemandProtectionDto（聚合）
+ *  - /summary 端点回包是 DemandProtectionSummary
+ */
+export interface BackendDemandProtectionRow {
+  /** 单锁 Id（与 lps Entity DemandSupplyHardLock.Id 对应） */
+  id: number
+  /** 锁类型：STRICT_BINDING / DEMAND_PROTECTION */
+  lockType: HardLockType
+  /** 需求类型（后端 string；前端窄化到已知枚举，未知串保留原始值） */
+  demandType: DemandProtectionDemandType
+  /** 需求键（聚合维度） */
+  demandKey: string
+  /** 供应类型（后端 string；前端窄化到 HardLockSupplyType） */
+  supplyType: HardLockSupplyType
+  /** 供应键 */
+  supplyKey: string
+  /** 单锁锁定数量 */
+  lockedQty: number
+  /** 后端 Status 3 枚举（5号位 全仓不存 PARTIALLY_RELEASED 派生态） */
+  status: HardLockStatus
+  /** 来源计划版本 ID（Entity SourcePlanVersionId） */
+  sourcePlanVersionId?: number
+  /** 来源分配序列（Entity SourceAllocationSequence） */
+  sourceAllocationSequence?: number
+  createdAt: IsoDateTime
+  createdBy?: string
+  /** 释放时间（仅 status=RELEASED 时有值） */
+  releasedAt?: IsoDateTime
+  releasedBy?: string
+  releaseReason?: string
+}
+
+/**
+ * /summary 端点回包（直映 lps/LPS.APS.Core/Dto/DemandProtectionDtos.cs DemandProtectionSummaryDto）
+ *  - KPI 4 卡权威数（DB COUNT/SUM）：与筛选条件完全脱钩（summary = 全集）
+ *  - items 上限 50 条 ACTIVE（@see lps/.../DemandProtectionRepository.cs GetSummaryAsync）
+ */
+export interface DemandProtectionSummary {
+  /** 全集记录数（含 ACTIVE/RELEASED/BROKEN） */
+  totalCount: number
+  /** ACTIVE 行数 */
+  activeCount: number
+  /** RELEASED 行数（含 PARTIALLY_RELEASED 的源行） */
+  releasedCount: number
+  /** BROKEN 行数 */
+  brokenCount: number
+  /** ACTIVE 锁定数量 SUM */
+  totalLockedQty: number
+  /** 前 50 条 ACTIVE 行（详情 KPI 副展示用） */
+  items: BackendDemandProtectionRow[]
+}
+
+/** Lock 明细（只读；用于聚合视图 Drawer 渲染；来自后端行字段投影） */
 export interface DemandProtectionLockDetailDto {
   lockId: number
   supplyType: HardLockSupplyType
@@ -131,7 +198,7 @@ export interface DemandProtectionDto {
   lockedQty: number
   /** 当前 lockDetails 长度 */
   lockCount: number
-  /** 派生态（由 5号位聚合，4号位不计算） */
+  /** 派生态（由前端 store 聚合，4号位不计算；见 §上方 DemandProtectionStatus 类型注释） */
   status: DemandProtectionStatus
   /** Lock 明细全集（含 ACTIVE / RELEASED / BROKEN） */
   lockDetails: DemandProtectionLockDetailDto[]
@@ -147,12 +214,25 @@ export interface DemandProtectionDto {
   releaseReason?: string
 }
 
-/** 列表筛选条件 */
+/**
+ * 列表筛选条件（10-09 落地，对齐 5号位 Controller QueryAsync 签名）
+ *  - 全部可选；与 lps/LPS.APS.Application/Services/DemandProtectionAppService.cs QueryAsync 一一对应
+ *  - 字段均传空时不带查询参数（后端默认 take=100 / skip=0）
+ *  - demandKey / supplyKey 是 substring 模糊匹配（@see lps/.../DemandProtectionRepository.cs:48-49 LIKE '%xx%'）
+ */
 export interface DemandProtectionListFilter {
-  demandTypes?: DemandProtectionDemandType[]
-  lockTypes?: HardLockType[]
-  /** 仅返回 status='ACTIVE' */
-  activeOnly?: boolean
+  /** 需求键 substring（例：ORDER_12345） */
+  demandKey?: string
+  /** 供应键 substring */
+  supplyKey?: string
+  /** 锁类型（单值；与 backend LockType 字面量一致） */
+  lockType?: HardLockType
+  /** 状态（单值；3 枚举；与 backend Status 字面量一致） */
+  status?: HardLockStatus
+  /** 分页 skip（默认 0） */
+  skip?: number
+  /** 分页 take（默认 100 / 上限 500；后端硬截断） */
+  take?: number
 }
 
 /**

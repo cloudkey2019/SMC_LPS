@@ -8,6 +8,7 @@
  *  - loading / error：UI 态
  *
  * 注意：
+ *  - 2026-09-30：前端撤事业部下拉，domainKey 不再由前端传入；后端按 materialCode+factoryCode 自动 resolve（契约登记 v1.0 §3.2）
  *  - 4号位文档第 7 节 / U11：CTP 不暴露"采用"按钮，只展示结果
  *  - 写入通过 Controller（ctpApi.evaluate）发起，不直接改库
  */

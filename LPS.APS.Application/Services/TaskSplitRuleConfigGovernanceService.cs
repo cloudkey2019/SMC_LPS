@@ -100,7 +100,13 @@ public sealed class TaskSplitRuleConfigGovernanceService : ITaskSplitRuleConfigG
 
             where.Append(" AND ProductionDepartmentId IN @AllowedDeptIds");
             p.Add("AllowedDeptIds", allowedDeptIds.ToList());
-            // 显式传入越权部门已在 ResolveAllowedDepartmentIdsAsync 抛 403；到达此处说明在授权内，无需再拼等值条件。
+            // 3-NEW-P1-01（0号位 再审核，v1.2 契约）：非 Global 查询同时尊重「授权集合」与「用户显式条件」——
+            // 显式传入部门在授权内时补等值过滤（IN∩=，仅返回该部门，COUNT 与页结果一致）；越权部门已在 ResolveAllowedDepartmentIdsAsync 抛 403。
+            if (productionDepartmentId.HasValue)
+            {
+                where.Append(" AND ProductionDepartmentId = @ProductionDepartmentId");
+                p.Add("ProductionDepartmentId", productionDepartmentId.Value);
+            }
         }
 
         p.Add("Offset", offset);
@@ -380,12 +386,33 @@ WHERE Id = @Id";
                 $"存在不符合发布有效规则的存量执行批拆分规则（Id={string.Join(",", invalidIds)}），阻断参数集发布；请先治理（停用或修正）。");
         }
 
+        // R02（0号位 再审核反证）：同 (MaterialId, ProductionDepartmentId) 分组内生效窗口重叠（半开区间 [EffectiveFrom, EffectiveTo)、
+        // NULL 无界、严格 < 相切不重叠，与写路径 EnsureUniqueEffectiveWindowAsync 同口径）→ 阻断发布并列 Id，杜绝重复键快照。
+        // 纯计算归 TaskSplitRuleConfigProjector.FindOverlappingWindowIds（单测钉死，零 DB）。
+        var overlapIds = TaskSplitRuleConfigProjector.FindOverlappingWindowIds(rows);
+        if (overlapIds.Count > 0)
+        {
+            throw new SetupRuleDataRedLineException(
+                $"存在同键生效窗口重叠的存量执行批拆分规则（Id={string.Join(",", overlapIds)}），阻断参数集发布；请先治理（修正窗口或停用）。");
+        }
+
         return TaskSplitRuleConfigProjector.Project(rows);
     }
 
-    /// <summary>快照发布资格校验（与治理写路径 Validate 同口径）：Preferred 必填且 &gt; 0、Min ≤ Max、Preferred 处于 [Min, Max]。</summary>
+    /// <summary>快照发布资格校验（与治理写路径 Validate 同口径）：Preferred 必填且 &gt; 0、Min/Max 非负、Min ≤ Max、Preferred 处于 [Min, Max]。</summary>
     private static bool IsSnapshotEligible(TaskSplitRuleConfig r)
     {
+        // 3-NEW-P0-03（0号位 再审核）：Min/Max 非负校验——存量负值行阻断发布，严禁默默当有效。
+        if (r.MinExecutionBatchQty.HasValue && r.MinExecutionBatchQty.Value < 0)
+        {
+            return false;
+        }
+
+        if (r.MaxExecutionBatchQty.HasValue && r.MaxExecutionBatchQty.Value < 0)
+        {
+            return false;
+        }
+
         if (!r.PreferredBatchQty.HasValue || r.PreferredBatchQty.Value <= 0)
         {
             return false;

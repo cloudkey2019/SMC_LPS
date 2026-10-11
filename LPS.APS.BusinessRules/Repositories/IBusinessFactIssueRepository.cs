@@ -47,4 +47,13 @@ public interface IBusinessFactIssueRepository
         int take = 100,
         CancellationToken ct = default,
         IReadOnlySet<string>? allowedFactories = null);
+
+    /// <summary>聚合命中总数（分页前，BOM Workset Issues + MaterialStageDeptContext Issues）</summary>
+    Task<int> CountAllAsync(
+        string? source = null,
+        string? materialCode = null,
+        string? severity = null,
+        string? reviewStatus = null,
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null);
 }

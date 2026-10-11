@@ -209,6 +209,7 @@ public class ContinuityShareTests
             DemandKey = d.Key,
             MaterialId = d.MaterialId,
             FactoryId = 1,
+            StartStageCode = stage,
             NetOutputQty = d.Qty,
             PlannedProcessQty = d.Qty,
             RequiredAvailableTime = d.RequiredAvailableTime,
@@ -296,7 +297,7 @@ public class ContinuityShareTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是连续份额（A/B 恒 1 批）与自由需求共存 ⇒ Material 级宽松策略。
-                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId))
+                BatchPolicies = TestBatchPolicy.Permissive(logicalDemands.Select(d => d.MaterialId), deptId)
             }
         };
     }

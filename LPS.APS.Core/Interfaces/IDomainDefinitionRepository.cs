@@ -39,6 +39,14 @@ public interface IDomainDefinitionRepository
     /// <summary>DomainKey 唯一性检查（excludeId 用于更新时排除自身）</summary>
     Task<bool> ExistsByKeyAsync(string domainKey, int? excludeId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// scope 组合唯一性检查（G2，仅针对启用域 IsActive=1）：
+    /// FAMILY 按 ProductFamilyId 唯一启用；FACTORY_FAMILY 按 FactoryId+ProductFamilyId 唯一启用。
+    /// excludeId 用于更新/启用时排除自身。属 3号位 合法性校验职责（Domain裁决 §4.3），非冻结 DDL 红线。
+    /// </summary>
+    Task<bool> ExistsActiveScopeComboAsync(
+        string scopeType, int productFamilyId, int? factoryId, int? excludeId = null, CancellationToken ct = default);
+
     /// <summary>产品族引用存在性检查（ProductFamily.Id）</summary>
     Task<bool> ProductFamilyExistsAsync(int productFamilyId, CancellationToken ct = default);
 

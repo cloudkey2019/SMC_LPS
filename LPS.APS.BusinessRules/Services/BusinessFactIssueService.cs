@@ -38,4 +38,19 @@ public class BusinessFactIssueService
             source, materialCode, factoryCode, severity, reviewStatus,
             skip, take, ct, allowedFactories);
     }
+
+    /// <summary>
+    /// 聚合命中总数（分页前，供 PageResult.Total）
+    /// </summary>
+    public async Task<int> CountAllAsync(
+        string? source = null,
+        string? materialCode = null,
+        string? severity = null,
+        string? reviewStatus = null,
+        CancellationToken ct = default,
+        IReadOnlySet<string>? allowedFactories = null)
+    {
+        return await _repository.CountAllAsync(
+            source, materialCode, severity, reviewStatus, ct, allowedFactories);
+    }
 }

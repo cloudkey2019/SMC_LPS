@@ -154,7 +154,9 @@ public class Phase5BatchDirectionTests
                     new BatchPolicyRuleSnapshot
                     {
                         MaterialId = MaterialId,
-                        ProductionDepartmentId = null,   // Material 级（覆盖任意部门号）
+                        // AUD-1-004（0号位 2026-10-10 §3）：必须**明确部门** ——
+                        //   NULL 部门历史行在 Solver 里**不再**是「覆盖任意部门」的 Material 级默认。
+                        ProductionDepartmentId = DeptId,
                         MinExecutionBatchQty = 1m,
                         MaxExecutionBatchQty = 1m,
                         AllowSplit = true,
@@ -460,7 +462,9 @@ public class Phase5BatchDirectionTests
                     new BatchPolicyRuleSnapshot
                     {
                         MaterialId = MaterialId,
-                        ProductionDepartmentId = null,   // Material 级（覆盖任意部门号）
+                        // AUD-1-004（0号位 2026-10-10 §3）：必须**明确部门** ——
+                        //   NULL 部门历史行在 Solver 里**不再**是「覆盖任意部门」的 Material 级默认。
+                        ProductionDepartmentId = DeptId,
                         MinExecutionBatchQty = 1m,
                         MaxExecutionBatchQty = 1m,
                         AllowSplit = true,

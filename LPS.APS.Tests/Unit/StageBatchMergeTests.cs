@@ -93,6 +93,18 @@ public class StageBatchMergeTests
         var batchKey = Assert.Single(batchKeys);
         Assert.False(string.IsNullOrEmpty(batchKey));
 
+        // ── AUD-1-002 整改（0号位 2026-10-10《APS_V1_2_20261010.md》§3，P0/CONFIRMED）──
+        //   **执行批身份（跨 Stage 工序链）** 与 **Stage 执行批身份（Stage 内 MES 批）** 必须**分开**：
+        //     · `ExecutionBatchDraftKey` = 该执行批**跨整个 Routing Path** 的身份 ⇒ 本夹具 1 个；
+        //     · `StageExecutionBatchDraftKey` = **Stage 内** MES 批身份（T-002「TaskNo 是 Stage 内 MES 执行批身份」、
+        //       T-003「MES 工单不跨 Stage」）⇒ 三道工序分属 STAGE1/2/3 ⇒ **3 个互不相同**。
+        //   ⇒ 本条即「**跨 Stage 不得共用一个 MES 工单**」在 1号位 出口的反证：
+        //     若三个不同 Stage 的 Task 共用一个 `StageExecutionBatchDraftKey`（旧实现），本条**红**。
+        //     （最终 `TaskNo` / MES 工单归组由 2号位 在 FinalTask 之后完成，须与其联验。）
+        var stageKeys = result.FinalTasks.Select(t => t.StageExecutionBatchDraftKey).ToList();
+        Assert.All(stageKeys, k => Assert.False(string.IsNullOrEmpty(k)));
+        Assert.Equal(3, stageKeys.Distinct(StringComparer.Ordinal).Count());
+
         // 完整 Operation 链：三道工序齐备，且**净产出 50 按 Stage 正确计一次**（不得 150）
         Assert.Equal(
             new[] { "OP10", "OP20", "OP30" },
@@ -457,6 +469,252 @@ public class StageBatchMergeTests
         Assert.DoesNotContain("计划窗口", unsched.Reason);
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    // M-07（AUD-1-R01）多个合法锚点：必须**逐锚点**择优，不得只试 `stageBatches[0]`
+    //   复审判词（本号位核对：**成立**）：旧实现只试第一个合法合批目标（`scheduledTasks` 中出现最早者）
+    //     ⇒ 存在多个合法锚点时可能漏掉业务更优方案（复审明确**不要求**穷举组合，逐锚点即可）。
+    //
+    //   夹具（三条需求 A30 / B20 / C10，同一 Path、同三道工序，各资源 M→M 显式换型 60min，单一宽窗）：
+    //     · **A 交期收紧到 D+120 01:40（+100min）** —— A 独立排程 90min 完成（[0,30]/[30,60]/[60,90]，各资源首件 ⇒ Setup 0）
+    //       恰在交期内；**任何把 A 批延长的合批**都会被 P0-04 交期保护拒掉。
+    //     · A 交期紧 ⇒ **B 无法并入 A**（合批 A+B 完成 150min > A 交期 100min ⇒ 拒）⇒ B 独立成批（完成 270min）。
+    //       于是 C 到来时**存在两个合法锚点**：`stageBatches[0] = A 批`、`stageBatches[1] = B 批`。
+    //     · C 侧（交期宽松）：
+    //         - 并入 **A 批**（A+C=40）：重排后完成 370min > A 交期 100min ⇒ **交期保护拒绝**；
+    //         - 并入 **B 批**（B+C=30）：完成 180min，**远早于独立排程的 340min** ⇒ 冻结目标 ③ 胜出。
+    //   ⇒ **旧实现只试 `stageBatches[0]`（A 批）**：合并被拒 ⇒ 回落独立排程 ⇒ 9 条 Task / 3 个批键（本条**红**）；
+    //     整改后逐锚点试排 ⇒ 选中 B 批 ⇒ 6 条 Task / 2 个批键（A 批 + B∪C 批）。
+    // ════════════════════════════════════════════════════════════════════
+    [Fact]
+    public async Task M_07_多锚点_须逐锚点择优_不得只试第一个合法合批目标()
+    {
+        var request = Build(
+            paths: new[] { ThreeOpPath("RT", 1, 1, 2, 3, 1m) },
+            demands: new[]
+            {
+                // A 交期紧（+100min）：独立排 90min 可满足；被合批延长即违约 ⇒ 使 B 无法并入 A。
+                new DemandSpec("A", 1, 30m, Day.AddDays(120).AddMinutes(100)),
+                new DemandSpec("B", 2, 20m, Day.AddDays(200)),
+                new DemandSpec("C", 3, 10m, Day.AddDays(200))
+            },
+            calendar: new[]
+            {
+                (1, Day.AddDays(120), Day.AddDays(125)),
+                (2, Day.AddDays(120), Day.AddDays(125)),
+                (3, Day.AddDays(120), Day.AddDays(125))
+            },
+            setupRules: SameProductSetup(60m, 1, 2, 3));
+
+        var result = await _solver.SolveAsync(request);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Empty(result.UnscheduledTasks);
+
+        // 合批胜出且**并入第二个锚点（B 批）**：6 条 Task = A 批 3 条 + 合成批 3 条；2 个执行批键。
+        //   旧实现只试 A 批 ⇒ 并入 A 批被交期保护拒绝且不再回落试 B 批 ⇒ 退化成 9 条 / 3 个批键 ⇒ 下列断言**红**。
+        Assert.Equal(6, result.FinalTasks.Count);
+        Assert.Equal(2, result.FinalTasks.Select(t => t.ExecutionBatchDraftKey).Distinct().Count());
+
+        var aTasks = result.FinalTasks.Where(t => t.SourceDraftId == "A").ToList();
+        Assert.Equal(3, aTasks.Count);
+        Assert.All(aTasks, t => Assert.Equal(30m, t.Quantity));
+
+        var merged = result.FinalTasks.Where(t => t.SourceDraftId == "B").ToList();
+        Assert.Equal(3, merged.Count);
+        Assert.All(merged, t => Assert.Equal(30m, t.Quantity));   // B20 + C10
+
+        // 份额闭合：A30 / B20 / C10 各**恰好一次**
+        Assert.Equal(30m, result.AllocationShares.Where(s => s.AllocationSequence == 1).Sum(s => s.ComponentQty));
+        Assert.Equal(20m, result.AllocationShares.Where(s => s.AllocationSequence == 2).Sum(s => s.ComponentQty));
+        Assert.Equal(10m, result.AllocationShares.Where(s => s.AllocationSequence == 3).Sum(s => s.ComponentQty));
+        Assert.Equal(60m, result.AllocationShares.Sum(s => s.ComponentQty));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // M-08（AUD-1-001）连续两次 Merge：份额**不得按 Operation 重复累加**
+    //   复审 §7 第 1 项：A30+B20+C10 **连续两次 Merge**、三 Operation、净产出 60、
+    //     A/B/C 分别 30/20/10，Phase5 完整闭合。
+    //   缺陷形态（旧实现）：A+B 先合成 50 件批（3 条 Operation Task 各持同一份 [A30,B20]）；
+    //     再合 C10 时把被移出批的 N 条副本**逐条累加** ⇒ B20×3 + C10 = 70，而新批 Task 数量只有 60
+    //     ⇒ Phase5 逐 (需求 × 工序) 闭合失真（B 膨胀、A 锚点份额被淹没）。
+    // ════════════════════════════════════════════════════════════════════
+    [Fact]
+    public async Task M_08_连续两次合批_三需求三工序_份额按需求各计一次_Phase5完整闭合()
+    {
+        var request = Build(
+            paths: new[] { ThreeOpPath("RT", 1, 1, 2, 3, 1m) },
+            demands: new[]
+            {
+                new DemandSpec("A", 1, 30m, Day.AddDays(200)),
+                new DemandSpec("B", 2, 20m, Day.AddDays(200)),
+                new DemandSpec("C", 3, 10m, Day.AddDays(200))
+            },
+            calendar: new[]
+            {
+                (1, Day.AddDays(120), Day.AddDays(125)),
+                (2, Day.AddDays(120), Day.AddDays(125)),
+                (3, Day.AddDays(120), Day.AddDays(125))
+            },
+            setupRules: SameProductSetup(60m, 1, 2, 3));
+
+        var result = await _solver.SolveAsync(request);
+
+        // Phase5 硬校验 `ValidateHardResult` 逐 (需求 × 工序) 闭合 ⇒ 份额失真会直接使 Success=false
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Empty(result.UnscheduledTasks);
+
+        // 一个 Stage 执行批、完整三工序链、每条 Task 净产出 = 60（**不是** 180）
+        Assert.Equal(3, result.FinalTasks.Count);
+        Assert.Single(result.FinalTasks.Select(t => t.ExecutionBatchDraftKey).Distinct());
+        Assert.All(result.FinalTasks, t => Assert.Equal(60m, t.Quantity));
+        Assert.All(result.FinalTasks, t => Assert.Equal(60m, t.PlannedProcessQty));
+
+        // 份额：A30 / B20 / C10，各**恰好一次**，合计 60（判别器）
+        Assert.Equal(30m, result.AllocationShares.Where(s => s.AllocationSequence == 1).Sum(s => s.ComponentQty));
+        Assert.Equal(20m, result.AllocationShares.Where(s => s.AllocationSequence == 2).Sum(s => s.ComponentQty));
+        Assert.Equal(10m, result.AllocationShares.Where(s => s.AllocationSequence == 3).Sum(s => s.ComponentQty));
+        Assert.Equal(60m, result.AllocationShares.Sum(s => s.ComponentQty));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // M-09（AUD-1-003）失败试排必须**全状态回滚**（单工序成功、下游工序失败）
+    //   复审 §7 第 2 项要求：断言占用、时间线、Shares、Tasks 深度一致；测试单工序成功但下游 Operation 失败。
+    //   夹具：两道工序 —— OP10@STAGE1 上 R1（10h 大窗）、OP20@STAGE2 上 R2（两段窄窗 30min / 40min）。
+    //     A30 先排：OP10 00:00-00:30；OP20 落 R2 第一段 02:00-02:30。
+    //     B20 到来：合批试排 = 合成 50 件 ⇒ OP10 可排（R1 宽），**OP20 需 50min、两段窄窗都装不下** ⇒ 失败。
+    //       探针实测（2026-10-10）：该失败分支**确实被走到**（在 `combinedTasks.Count == 0` 处打 throw 探针，
+    //       M-09 即因该异常失败 ⇒ 分支可达，非空跑）。
+    //   判别器：合批**被尝试且失败**的结果，必须与**完全不尝试合批**（`allowMerge=false`）逐字段一致；
+    //     若失败试排遗留前序工序（OP10）在 R1 上的**幽灵占用** ⇒ B 的 OP10 被推后 ⇒ 本条红。
+    //
+    //   ⚠ **本号位如实登记的实测结论（重要，不粉饰）**：
+    //     把 AUD-1-003 的两处水位回滚**全部临时移除**后，本条**仍为绿**。原因：OWN-P0-02 的合批试排
+    //     （`EnumerateLegalBatchPlanCandidates` 内）跑在 `CloneOccupancy(resourceOccupancy, …)` 的
+    //     **COW 克隆**上（`EnsureOwned` 写前分叉，r13599 引入），失败写入落在**被丢弃的克隆**里，
+    //     真实表从不被试排污染；落定调用仅在**试排成功**（`bestAnchorIndex >= 0`）时发生，
+    //     且与试排同初始上下文（确定性）⇒ 真实表永不出现该幽灵。
+    //   ⇒ 本号位**不宣称** M-09 是 AUD-1-003 的「整改前红」判别性反证（违反「写『整改前红』必先实测」）。
+    //     本条的价值 = **零回归守卫**：钉死「失败试排不得污染后续计算」这一冻结不变式
+    //     （RC-001～RC-004 / B-003），防止日后有路径把试排改回真实表时静默回归。
+    //     水位回滚本身按 A 类自决保留为**纵深防御**（覆盖「落定调用返回 null」与「`mergeStructurallyPossible`
+    //     隔离判据回归」两类风险），**不降目标**：冻结要求「失败试排不可污染」已由 COW 隔离 + 水位回滚
+    //     双重达成。
+    // ════════════════════════════════════════════════════════════════════
+    [Fact]
+    public async Task M_09_合批失败_单工序成功下游失败_须全状态回滚不留幽灵占用()
+    {
+        var twoOp = new PathSpec("RT", 1,
+            new[] { new OpSpec("STAGE1", "OP10", 1, 1m), new OpSpec("STAGE2", "OP20", 2, 1m) },
+            new[] { ("OP10", "OP20") });
+
+        DomainSolveRequest BuildTwo(bool allowMerge) => Build(
+            paths: new[] { twoOp },
+            demands: new[]
+            {
+                new DemandSpec("A", 1, 30m, Day.AddDays(200)),
+                new DemandSpec("B", 2, 20m, Day.AddDays(200))
+            },
+            calendar: new[]
+            {
+                (1, Day.AddDays(120), Day.AddDays(120).AddHours(10)),
+                (2, Day.AddDays(120).AddHours(2), Day.AddDays(120).AddHours(2).AddMinutes(30)),
+                (2, Day.AddDays(120).AddHours(4), Day.AddDays(120).AddHours(4).AddMinutes(40))
+            },
+            allowMerge: allowMerge);
+
+        var withMergeAttempt = await _solver.SolveAsync(BuildTwo(allowMerge: true));
+        var pureSeparate = await _solver.SolveAsync(BuildTwo(allowMerge: false));
+
+        Assert.True(withMergeAttempt.Success, withMergeAttempt.ErrorMessage);
+        Assert.True(pureSeparate.Success, pureSeparate.ErrorMessage);
+        Assert.Empty(withMergeAttempt.UnscheduledTasks);
+        Assert.Empty(pureSeparate.UnscheduledTasks);
+
+        // **深度一致**：Task 数、逐 Task 的 (需求, Stage, 工序, 起, 止, 数量) 全部相同
+        static List<(string, string, string, DateTime, DateTime, decimal)> Fingerprint(DomainSolveResult r)
+            => r.FinalTasks
+                .OrderBy(t => t.SourceDraftId, StringComparer.Ordinal)
+                .ThenBy(t => t.OperationCode, StringComparer.Ordinal)
+                .Select(t => (t.SourceDraftId, t.StageCode, t.OperationCode,
+                              t.PlannedStartTime, t.PlannedEndTime, t.Quantity))
+                .ToList();
+
+        Assert.Equal(Fingerprint(pureSeparate), Fingerprint(withMergeAttempt));
+
+        // 份额账本亦不得被污染
+        static List<(long, decimal)> Shares(DomainSolveResult r)
+            => r.AllocationShares
+                .OrderBy(s => s.AllocationSequence)
+                .Select(s => (s.AllocationSequence, s.ComponentQty))
+                .ToList();
+
+        Assert.Equal(Shares(pureSeparate), Shares(withMergeAttempt));
+
+        // 幽灵占用的**直接**判别器：B 的 OP10 必须**紧接** A 的 OP10（中间不得出现空洞）
+        var aOp10 = withMergeAttempt.FinalTasks.Single(t => t.SourceDraftId == "A" && t.OperationCode == "OP10");
+        var bOp10 = withMergeAttempt.FinalTasks.Single(t => t.SourceDraftId == "B" && t.OperationCode == "OP10");
+        Assert.Equal(aOp10.PlannedEndTime, bOp10.PlannedStartTime);
+
+        // 未丢需求、未错批：两条需求各自一批
+        Assert.Equal(2, withMergeAttempt.FinalTasks.Select(t => t.ExecutionBatchDraftKey).Distinct().Count());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // M-10（AUD-1-002 正例）**真正同一 StageCode** 的 N Operation：合批后共用一个 Stage 执行批身份
+    //   复审 §7 第 3 项：新增真正同一 `StageCode` 的 N Operation 场景（与 M-01 跨 Stage 反例成对）。
+    //   夹具：三道工序**全部落 STAGE1**（OP10/OP20/OP30 @ R1/R2/R3），A30 + B20 合批。
+    //   ⇒ `ExecutionBatchDraftKey` 1 个（跨 Stage 工序链身份）；
+    //     `StageExecutionBatchDraftKey` **1 个**（同 Stage 的 N 条 Operation Task 共享同一 MES 执行批身份，
+    //     T-002/T-005）—— 与 M-01 的「三个不同 Stage ⇒ 3 个 Stage 键」互为正反证。
+    // ════════════════════════════════════════════════════════════════════
+    [Fact]
+    public async Task M_10_同一Stage内N工序_合批须共用一个Stage执行批身份()
+    {
+        var sameStage = new PathSpec("RT", 1,
+            new[]
+            {
+                new OpSpec("STAGE1", "OP10", 1, 1m),
+                new OpSpec("STAGE1", "OP20", 2, 1m),
+                new OpSpec("STAGE1", "OP30", 3, 1m)
+            },
+            new[] { ("OP10", "OP20"), ("OP20", "OP30") });
+
+        var request = Build(
+            paths: new[] { sameStage },
+            demands: new[]
+            {
+                new DemandSpec("A", 1, 30m, Day.AddDays(200)),
+                new DemandSpec("B", 2, 20m, Day.AddDays(200))
+            },
+            calendar: new[]
+            {
+                (1, Day.AddDays(120), Day.AddDays(125)),
+                (2, Day.AddDays(120), Day.AddDays(125)),
+                (3, Day.AddDays(120), Day.AddDays(125))
+            },
+            setupRules: SameProductSetup(60m, 1, 2, 3));
+
+        var result = await _solver.SolveAsync(request);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Empty(result.UnscheduledTasks);
+
+        Assert.Equal(3, result.FinalTasks.Count);
+        Assert.All(result.FinalTasks, t => Assert.Equal("STAGE1", t.StageCode));
+
+        // 跨 Stage 工序链的执行批身份：1 个
+        Assert.Single(result.FinalTasks.Select(t => t.ExecutionBatchDraftKey).Distinct());
+
+        // **Stage 内** MES 执行批身份：同一 StageCode ⇒ **1 个**（同批 N 条 Operation Task 共享一个 TaskNo）
+        var stageKey = Assert.Single(result.FinalTasks.Select(t => t.StageExecutionBatchDraftKey).Distinct());
+        Assert.False(string.IsNullOrEmpty(stageKey));
+
+        // 净产出按 Stage 计一次（不得 50 × 3）
+        Assert.All(result.FinalTasks, t => Assert.Equal(50m, t.Quantity));
+        Assert.Equal(30m, result.AllocationShares.Where(s => s.AllocationSequence == 1).Sum(s => s.ComponentQty));
+        Assert.Equal(20m, result.AllocationShares.Where(s => s.AllocationSequence == 2).Sum(s => s.ComponentQty));
+    }
+
     // ─────────────────────────── 构造辅助 ───────────────────────────
 
     private readonly record struct OpSpec(string StageCode, string OpCode, int ResourceId, decimal Minutes);
@@ -582,6 +840,7 @@ public class StageBatchMergeTests
             {
                 LogicalDemandKey = d.Key, PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = d.Seq, DemandKey = d.Key, MaterialId = MaterialId, FactoryId = 1,
+                StartStageCode = "STAGE1",
                 NetOutputQty = d.Qty, PlannedProcessQty = d.Qty,
                 RequiredAvailableTime = d.Due ?? PlanningStart.AddDays(20),
                 DemandSequence = (int)d.Seq,
@@ -604,7 +863,7 @@ public class StageBatchMergeTests
                     AllowSplit = allowSplit
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
-                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, allowMerge, allowSplit),
+                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, DeptId, allowMerge, allowSplit),
                 SetupTransitionRules = setupRules ?? Array.Empty<SetupTransitionRuleSnapshot>()
             }
         };

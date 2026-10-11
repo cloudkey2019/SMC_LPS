@@ -72,6 +72,7 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         await ValidateCoreAsync(input, ct);
         await EnsureDomainAllowsAsync(actorUserId, input.DomainKey.Trim(), ct);
         await EnsureKeyUniqueAsync(input.DomainKey, excludeId: null, ct);
+        await EnsureScopeComboUniqueAsync(input, excludeId: null, ct);
 
         var now = DateTime.Now;
         var entity = new DomainDefinition
@@ -109,6 +110,7 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         await ValidateCoreAsync(input, ct);
         await EnsureDomainAllowsAsync(actorUserId, existing.DomainKey, ct);
         await EnsureKeyUniqueAsync(input.DomainKey, excludeId: id, ct);
+        await EnsureScopeComboUniqueAsync(input, excludeId: id, ct);
 
         var entity = new DomainDefinition
         {
@@ -144,6 +146,12 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         }
 
         await EnsureDomainAllowsAsync(actorUserId, existing.DomainKey, ct);
+
+        // G2：启用时同样校验 scope 组合唯一性（排除自身），防止重复启用域
+        if (isActive)
+        {
+            await EnsureScopeComboUniqueAsync(existing, excludeId: existing.Id, ct);
+        }
 
         await _auditLogRepository.EnsureWritableAsync(ct);
 
@@ -242,6 +250,26 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         if (await _repository.ExistsByKeyAsync(domainKey, excludeId, ct))
         {
             throw new InvalidOperationException($"DomainKey 已存在：{domainKey}");
+        }
+    }
+
+    /// <summary>
+    /// scope 组合唯一性校验（G2，3号位 合法性校验职责，Domain裁决 §4.3）：
+    /// FAMILY 同一 ProductFamilyId 仅允许一个启用域；FACTORY_FAMILY 同一 FactoryId+ProductFamilyId 仅允许一个启用域。
+    /// 停用域不占位（仅 IsActive=1 参与判重）；excludeId 用于更新/启用时排除自身。
+    /// 注：非冻结 DDL 红线（DDL 仅 DomainKey UNIQUE），属 3号位 治理完备性校验。
+    /// </summary>
+    private async Task EnsureScopeComboUniqueAsync(DomainDefinition target, int? excludeId, CancellationToken ct)
+    {
+        var scopeType = target.ScopeType.Trim().ToUpperInvariant();
+        var exists = await _repository.ExistsActiveScopeComboAsync(
+            scopeType, target.ProductFamilyId, target.FactoryId, excludeId, ct);
+        if (exists)
+        {
+            throw new InvalidOperationException(
+                scopeType == ScopeTypeFactoryFamily
+                    ? $"已存在启用中的 {ScopeTypeFactoryFamily} 域（FactoryId={target.FactoryId}, ProductFamilyId={target.ProductFamilyId}），同一工厂+产品族组合仅允许一个启用域"
+                    : $"已存在启用中的 {ScopeTypeFamily} 域（ProductFamilyId={target.ProductFamilyId}），同一产品族仅允许一个启用域");
         }
     }
 

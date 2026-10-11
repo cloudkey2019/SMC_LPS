@@ -2,6 +2,8 @@
 
 ## 2026-10-08 Batch Policy／Solver技术预算／MTS PI数量边界正式候选修订（v5.1.10）
 
+**2026-10-11 勘误候选（0号位 裁决：#4）**：RuleSetVersion（5.2）/ ParameterSetVersion（5.4）章节补登记 ContentSnapshotJson / IsDefault / UpdatedAt / UpdatedBy / Remarks 五列——物理库已存在（10-10 补数脚本直插使用，INFORMATION_SCHEMA + sys.default_constraints 实测），原字段说明漏登记。0号位 2026-10-11 裁决：v5.1.10 已纳入唯一冻结基线索引，**不得在同版本下直接修改正式文件**；本块及 5.2/5.4 补列为**勘误候选及核对证据，不视为已生效正式修改**，正式变更按冻结文档勘误流程生成新版本（以正式勘误后版本为准）。分档如实登记（核对证据）：ContentSnapshotJson=代码已映射+治理写路径已写入（P0-02 快照载体）；Remarks=代码实体已映射（RSV 1000/PSV 500）；IsDefault/UpdatedAt/UpdatedBy=物理已存在/代码未映射（默认语义归 StrategyProfileVersion，当前仅 seed 直插，治理写路径未维护，不因物理列存在而赋予新版本治理语义）。无 ALTER、无代码改动。
+
 **本轮候选提交说明（2026-10-08）**：依据《APS V1 Batch Policy业务批量、Solver搜索参数与MTS生产指示数量边界——正式冻结文档修改指导 v1.1》进行候选修订。以下“修订起点”系截至提交日已生效文件的历史事实，“拟联合生效”系本次待复核的版本关系；原有历史形成章节不作为本次新版的版本元数据。
 
 **本轮修订起点（截至2026-10-08候选提交时已生效）**：唯一冻结索引v1.11；业务基线v1.8、有限产能v1.7、Pegging v1.6、核心走查V3.25、数据架构v1.45、集成接口v1.34、字段说明v5.1.9、DDL v5.1.8.3；0/1/2/3/4/5号位实施或验收版本分别为v1.6/v1.6/v1.9/v1.8/v1.5/v1.7。
@@ -3821,6 +3823,11 @@ OPEN → CANCELLED（ERP取消或APS检测源端消失）
 | ApprovedBy | 审批人 | NVARCHAR(100) | |
 | CreatedAt | 创建时间 | DATETIME2 | |
 | CreatedBy | 创建人 | NVARCHAR(100) | |
+| ContentSnapshotJson | 统一内容快照 | NVARCHAR(MAX) | P0-02 冻结快照载体：DemandPriority/Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail 六块 + SetupTransitionRules + BatchPolicy；**代码已映射属性且治理写路径已写入**（2026-10-11 3号位 补登记） |
+| IsDefault | 是否默认 | BIT | 默认0。**物理已存在/代码未映射**：默认语义归 StrategyProfileVersion，本列当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| UpdatedAt | 更新时间 | DATETIME2 | **物理已存在/代码未映射**：当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| UpdatedBy | 更新人 | NVARCHAR(100) | **物理已存在/代码未映射**：当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| Remarks | 备注 | NVARCHAR(1000) | **代码实体已映射属性**，治理写路径未写（2026-10-11 3号位 补登记） |
 
 红线：已发布版本不可原地修改；正式排程只允许 PUBLISHED 状态。
 
@@ -3858,6 +3865,11 @@ OPEN → CANCELLED（ERP取消或APS检测源端消失）
 | ApprovedBy | 审批人 | NVARCHAR(100) | |
 | CreatedAt | 创建时间 | DATETIME2 | |
 | CreatedBy | 创建人 | NVARCHAR(100) | |
+| ContentSnapshotJson | 统一内容快照 | NVARCHAR(MAX) | P0-02 冻结快照载体：DemandPriority/Lock/Supply/Procurement/SolverStrategy/CandidateGuardrail 六块 + SetupTransitionRules + BatchPolicy；**代码已映射属性且治理写路径已写入**（2026-10-11 3号位 补登记） |
+| IsDefault | 是否默认 | BIT | 默认0。**物理已存在/代码未映射**：默认语义归 StrategyProfileVersion，本列当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| UpdatedAt | 更新时间 | DATETIME2 | **物理已存在/代码未映射**：当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| UpdatedBy | 更新人 | NVARCHAR(100) | **物理已存在/代码未映射**：当前仅 seed 直插，治理写路径未维护（2026-10-11 3号位 补登记） |
+| Remarks | 备注 | NVARCHAR(500) | **代码实体已映射属性**，治理写路径未写（2026-10-11 3号位 补登记） |
 
 红线：已发布版本不可原地修改；正式排程只允许 PUBLISHED 状态。
 

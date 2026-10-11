@@ -670,7 +670,7 @@ public class GovernanceController : ControllerBase
     #region 主表列表与运行支撑（G1/G7：3-4联调）
 
     /// <summary>规则集主表列表（G1/A1：4号位规则集列表页；R2 起返回含最新版本摘要的列表 DTO）</summary>
-    /// <remarks>开发者：3号位</remarks>
+    /// <remarks>开发者：3号位。activeOnly 三态语义（契约 v1.0 2026-10-10）：true=仅查 IsActive=1；false=仅查 IsActive=0（≠查全部）；缺省=不过滤全量。dev DB 当前无停用数据，传 false 恒返 0（客观状态非 bug）。</remarks>
     [Authorize(Policy = PermissionCodes.RuleView)]
     [HttpGet("rule-sets")]
     public async Task<IActionResult> GetRuleSets(
@@ -686,7 +686,7 @@ public class GovernanceController : ControllerBase
     }
 
     /// <summary>参数集主表列表（G1/A8：4号位参数集列表页）</summary>
-    /// <remarks>开发者：3号位</remarks>
+    /// <remarks>开发者：3号位。activeOnly 三态语义（契约 v1.0 2026-10-10）：true=仅查 IsActive=1；false=仅查 IsActive=0（≠查全部）；缺省=不过滤全量。dev DB 当前无停用数据，传 false 恒返 0（客观状态非 bug）。</remarks>
     [Authorize(Policy = PermissionCodes.ParameterView)]
     [HttpGet("parameter-sets")]
     public async Task<IActionResult> GetParameterSets(
@@ -702,7 +702,7 @@ public class GovernanceController : ControllerBase
     }
 
     /// <summary>策略包主表列表（G1/A12：4号位策略包列表页）</summary>
-    /// <remarks>开发者：3号位</remarks>
+    /// <remarks>开发者：3号位。activeOnly 三态语义（契约 v1.0 2026-10-10）：true=仅查 IsActive=1；false=仅查 IsActive=0（≠查全部）；缺省=不过滤全量。dev DB 当前无停用数据，传 false 恒返 0（客观状态非 bug）。</remarks>
     [Authorize(Policy = PermissionCodes.StrategyView)]
     [HttpGet("strategy-profiles")]
     public async Task<IActionResult> GetStrategyProfiles(

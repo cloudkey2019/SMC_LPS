@@ -141,6 +141,7 @@ public class PhaseTwoRoutingCandidateTests
                 {
                     LogicalDemandKey = "D1", PlanVersionId = 1L, DomainKey = "DOMAIN",
                     AllocationSequence = 1, DemandKey = "D1", MaterialId = MaterialId, FactoryId = 1,
+                    StartStageCode = "STAGE1",
                     NetOutputQty = 1m, PlannedProcessQty = 1m,
                     // `due` 可覆写：B-005 Direction 自决的 E2E 用例靠「只改交期」驱动 Slack 变化。
                     RequiredAvailableTime = due ?? PlanningStart.AddDays(20), DemandSequence = 1,
@@ -167,7 +168,7 @@ public class PhaseTwoRoutingCandidateTests
                 Parameters = new FiniteCapacityParameters { SchedulingDirection = direction },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   本夹具验证的是 Routing 候选择优，非批决策 ⇒ Material 级宽松策略（恒 1 批）。
-                BatchPolicies = TestBatchPolicy.Permissive(MaterialId)
+                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, DeptId)
             }
         };
     }
@@ -865,6 +866,7 @@ public class PhaseTwoRoutingCandidateTests
             {
                 LogicalDemandKey = d.Key, PlanVersionId = 1L, DomainKey = "DOMAIN",
                 AllocationSequence = d.Seq, DemandKey = d.Key, MaterialId = MaterialId, FactoryId = 1,
+                StartStageCode = "STAGE1",
                 NetOutputQty = d.Qty, PlannedProcessQty = d.Qty,
                 RequiredAvailableTime = d.Due ?? PlanningStart.AddDays(20), DemandSequence = d.Seq,
                 RouteCode = d.RouteCode, PathId = d.PathId,
@@ -886,7 +888,7 @@ public class PhaseTwoRoutingCandidateTests
                 },
                 // P0-01（0号位 2026-10-08 §四）：C 桶必须显式给出有效 Batch Policy，否则 Fail Closed。
                 //   `AllowMerge` 镜像夹具参数：策略是 Merge 的正式控制源（§八 P1-01）。
-                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, allowMerge)
+                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, DeptId, allowMerge)
             }
         };
     }
@@ -1024,7 +1026,7 @@ public class PhaseTwoRoutingCandidateTests
                     SchedulingDirection = direction,
                     AllowMerge = false
                 },
-                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, allowMerge: false)
+                BatchPolicies = TestBatchPolicy.Permissive(MaterialId, DeptId, allowMerge: false)
             }
         };
     }
@@ -1149,8 +1151,10 @@ public class PhaseTwoRoutingCandidateTests
         };
         var ops = new[] { new OpSpec("STAGE1", "OP10", 1, DeptId, 30m) };
 
+        // AUD-1-004：需求须带 StartStageCode（真实由 2号位 FillStartStageCodes 回填）
+        //   否则部门解析不出 ⇒ C 桶 BATCH_POLICY_MISSING Fail Closed，与「Slice 各自计量」命题无关地变红。
         var result = await _solver.SolveAsync(
-            BuildLockedGeometry(ops, Array.Empty<DepSpec>(), anchors, demands));
+            BuildLockedGeometry(ops, Array.Empty<DepSpec>(), anchors, demands, startStageCode: "STAGE1"));
 
         Assert.True(result.Success, result.ErrorMessage);
 

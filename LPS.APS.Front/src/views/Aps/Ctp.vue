@@ -16,13 +16,21 @@
  *  - 其它 → 默认 DUE_DATE_RISK 场景
  */
 
-import { computed, onMounted, reactive } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { useCtpStore } from '@/store/modules/aps/ctp'
 import { useDomainStore } from '@/store/modules/aps/domain'
-import { ESTIMATED_BADGE_TEXT, type CtpReason } from '@/api/aps-v1/types'
+import { domainApi } from '@/api/aps-v1/domain'
+import { materialLookupApi } from '@/api/aps-v1/materialLookup'
+import type { MaterialLookupItem } from '@/api/aps-v1/types'
+import {
+  ESTIMATED_BADGE_TEXT,
+  type CtpInput,
+  type CtpReason,
+  type FactorySummaryDto
+} from '@/api/aps-v1/types'
 
 import {
   ElAlert,
@@ -32,6 +40,7 @@ import {
   ElEmpty,
   ElInput,
   ElInputNumber,
+  ElMessage,
   ElOption,
   ElSelect,
   ElTable,
@@ -57,6 +66,24 @@ onMounted(() => {
   if (route.query.purpose === 'INSERT_IMPACT_ANALYSIS') {
     form.purpose = 'INSERT_IMPACT_ANALYSIS'
   }
+  // 工厂下拉拉真实数据（domainApi 内已 IsActive 过滤；失败回退硬编码 2 条）
+  domainApi
+    .listFactories()
+    .then((list: FactorySummaryDto[]) => {
+      FACTORY_OPTIONS.value = list.length > 0 ? list : FACTORY_FALLBACK
+    })
+    .catch(() => {
+      FACTORY_OPTIONS.value = FACTORY_FALLBACK
+    })
+  // 物料下拉拉真实数据（materialLookupApi 已 IsActive 过滤；失败回退硬编码 7 条）
+  materialLookupApi
+    .listActiveMaterials()
+    .then((list: MaterialLookupItem[]) => {
+      MATERIAL_OPTIONS.value = list.length > 0 ? list : MATERIAL_FALLBACK
+    })
+    .catch(() => {
+      MATERIAL_OPTIONS.value = MATERIAL_FALLBACK
+    })
 })
 
 /* ===== 表单本地副本（输入体验用，提交时再写回 store）===== */
@@ -70,18 +97,30 @@ const form = reactive({
   purpose: 'CTP' as 'CTP' | 'INSERT_IMPACT_ANALYSIS'
 })
 
-const MATERIAL_OPTIONS = [
-  { code: 'M-001', name: '电机壳体-A' },
-  { code: 'M-002', name: '机柜上盖-B' },
-  { code: 'M-003', name: '控制箱-C' },
-  { code: 'M-004', name: '标准泵-D' },
-  { code: 'M-005', name: '包装套件-E' },
-  { code: 'M-006', name: '机架焊接件-F' },
-  { code: 'M-007', name: '电路板组件-G' }
+/** 物料下拉数据源（real API，2026-09-30 接入）
+ *  - 端点：GET /api/governance/lookups/materials?activeOnly=true（materialLookupApi.listActiveMaterials）
+ *  - 后端 SQL：WHERE @ActiveOnly=1 → 仅 IsActive=1；LIMIT 200；ORDER BY MaterialCode
+ *  - 失败/为空兜底：硬编码 7 条（前端演示用），保证离线场景下 UI 可用
+ */
+const MATERIAL_OPTIONS = ref<MaterialLookupItem[]>([])
+const MATERIAL_FALLBACK: MaterialLookupItem[] = [
+  { masterId: 0, code: 'M-001', name: '电机壳体-A', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-002', name: '机柜上盖-B', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-003', name: '控制箱-C', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-004', name: '标准泵-D', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-005', name: '包装套件-E', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-006', name: '机架焊接件-F', spec: '', uom: '', isActive: true },
+  { masterId: 0, code: 'M-007', name: '电路板组件-G', spec: '', uom: '', isActive: true }
 ]
-const FACTORY_OPTIONS = [
-  { code: 'F-SUZ-01', name: '苏州厂' },
-  { code: 'F-CDG-02', name: '成都厂' }
+/** 工厂下拉数据源（real API，2026-09-30 接入）
+ *  - 端点：GET /api/governance/factories（domainApi.listFactories，3号位 落地）
+ *  - 返回 FactorySummaryDto[]：id + code + name（后端已 IsActive 过滤）
+ *  - 失败兜底：前端硬编码 2 条，保证离线场景下 UI 可用
+ */
+const FACTORY_OPTIONS = ref<FactorySummaryDto[]>([])
+const FACTORY_FALLBACK: FactorySummaryDto[] = [
+  { id: 0, code: 'F-SUZ-01', name: '苏州厂' },
+  { id: 0, code: 'F-CDG-02', name: '成都厂' }
 ]
 
 /* ===== 字典 ===== */
@@ -117,7 +156,7 @@ const delayDays = computed(() => {
  *  - INSERT_IMPACT_ANALYSIS 给内部决策，仅试算不可激活
  */
 const PURPOSE_TITLE: Record<'CTP' | 'INSERT_IMPACT_ANALYSIS', string> = {
-  CTP: 'CTP / 插单评估',
+  CTP: '插单评估',
   INSERT_IMPACT_ANALYSIS: '插单影响分析'
 }
 const PURPOSE_SUB: Record<'CTP' | 'INSERT_IMPACT_ANALYSIS', string> = {
@@ -128,6 +167,25 @@ const PURPOSE_HISTORY_TAG: Record<'CTP' | 'INSERT_IMPACT_ANALYSIS', 'primary' | 
   CTP: 'primary',
   INSERT_IMPACT_ANALYSIS: 'info'
 }
+/** 历史/标签页展示用途用（避免前端暴露 raw enum "CTP" / "INSERT_IMPACT_ANALYSIS"） */
+const PURPOSE_LABEL: Record<'CTP' | 'INSERT_IMPACT_ANALYSIS', string> = {
+  CTP: '可靠交期判断',
+  INSERT_IMPACT_ANALYSIS: '插单影响分析'
+}
+/** 需求保护冲突标签中文化（未知名词回退显示原值，避免漏翻译错位） */
+const CONFLICT_TYPE_LABEL: Record<string, string> = {
+  PROTECTION_OVERLAP: '保护重叠'
+}
+/** 模板可调用的安全查找（row.input.purpose 在模板里类型擦除为 string，不能用 as 强转） */
+function purposeLabelOf(p: string): string {
+  return PURPOSE_LABEL[p as keyof typeof PURPOSE_LABEL] ?? p
+}
+function purposeTagTypeOf(p: string): 'primary' | 'info' {
+  return PURPOSE_HISTORY_TAG[p as keyof typeof PURPOSE_HISTORY_TAG] ?? 'info'
+}
+function conflictTypeLabelOf(t: string): string {
+  return CONFLICT_TYPE_LABEL[t] ?? t
+}
 
 /** 按当前 purpose 过滤 HISTORY（CTP / INSERT_IMPACT_ANALYSIS 隔离回看） */
 const filteredHistory = computed(() =>
@@ -136,6 +194,11 @@ const filteredHistory = computed(() =>
 
 /* ===== 操作 ===== */
 async function onSubmit(): Promise<void> {
+  // 兜底：必填校验防止 422（撤下拉后用户不再被「请选择事业部」卡住，会直接点评估）
+  if (!form.materialCode || !form.factoryCode || !form.requestedDueDate) {
+    ElMessage.warning('请填写物料、工厂、客户请求交期后再评估')
+    return
+  }
   await ctpStore.evaluate({
     orderCanonicalId: form.orderCanonicalId || `PO-${Date.now()}`,
     materialCode: form.materialCode,
@@ -160,14 +223,10 @@ function onLoadHistory(entryId: number): void {
   const entry = history.value.find((h) => h.id === entryId)
   if (!entry) return
   ctpStore.loadFromHistory(entry)
-  Object.assign(form, {
-    orderCanonicalId: entry.input.orderCanonicalId,
-    materialCode: entry.input.materialCode,
-    quantity: entry.input.quantity,
-    factoryCode: entry.input.factoryCode,
-    requestedDueDate: entry.input.requestedDueDate,
-    purpose: entry.input.purpose
-  })
+  // 兼容旧历史（撤下拉前的记录可能带 domainKey 字段，丢弃即可）
+  const { domainKey: _drop, ...rest } = entry.input as CtpInput & { domainKey?: string }
+  void _drop
+  Object.assign(form, rest)
 }
 </script>
 
@@ -185,27 +244,12 @@ function onLoadHistory(entryId: number): void {
             type="info"
             style="margin-left: 8px; vertical-align: middle"
           >
-            WHATIF
+            试算
           </ElTag>
         </h2>
         <p class="page-sub">{{ PURPOSE_SUB[form.purpose] }}</p>
       </div>
     </div>
-
-    <!-- ===== 业务约束提示 ===== -->
-    <ElAlert type="info" :closable="false" show-icon class="hint-bar">
-      <template #title>使用说明</template>
-      <span class="hint-text">
-        依赖采购估算时，结果中会显示对应徽章；根因优先展示（不会只给一条笼统的"交期风险"）；
-        <strong>本页只做评估展示，不提供"采用"按钮</strong
-        >；影响订单数超过阈值时只做警示提示，不截断结果。
-        评估用途分为「可靠交期判断」与「插单影响分析」两类，两者结果均不可激活。
-      </span>
-      <span class="hint-text hint-text-v12">
-        跨排程域链式依赖（跨域交接）使用真实排程域标识，页面会对跨域结果与根因逐条
-        双向校验，并以警示配色突出跨域交接项。
-      </span>
-    </ElAlert>
 
     <!-- ===== 输入表单 ===== -->
     <ElCard class="panel">
@@ -223,7 +267,7 @@ function onLoadHistory(entryId: number): void {
           />
         </div>
         <div class="input-field">
-          <span class="field-label">物料（产品族编码）</span>
+          <span class="field-label">物料</span>
           <ElSelect v-model="form.materialCode" placeholder="选择物料" class="field-input">
             <ElOption
               v-for="opt in MATERIAL_OPTIONS"
@@ -272,7 +316,12 @@ function onLoadHistory(entryId: number): void {
           </ElSelect>
         </div>
         <div class="input-actions">
-          <ElButton type="primary" :loading="loading" @click="onSubmit">
+          <ElButton
+            type="primary"
+            :loading="loading"
+            :disabled="!form.materialCode || !form.factoryCode || !form.requestedDueDate"
+            @click="onSubmit"
+          >
             <Icon icon="vi-ep:circle-check" /> 评估
           </ElButton>
           <ElButton @click="onReset">重置</ElButton>
@@ -449,7 +498,9 @@ function onLoadHistory(entryId: number): void {
           </h4>
           <div v-if="resultNN.protectionConflicts.length" class="conflict-list">
             <div v-for="(c, i) in resultNN.protectionConflicts" :key="i" class="conflict-item">
-              <ElTag size="small" type="warning" effect="dark">{{ c.conflictType }}</ElTag>
+              <ElTag size="small" type="warning" effect="dark">
+                {{ conflictTypeLabelOf(c.conflictType) }}
+              </ElTag>
               <span class="conflict-msg">{{ c.description }}</span>
             </div>
           </div>
@@ -468,7 +519,7 @@ function onLoadHistory(entryId: number): void {
               {{
                 form.purpose === 'INSERT_IMPACT_ANALYSIS'
                   ? 'INSERT链式：仅汇总影响，不展开递归'
-                  : 'V1 仅展示汇总，不展开递归 WHATIF'
+                  : 'V1 仅汇总展示，不展开递归'
               }}
             </span>
             <ElTag
@@ -514,8 +565,8 @@ function onLoadHistory(entryId: number): void {
           <div class="panel-header">
             <span>
               本次会话评估历史
-              <ElTag size="small" effect="plain" :type="PURPOSE_HISTORY_TAG[form.purpose]">
-                {{ form.purpose }}
+              <ElTag size="small" effect="plain" :type="purposeTagTypeOf(form.purpose)">
+                {{ purposeLabelOf(form.purpose) }}
               </ElTag>
               （最多 5 条）
             </span>
@@ -530,8 +581,8 @@ function onLoadHistory(entryId: number): void {
           </ElTableColumn>
           <ElTableColumn label="用途" width="100">
             <template #default="{ row }">
-              <ElTag size="small" effect="plain" :type="PURPOSE_HISTORY_TAG[row.input.purpose]">
-                {{ row.input.purpose }}
+              <ElTag size="small" effect="plain" :type="purposeTagTypeOf(row.input.purpose)">
+                {{ purposeLabelOf(row.input.purpose) }}
               </ElTag>
             </template>
           </ElTableColumn>
@@ -600,30 +651,6 @@ function onLoadHistory(entryId: number): void {
   }
 }
 
-.hint-bar {
-  :deep(.el-alert__title) {
-    font-weight: 600;
-  }
-
-  .hint-text {
-    margin-left: 8px;
-    font-size: 13px;
-    line-height: 1.8;
-    color: #475569;
-  }
-
-  .hint-text-v12 {
-    display: block;
-    margin-top: 4px;
-    margin-left: 8px;
-    padding-top: 4px;
-    font-size: 12px;
-    line-height: 1.7;
-    color: #64748b;
-    border-top: 1px dashed #cbd5e1;
-  }
-}
-
 .panel {
   border-radius: 8px;
 }
@@ -669,6 +696,12 @@ function onLoadHistory(entryId: number): void {
     color: #64748b;
     text-align: right;
     flex-shrink: 0;
+
+    .required-mark {
+      color: var(--el-color-danger);
+      margin-left: 4px;
+      font-weight: 600;
+    }
   }
 
   .field-input {

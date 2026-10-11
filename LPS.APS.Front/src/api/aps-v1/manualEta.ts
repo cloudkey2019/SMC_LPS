@@ -29,7 +29,9 @@ import type {
   ManualEtaDto,
   ManualEtaListFilter,
   ManualEtaUpsertInput,
-  ManualEtaCancelInput
+  ManualEtaCancelInput,
+  ManualEtaPageResult,
+  WarehouseOption
 } from './types/manualEta'
 
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString()
@@ -145,6 +147,13 @@ const MOCK_ETAS: ManualEtaDto[] = [
   }
 ]
 
+/* ===== Mock 辅助：仓库下拉候选（5号位 ext_MES_ProcessCode_View 离线快照） ===== */
+const MOCK_WAREHOUSES: WarehouseOption[] = [
+  { code: 'WH-SUZ-01', name: '苏州主仓 1 号库' },
+  { code: 'WH-SUZ-02', name: '苏州主仓 2 号库' },
+  { code: 'WH-CDG-02', name: '成都工厂仓' }
+]
+
 /* ===== Mock 辅助：筛选 ===== */
 function applyFilter(list: ManualEtaDto[], filter?: ManualEtaListFilter): ManualEtaDto[] {
   if (!filter) return [...list]
@@ -159,28 +168,62 @@ function applyFilter(list: ManualEtaDto[], filter?: ManualEtaListFilter): Manual
 /** 真实模式序列化：把数组转成逗号分隔字符串（后端 Query 参数约定）
  *  @see lps/LPS.APS.Web/Controllers/ProcurementManualEtaController.cs L46-91
  *  后端用 [FromQuery] string? + Split(',') 拆，axios 默认会把数组序列化为 materialIds[]=1&materialIds[]=2 → 404
+ *
+ *  ⚠️ activeOnly 默认值修正（2026-10-07）：
+ *   - 后端 controller 默认 activeOnly=true（只返回 isActive=true），过滤掉 cancelled
+ *   - 前端 UI「仅看生效中」开关默认 false（看全部）；前端必须显式传 false 覆盖后端默认
+ *   - 否则：刷新页面 / 初次加载 → cancelled 记录被静默过滤 → 列表显示空态（KPI 仍有 cancelledCount）
+ *   - 修复：activeOnly 总被显式序列化（filter 缺省值 / undefined → false）
  */
 function serializeFilter(filter?: ManualEtaListFilter): Record<string, unknown> {
-  if (!filter) return {}
-  const out: Record<string, unknown> = {}
-  if (filter.poNos?.length) out.poNos = filter.poNos.join(',')
-  if (filter.materialIds?.length) out.materialIds = filter.materialIds.join(',')
-  if (filter.activeOnly !== undefined) out.activeOnly = filter.activeOnly
+  const out: Record<string, unknown> = {
+    activeOnly: filter?.activeOnly ?? false,
+    // 5号位 2026-10-08 分页：总是显式传 pageIndex / pageSize（缺省 1/20，后端硬上限 200）
+    pageIndex: filter?.pageIndex ?? 1,
+    pageSize: filter?.pageSize ?? 20
+  }
+  if (filter?.poNos?.length) out.poNos = filter.poNos.join(',')
+  if (filter?.materialIds?.length) out.materialIds = filter.materialIds.join(',')
+  if (filter?.materialCodes?.length) out.materialCodes = filter.materialCodes.join(',')
   return out
 }
 
 export const manualEtaApi = {
-  /** 列表（支持 materialIds / poNos / activeOnly 筛选）
-   *  v1.4 §十七：5号位 Query 端点；数组参数需逗号分隔字符串
+  /** 列表（支持 materialIds / poNos / activeOnly 筛选 + 5号位 2026-10-08 分页）
+   *  - 真实端点返 ManualEtaPageResult<ManualEtaDto>（@see ProcurementManualEtaController.cs）
+   *  - mock 阶段简化：直接返回数组（store 层兼容两种形态）
    */
-  async list(filter?: ManualEtaListFilter): Promise<ManualEtaDto[]> {
+  async list(
+    filter?: ManualEtaListFilter
+  ): Promise<ManualEtaDto[] | ManualEtaPageResult<ManualEtaDto>> {
     if (APS_USE_MOCK) {
       await new Promise((resolve) => setTimeout(resolve, 250))
       return applyFilter(MOCK_ETAS, filter)
     }
-    return apsHttp.get<ManualEtaDto[]>({
+    return apsHttp.get<ManualEtaPageResult<ManualEtaDto>>({
       url: '/api/procurement-manual-eta',
       params: serializeFilter(filter)
+    })
+  },
+
+  /**
+   * 收货仓库下拉（5号位 ManualETA 控制器内置；端点：GET /api/procurement-manual-eta/warehouses?search=）
+   *  - 偏离原 `/api/governance/lookups/warehouses` 提案；按 5号位 2026-10-08 落地回执对接
+   *  - 复用 ManualEtaView 权限
+   *  - 返回 `[{ code, name }]`；search 模糊 code/name
+   */
+  async listWarehouses(search?: string): Promise<WarehouseOption[]> {
+    if (APS_USE_MOCK) {
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      const term = search?.trim().toLowerCase()
+      if (!term) return [...MOCK_WAREHOUSES]
+      return MOCK_WAREHOUSES.filter(
+        (w) => w.code.toLowerCase().includes(term) || w.name.toLowerCase().includes(term)
+      )
+    }
+    return apsHttp.get<WarehouseOption[]>({
+      url: '/api/procurement-manual-eta/warehouses',
+      params: { search: search ?? '' }
     })
   },
 

@@ -282,15 +282,35 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         // 大工艺阶段码 → LogicalProductionDemand.StartStageCode（原 BuildLogicalProductionDemand 写空）。
         FillStartStageCodes(voucher, routingOperations, routingDependencies);
 
-        // ③c 连续份额路径身份回填（2026-10-09，PM回复1009 §七 第5行 / v1.6 §1）：
-        //   「A/B 输入必须带**真实固定** RouteCode / PathId / StartOperation」，1号位
-        //   `PhaseTwoInitialScheduler.cs:310-325` 对 `IsContinuation` 需求做**硬 Fail Closed**
-        //   （缺任一 ⇒ 记 Unscheduled、**不产任何 Task**）。原实现**从不给需求填这两个字段** ⇒
-        //   PV2 实测 284/284 片缺 RouteCode/PathId ⇒ A/B 数量在 1号位 侧凭空消失（静默丢单）。
-        //   取值源 = 本次已归一化、即将随 `DomainSolveRequest` 一起交给 1号位的那份路由上下文
-        //   （`NormalizeToSingleRoute` 后 V1 恒为 DEFAULT / 1）——**不是猜路径**：
-        //   1号位 的 `RoutingGraph` 字典就是按这份载荷建的，给别的值反而查不到图。
-        //   物料在本次载荷里存在**多条**不同 (RouteCode, PathId) 时不猜，留 null 并告警（保持 Fail Closed）。
+        // ③c 连续份额路径身份回填（2026-10-09）——**临时桥接，非终态**，理由逐条如下。
+        //
+        // 为什么必须填：1号位 `PhaseTwoInitialScheduler` 对 `IsContinuation` 需求做**硬 Fail Closed**
+        //   （`ContinuationKey / RouteCode / PathId / StartOperationCode / NoSplitMerge` 缺任一 ⇒ 记
+        //   `UnscheduledDemandKeys`、**不产任何 Task**）。原实现**从不给需求填 RouteCode/PathId** ⇒
+        //   PV2 实测 284/284 片全缺 ⇒ A/B 数量在 1号位 侧凭空消失（静默丢单）。
+        //
+        // ⚠ 为什么是「桥接」而不是「正确」：取值源是**本方法上游刚被 `NormalizeToSingleRoute` 就地改写过的**
+        //   那份路由上下文，故回填出来**恒为 `DEFAULT / 1`**。而冻结 `11_2号位v2.1` 本轮统一执行红线 **Q1**
+        //   逐字要求：「凡属业务真值、持久化、接口追溯、FinalTask、Task、MES执行身份的 `RouteCode / PathId`
+        //   **必须保存真实值**；**`DEFAULT / 1` 不得作为归一化后的业务真值**。`NormalizeToSingleRoute` 如存在，
+        //   **仅允许作为 1号位 内部技术适配，且必须能够恢复真实 Route/Path**。」同文档 §主链第 5 条：
+        //   「A/B 向 1号位 发送**固定真实 Route/Path**…**禁止预先压成 DEFAULT/1**。」
+        //   ⇒ 只要 `NormalizeToSingleRoute` 还留在 2号位 装载层（真实值当场销毁、无保留副本），
+        //     本回填就**只能是桥接**：它保证「1号位 查得到图、A/B 不丢单」，但**不满足 Q1 的真实值要求**。
+        //
+        // 终态（两条都做完才拆桥，二者均已挂账）：
+        //   ① 1号位 侧 `StageTimingNodeBuilder.GetRoutelessStages` 去掉 `RouteCode != "DEFAULT" ⇒ continue`
+        //      （`LPS.APS.Scheduling`，1号位 红线区；我方 `NormalizeToSingleRoute` 删除补丁已备好、压住不发，
+        //      等 1号位 回「最小改法 vs 严格改法」并定**停归一化联调时点**，避免半程状态）；
+        //   ② 5号位 按 slice 交付**真实** `RouteCode / PathId`（提问台账 Q-1008-1；其 v1.7 已自要求
+        //      「每个 slice 应含 ProductionDepartment + 真实 RouteCode、PathId」，只是 DTO 未承载）。
+        //   本方法对已带真值的需求**直接跳过不覆盖** ⇒ ②落地后桥接自动失效，无需再改这里。
+        //
+        // 运行期留痕（不静默）：见方法内 `[Pegging][Continuity]` 两条日志 —— 一条报回填统计，
+        //   一条**显式告警「当前 A/B 路径身份 = 归一化技术适配值 DEFAULT/1，非真实业务路径（红线 Q1）」**。
+        //
+        // 保守规则：该物料在本次载荷里 0 条或多条不同 (RouteCode, PathId) ⇒ **不填、留 null + 告警**
+        //   （保持 1号位 Fail Closed 原状，绝不静默挑一条）。
         FillContinuationRouteIdentities(voucher, routingOperations, _logger);
 
         // ④ 数量单位回填（2026-10-09，P1-08 方案a 取值源修正）：需求**自身物料**的 Material.UOM
@@ -522,7 +542,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                     solveResult.FinalTasks.Count, StringComparer.Ordinal);
 
                 // W3：Task 落库必须携带 MTS_InstructionNo（连续份额尤须，供 MES 绑原工单识别）。
-                // FinalTaskDraft.SourceDraftId = 源 LogicalDemandKey（1号位 PhaseTwoInitialScheduler L1135）→ 反查 LPD.ProductionInstructionNo。
+                // FinalTaskDraft.SourceDraftId = 源 LogicalDemandKey（1号位 `PhaseTwoInitialScheduler` 的 `SourceDraftId = demand.LogicalDemandKey`）→ 反查 LPD.ProductionInstructionNo。
                 // Continuation 保持源 key、Free 用源 key+"/FREE"——两者都在 voucher.LogicalProductionDemands 里带了同一 PI，均能命中。
                 var piByDemandKey = voucher.LogicalProductionDemands
                     .Where(d => !string.IsNullOrEmpty(d.ProductionInstructionNo))
@@ -593,7 +613,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
 
                     // 真实路径身份落库（红线 Q1 / RT-001 / DB-002）：1号位 FinalTaskDraft 原样透传，**不回填 DEFAULT/1**。
                     //   ⚠ `FinalTaskDraft.PathId` 是 `long?`，而 Task.PathId 是 `INT`（DDL v5.1.8.3）⇒ 越界即置 NULL，不静默截断。
-                    //   ⚠ 当前值仍会是 DEFAULT/1 —— 因为 1号位 侧 `StageTimingNodeBuilder.cs:295` 尚硬编码
+                    //   ⚠ 当前值仍会是 DEFAULT/1 —— 因为 1号位 侧 `StageTimingNodeBuilder` 尚硬编码
                     //     RouteCode=="DEFAULT"，2号位 不敢先停归一化（见台账 §T-1008l）。待 1号位 整改后本列自动变真值。
                     int? persistPathId =
                         final.PathId is { } pid && pid >= int.MinValue && pid <= int.MaxValue ? (int)pid : null;
@@ -1763,11 +1783,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         public ContinuityFacts(
             IReadOnlyList<WipStageLoadRow> wipRows,
             IReadOnlyDictionary<string, ProductionInstructionPositionResult> piPositions,
-            IReadOnlyDictionary<string, decimal> piRemainingByPi)
+            IReadOnlyDictionary<string, decimal> piRemainingByPi,
+            PiOperationCodeResolver operationCodeResolver)
         {
-            WipRows          = wipRows;
-            PiPositions      = piPositions;
-            PiRemainingByPi  = piRemainingByPi;
+            WipRows               = wipRows;
+            PiPositions           = piPositions;
+            PiRemainingByPi       = piRemainingByPi;
+            OperationCodeResolver = operationCodeResolver;
         }
 
         public IReadOnlyList<WipStageLoadRow> WipRows { get; }
@@ -1778,6 +1800,108 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         /// 这是全链唯一总量根：大工艺/MES工序各层只回答「剩余现在在哪」，**任何一层的量都不得突破它**。
         /// </summary>
         public IReadOnlyDictionary<string, decimal> PiRemainingByPi { get; }
+
+        /// <summary>续排起点「名→码 反查」器（见 <see cref="PiOperationCodeResolver"/>）。</summary>
+        public PiOperationCodeResolver OperationCodeResolver { get; }
+    }
+
+    /// <summary>
+    /// 续排起点「名→码 反查」（2号位 装载层，2026-10-10；口径由 5号位 2026-10-09 三轮回执 §三/§六.3 钉死）。
+    ///
+    /// 背景：1号位 入口按 **APS <c>RoutingOperation.OperationCode</c>** 匹配
+    /// （<c>nodesByOperationCode[demand.StartOperationCode]</c>），非空但查不中即记 S26 Unscheduled、**无兜底**。
+    /// 而 5号位 两条出口的 <c>StartOperationCode</c> **行为并不一致**（实读 5号位
+    /// <c>ProductionInstructionPositionCalculator</c>，非据记忆）：
+    ///   · <c>NextOperationContextDto.StartOperationCode</c> 装的是 **MES 侧 <c>OperationName</c>**
+    ///     （<c>SplitByOperationProgress</c> 取 <c>remainingOps[0].OperationName</c>）⇒ **本解析器的适用面**；
+    ///   · <c>ExistingExecutionContextDto.StartOperationCode</c>（Continuation 片的来源）在 DAG 拓扑前沿命中时
+    ///     给的是**真码**（<c>BuildExistingExecutionContexts</c> 取 <c>f.OpCode</c>），走「中间态」降级分支时写死
+    ///     <c>null</c>（<c>BuildIntermediateSlices</c>）并附注「由 2号位 按 RouteCode+名 反查（v1.7）」——
+    ///     但该 DTO **没有承载工序名的字段**，名根本没传到 2号位 ⇒ 那条注释当前**结构上无法履行**（登记，不自行扩 5→2 契约）。
+    ///
+    /// 2号位 在本辖区（装载层）用「该 PI 事实包内的 <c>RoutingOperations</c>」（= 5号位 产出该名时的同一集合，
+    /// 见 <see cref="LoadRoutingFactsAsync"/>）把名解析回码：
+    ///   · 该 <c>OperationName</c> 在 PI 路由集内只对应 1 个 <c>OperationCode</c> ⇒ 命中；
+    ///   · 对应多个码（= 「同文本多 PathId」的真歧义）⇒ 用**工单真实 RouteCode 子串包含**消解
+    ///     （5号位 §三：APS 短码 ∈ MES 长串；双向包含以兼容 ASSY 侧两侧都是长名字串的形态）；
+    ///   · 消解后仍不唯一 ⇒ 返回 <c>null</c>（Fail Closed——**绝不按相似名猜码、绝不伪造码、绝不回填 DEFAULT/1**，5号位 §六.3）。
+    ///
+    /// 加工侧（MACH/FORGE/MOLD）MES 工序名是纯数字私有编码，与 APS 字母表结构性不相交 ⇒ 天然反查不到，
+    /// 留 null 由 1号位 Fail Closed 可观测；组装侧（ASSY）名字在 APS 字母表内 ⇒ 可命中。
+    /// </summary>
+    internal sealed class PiOperationCodeResolver
+    {
+        // PI → (OperationName → 候选 (OperationCode, RouteCode))
+        private readonly Dictionary<string, Dictionary<string, List<(string Code, string RouteCode)>>> _byPi;
+        // PI → 该 PI 的 OperationCode 全集（防御：出口值本身已是码时原样放行）
+        private readonly Dictionary<string, HashSet<string>> _codeSpaceByPi;
+
+        public PiOperationCodeResolver(
+            IReadOnlyDictionary<string, IReadOnlyList<RoutingOperationFact>> routingOpsByPi)
+        {
+            _byPi = new Dictionary<string, Dictionary<string, List<(string Code, string RouteCode)>>>(StringComparer.Ordinal);
+            _codeSpaceByPi = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+            foreach (var (pi, ops) in routingOpsByPi)
+            {
+                var byName = new Dictionary<string, List<(string Code, string RouteCode)>>(StringComparer.Ordinal);
+                var space = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var o in ops)
+                {
+                    if (string.IsNullOrEmpty(o.OperationCode)) continue;
+                    space.Add(o.OperationCode);
+                    if (string.IsNullOrEmpty(o.OperationName)) continue;
+                    if (!byName.TryGetValue(o.OperationName, out var list))
+                        byName[o.OperationName] = list = new List<(string, string)>();
+                    list.Add((o.OperationCode, o.RouteCode ?? string.Empty));
+                }
+                _byPi[pi] = byName;
+                _codeSpaceByPi[pi] = space;
+            }
+        }
+
+        /// <summary>该 PI 的合法 <c>OperationCode</c> 空间内是否已含该值（= 出口值本身已是码，非工序名）。</summary>
+        public bool IsKnownCode(string? pi, string? value)
+            => !string.IsNullOrEmpty(pi) && !string.IsNullOrEmpty(value)
+               && _codeSpaceByPi.TryGetValue(pi!, out var space) && space.Contains(value!);
+
+        /// <summary>
+        /// 把 5号位 出口值解析为 APS <c>OperationCode</c>；无法唯一确定时返回 <c>null</c>。
+        /// </summary>
+        /// <param name="pi">生产指示号（定位该 PI 的路由集）。</param>
+        /// <param name="emittedValue">5号位 出口的 <c>StartOperationCode</c>（实测为 MES 工序名）。</param>
+        /// <param name="workOrderRouteCode">工单真实 RouteCode（歧义消解用；PI 级上下文无此值时可传 null）。</param>
+        public string? Resolve(string? pi, string? emittedValue, string? workOrderRouteCode)
+        {
+            if (string.IsNullOrEmpty(pi) || string.IsNullOrEmpty(emittedValue)) return null;
+
+            // 已是本 PI 的合法码 ⇒ 原样放行（未来 MACH 侧清洗后 5号位 直接给码时不需要反查）。
+            if (IsKnownCode(pi, emittedValue)) return emittedValue;
+
+            if (!_byPi.TryGetValue(pi!, out var byName))
+                return null;   // 无路由事实 ⇒ 无从反查（与「无工序」同类，非本器可解）
+
+            if (!byName.TryGetValue(emittedValue!, out var candidates) || candidates.Count == 0)
+                return null;   // 既不是码、也不匹配任何工序名 ⇒ Fail Closed（不猜码）
+
+            var codes = candidates.Select(c => c.Code).Distinct(StringComparer.Ordinal).ToList();
+            if (codes.Count == 1) return codes[0];
+
+            // 真歧义（同名多码）：用工单真实 RouteCode 子串包含消解（5号位 §三 钉死口径）。
+            if (!string.IsNullOrEmpty(workOrderRouteCode))
+            {
+                var narrowed = candidates
+                    .Where(c => !string.IsNullOrEmpty(c.RouteCode)
+                                && (workOrderRouteCode!.Contains(c.RouteCode, StringComparison.Ordinal)
+                                    || c.RouteCode.Contains(workOrderRouteCode!, StringComparison.Ordinal)))
+                    .Select(c => c.Code)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                if (narrowed.Count == 1) return narrowed[0];
+            }
+
+            return null;   // 仍不唯一 ⇒ Fail Closed（不猜码）
+        }
     }
 
     /// <summary>MESWorkOrderSnapshot 装载行（仅 IN_PROGRESS 工单）</summary>
@@ -2011,6 +2135,9 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         //   · 自消费保护由**层级门**实现，不再用逐行卫语句：`NetAndAllocate` 传 `includePi = bomLevel > 0`
         //     ⇒ 顶层（L0）整层不取 PI 条目，任何 L0 需求（O 行客户订单 / P 行 PI 指令行）都无从消费 PI，
         //     结构上不可能自消费（T2-02.4）；下阶（L1+）组件需求正常取 PI 池。
+        //   · **身份闸门**（B-01）：进池的 `piFacts` 已在上游剔掉**全部**客户订单行（含厂间 SH），见
+        //     `LoadPiRemainingFactsAsync` 的 B-01 说明 —— **层级门管「哪一层能取」，身份门管「什么身份能进」**，
+        //     两者不可互相替代：没有身份门时，客户订单行仍可在 L1+ 被消费掉。
         //
         // ⛔ 不得恢复「StageProgressSnapshot.RemainingQty 直接当 PI Supply」的旧写法（T2-02.5）——
         //    那是 MES 在制量（执行连续性数量，走 T2-06 分桶），与 ERP PI 剩余是两个不同的量。
@@ -2048,6 +2175,12 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         //    本查询从此只回答「该 PI 已报到哪些 Stage、各 Stage 进度多少」——是**定位明细**，
         //    绝不再充当 PI 总量（旧写法 `ErpRemainingQty = group.Max(r => r.RemainingQty)` 已删）。
         //    总量唯一来源 = 上面的 piFacts。
+        // ── 原始 MES 快照源 Run（0号位《PM回复1009-1》§三 A-Q1/A-Q2/A-Q3）──
+        // 读侧：候选 / FAILED 恢复须沿 Base 链继承「有三类完整快照」的源 Run，不得读候选自身 Run；夜间 = 本 Run（行为不变）。
+        // 写侧不受影响：候选衍生结果（PI Position 快照等）仍落候选自身 Run（见 PersistDomainAndPeggingInTransactionAsync / SavePiPositionSnapshotsAsync）。
+        var snapshotRunId = await SnapshotRunResolver.ResolveSnapshotRunIdAsync(
+            _connectionManager, request.PlanVersionId, _logger, ct);
+
         var wipStageRows = (await _connectionManager.QueryAsync<WipStageLoadRow>(
             @"SELECT sp.ProductionInstructionNo,
                      sp.MaterialCode,
@@ -2069,18 +2202,14 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                     AND o.MTS_InstructionNo IS NOT NULL
               ) o ON o.MTS_InstructionNo = sp.ProductionInstructionNo
               INNER JOIN Factory f ON f.Id = o.FactoryId
-              WHERE sp.ScheduleRunId = (
-                  SELECT TOP 1 pv.SourceScheduleRunId
-                  FROM PlanVersion pv
-                  WHERE pv.Id = @PlanVersionId
-              )
+              WHERE sp.ScheduleRunId = @SnapshotRunId
               AND sp.RemainingQty > 0",
-            new { request.PlanVersionId },
+            new { request.PlanVersionId, SnapshotRunId = snapshotRunId },
             db: DatabaseId.APS)).ToList();
 
         Mark($"④Stage 定位明细(StageProgressSnapshot={wipStageRows.Count}行)");
 
-        var piPositions = await LoadPiPositionsAsync(piFacts, wipStageRows, frozenSnapshot, request.PlanVersionId, ct, persistPositionSnapshot);
+        var (piPositions, opCodeResolver) = await LoadPiPositionsAsync(piFacts, wipStageRows, frozenSnapshot, request.PlanVersionId, snapshotRunId, ct, persistPositionSnapshot);
         Mark($"⑤PI Position(5号位计算器,={piPositions.Count}个PI)");
 
         // ── W1（PM 0914 红线）：IN_PROGRESS 的 RemainingQty 不再作为 WIP Supply 把需求 Q 扣掉。
@@ -2094,7 +2223,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         // 每 SH 只入池一条（PhysicalSourceKey=SH号=OrderNo），量=Order.Quantity（指令总量），由红线③⑥ 防重复计量。
         // AvailableAt = SourceReadyTime + CrossFactoryLT；SourceReadyTime = max(源厂 Task PlannedEndTime)，
         // 依赖 Layer-2「源厂需求→求解→回传」（待 PM 接口/源厂方向字段落地）——当前置 null（源厂未排），见台账。
-        var shipments = await LoadInterFactoryShipmentsAsync(ct);
+        var shipments = await LoadInterFactoryShipmentsAsync(request.PlanVersionId, ct);
         Mark($"⑥厂间 SH 供给({shipments.Count}行)");
         foreach (var s in shipments)
         {
@@ -2140,7 +2269,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             .GroupBy(f => f.ProductionInstructionNo, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Max(f => f.PiRemainingQty), StringComparer.Ordinal);
 
-        return (pool, new ContinuityFacts(wipStageRows, piPositions, piRemainingByPi));
+        return (pool, new ContinuityFacts(wipStageRows, piPositions, piRemainingByPi, opCodeResolver));
     }
 
     /// <summary>
@@ -2214,21 +2343,83 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             "[Pegging][Continuity] 5号位 NextOperation 起点可用性: PI Position={PiPos}个, 其中有可用起点={NextOpPi}个",
             facts.PiPositions.Count, nextOpsByPi.Count);
 
+        // ── 名→码 反查（2026-10-10，5号位 §三/§六.3）：把 5号位 出口可能带的 MES 工序名换成 APS OperationCode ──
+        // 上一行 BucketContinuityShares 把 5号位 的原始出口值逐字搬进片。1号位 入口按
+        // RoutingOperation.OperationCode 匹配 ⇒ 装的是名则非空也必然 S26。此处逐片反查：
+        // 命中→换成码；不中→置 null（Fail Closed，不猜码/不伪造/不回填 DEFAULT/1，5号位 §六.3）。
+        // 注：Continuation 片的源 <c>ExistingExecutionSliceDto</c> 在 5号位 取 A（2026-10-10）后**可能是名**
+        // （中间态 `StartOperationName`，见 <c>BucketContinuityShares</c> 的起点取值），另有 <c>NextOperationContextDto</c>
+        // 本就装名（见 PiOperationCodeResolver 注释）⇒ 本循环是**实路径**，不再是防御性。
+        // Continuation 片可用「该工单真实 RouteCode」消解同名多码（子串包含，5号位 §三）；Free 无工单路由上下文。
+        var ctxRouteByPiWo = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (piKey, ctxs) in contextsByPi)
+            foreach (var c in ctxs)
+                if (!string.IsNullOrEmpty(c.RouteCode))
+                    ctxRouteByPiWo[piKey + "|" + c.MESWorkOrderNo] = c.RouteCode;
+
+        var resolver = facts.OperationCodeResolver;
+        var alreadyCode = 0;
+        var resolvedFromName = 0;
+        var unresolvedSlices = 0;
+        var unresolvedByStage = new Dictionary<string, int>(StringComparer.Ordinal);
+        var unresolvedSamples = new List<string>();
+        foreach (var r in result)
+        {
+            if (string.IsNullOrEmpty(r.StartOperationCode)) continue;
+            var pi = r.ProductionInstructionNo ?? string.Empty;
+
+            if (resolver.IsKnownCode(pi, r.StartOperationCode)) { alreadyCode++; continue; }
+
+            string? route = null;
+            var wo = ExtractMesWorkOrderNo(r.LogicalDemandKey);
+            if (wo != null && ctxRouteByPiWo.TryGetValue(pi + "|" + wo, out var rc)) route = rc;
+
+            var resolved = resolver.Resolve(pi, r.StartOperationCode, route);
+            if (resolved != null) { r.StartOperationCode = resolved; resolvedFromName++; continue; }
+
+            unresolvedSlices++;
+            var stageOfSlice = string.IsNullOrEmpty(r.StartStageCode) ? "(无Stage)" : r.StartStageCode;
+            unresolvedByStage[stageOfSlice] = unresolvedByStage.TryGetValue(stageOfSlice, out var n) ? n + 1 : 1;
+            if (unresolvedSamples.Count < 10) unresolvedSamples.Add(r.StartOperationCode);
+            r.StartOperationCode = null;   // Fail Closed：宁可到 Stage 级 / 由 1号位 记 Unscheduled，也不给名校
+        }
+
+        if (alreadyCode + resolvedFromName + unresolvedSlices > 0)
+            _logger.LogInformation(
+                "[Pegging][Continuity] 续排起点名→码 反查：带起点片 {Tot}（已是码 {Already} / 名反查命中 {Resolved} / **反查不中→留null {Unresolved}**）",
+                alreadyCode + resolvedFromName + unresolvedSlices, alreadyCode, resolvedFromName, unresolvedSlices);
+        if (unresolvedSlices > 0)
+            _logger.LogWarning(
+                "[Pegging][Continuity] 续排起点反查不中按 Stage：{ByStage}；样例=[{Samples}]（留 null 交 1号位 Fail Closed，不猜码）",
+                string.Join("/", unresolvedByStage.OrderByDescending(k => k.Value).Select(k => k.Key + "=" + k.Value)),
+                string.Join(",", unresolvedSamples.Distinct()));
+
+        var nextOpResolved = 0;
+        var nextOpUnresolved = 0;
         foreach (var r in result)
         {
             // 已带起点的片不动（MES 工单上下文已给出 StartOperationCode）；
             // 其余 —— Free，以及 §9.4 兜底切出的「MES 位置事实缺失」Continuation —— 退回 5号位 NextOperation 起点，
-            // 跳过 MES 已报工工序、不复从首工序。
+            // 跳过 MES 已报工工序、不复从首工序。PI 级上下文无工单 RouteCode ⇒ 反查只按「唯一名→码」。
             if (r.StartOperationCode != null) continue;
             var pi = r.ProductionInstructionNo;
             if (pi is null or "") continue;
-            if (!nextOpsByPi.TryGetValue(pi, out var nextOp) || nextOp.StartOperationCode is null) continue;
-            r.StartOperationCode = nextOp.StartOperationCode;
+            if (!nextOpsByPi.TryGetValue(pi, out var nextOp) || string.IsNullOrEmpty(nextOp.StartOperationCode)) continue;
+
+            var resolvedNextOp = resolver.Resolve(pi, nextOp.StartOperationCode, workOrderRouteCode: null);
+            if (resolvedNextOp != null) { r.StartOperationCode = resolvedNextOp; nextOpResolved++; }
+            else nextOpUnresolved++;
+
             // Free 沿用原行为（以 NextOperation 的 Stage 为准）；Continuation 的 Stage 来自 MES 工单上下文（位置事实），仅在空时补
             if (!string.IsNullOrEmpty(nextOp.StartStageCode)
                 && (!r.IsContinuation || string.IsNullOrEmpty(r.StartStageCode)))
                 r.StartStageCode = nextOp.StartStageCode;
         }
+
+        if (nextOpResolved + nextOpUnresolved > 0)
+            _logger.LogInformation(
+                "[Pegging][Continuity] NextOperation 起点回填名→码 反查：命中 {Ok} 片 / **不中留 null {Bad} 片**（§9.4 兜底 Continuation + Free）",
+                nextOpResolved, nextOpUnresolved);
 
         foreach (var evt in overCommits)
             _logger.LogWarning("[Pegging][Continuity]{Kind} {Msg}", evt.Kind, evt.Message);
@@ -2245,7 +2436,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                 contSlices.Select(d => d.ProductionInstructionNo).Distinct().Count());
 
             // ── A/B 输入完整性显式告警（不静默）──
-            // 1号位 `PhaseTwoInitialScheduler.cs:285-301` 对 `IsContinuation` 需求硬 Fail Closed：
+            // 1号位 `PhaseTwoInitialScheduler` 对 `IsContinuation` 需求硬 Fail Closed：
             //   ContinuationKey / RouteCode / PathId / StartOperationCode / NoSplitMerge 缺任一
             //   ⇒ 记 `UnscheduledDemandKeys` 且**不产任何 Task** —— 从 2号位 视角表现为「A/B 数量凭空消失」。
             //   ContinuationKey / NoSplitMerge 已由 `CloneDemandSlice` 补齐；**RouteCode/PathId 补不了**：
@@ -2271,7 +2462,9 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     ///   每工单 → Continuation = min(DerivedRemainingQty, 剩余额度)，**ΣE 封顶 = min(Q, PI权威剩余)**；
     ///   MES 位置量缺失（DerivedRemainingQty 全 ≤0）但 PI 有权威剩余 → §9.4 保守兜底：总量取 PI 剩余、
     ///     位置退回 5号位 上下文，量在工单间均分（与 5号位 AllocateStageRemaining 的 totalPlannedQty=0 兜底同惯例）；
-    ///   Free = max(Q − ΣE, 0)；执行申报量 &gt; 封顶 → 不砍单、登记 Execution Over-Commit（§9.1）。
+    ///   Free = max(Q − ΣE, 0)，**再受 PI 权威剩余的累计额度约束**（F-06 / R-21：同 PI 的各工单连续份额与
+    ///     各处新增自由批合计不得越过 PI 剩余；截下的部分登记 PI_FREE_OVER_COMMIT，不静默丢）；
+    ///   E&gt;Q 不砍单、登记 Execution Over-Commit（§9.1）。
     /// Slice 键（LogicalDemandKey）= 源 LogicalDemandKey + "/WO:" + MESWorkOrderNo；Free = 源 key + "/FREE"；
     /// **ContinuationKey 与 Slice 键是两回事**（红线 Q3）：ContinuationKey = f(ScheduleRun, MESWorkOrderNo)，
     ///   同一 MES 工单的全部 Slice **共享同一个** ContinuationKey，**不得把 LogicalDemandKey 拼进去**（否则同一工单裂分）。
@@ -2279,8 +2472,8 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// PlannedProcessQty 逐片按材料级良率单位投入比（源 PlannedProcessQty/NetOutputQty）反算（§16）。
     /// </summary>
     /// <param name="piRemainingByPi">
-    /// PI 号 → ERP 权威剩余（用户 2026-10-09 定盘口径）。传 null = 退回旧行为（不封顶、不兜底），
-    /// 便于既有单测与「无权威剩余来源」的调用方保持不变。
+    /// PI 号 → ERP 权威剩余（用户 2026-10-09 定盘口径）。传 null = 退回旧行为（不封顶、不兜底、
+    /// 不做同 PI 累计扣减），便于既有单测与「无权威剩余来源」的调用方保持不变。
     /// </param>
     internal static List<LogicalProductionDemand> BucketContinuityShares(
         List<LogicalProductionDemand> demands,
@@ -2295,6 +2488,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         // 都完整复制同一份 E（PM C-Q4：不按 Q 比例猜分、不平均切、不放大需求）。
         // 键 = PI 号 | MESWorkOrderNo；值 = 本 Run 已消费掉的份额。
         var consumedByWo = new Dictionary<string, decimal>(StringComparer.Ordinal);
+
+        // F-06 / PM T2-06.6（R-21）：**PI 权威剩余的累计账本**（本 Run 内）。
+        // E 侧已有 consumedByWo 去重，**Free 侧此前是空的** ⇒ 同 PI 多需求时 Σ(Continuation+Free) 可越过 PI 剩余。
+        // 同一 PI 的「各工单连续份额 + 各处新增自由批」合计不得突破 PI 剩余（R-21：300+200 合法 400 不许累计 500）。
+        // 超出的部分**登记**、不静默丢（PM T2-06.5「不得只靠 Math.Min 悄悄丢掉未满足部分」/ §九.6）。
+        // 键 = PI 号；值 = 本 Run 已产出的 (Continuation + Free) 累计量。
+        var emittedByPi = new Dictionary<string, decimal>(StringComparer.Ordinal);
 
         foreach (var demand in demands)
         {
@@ -2322,7 +2522,11 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                         && pv > 0m
                 ? pv
                 : (decimal?)null;
-            var cap = pRoot.HasValue ? Math.Min(q, pRoot.Value) : q;
+            // ── F-06（R-21）：额度不再恒用 pRoot 原值，而是扣掉**本 Run 已为该 PI 产出**的部分 ──
+            // 无根（调用方未提供 piRemainingByPi）→ budgetLeft 取 MaxValue ⇒ 逐字旧行为，既有单测不受影响。
+            emittedByPi.TryGetValue(pi, out var emittedForPi);
+            var budgetLeft = pRoot.HasValue ? Math.Max(pRoot.Value - emittedForPi, 0m) : decimal.MaxValue;
+            var cap = pRoot.HasValue ? Math.Min(q, budgetLeft) : q;
 
             // 逐工单申报量：正常路径取 5号位 DerivedRemainingQty；位置量全 0 时走 §9.4 兜底
             var active = contexts.Where(c => c.DerivedRemainingQty > 0m).ToList();
@@ -2369,7 +2573,33 @@ public class PeggingOrchestrator : IPeggingOrchestrator
 
             if (shareQty.Count == 0)
             {
-                result.Add(demand);
+                // 无权威根 → 逐字旧行为（原样透传，不记账）
+                if (!pRoot.HasValue)
+                {
+                    result.Add(demand);
+                    continue;
+                }
+
+                // 有权威根：本需求无可认领的既存执行份额（该 PI 无活跃 MES 工单，或额度已被前面的需求用尽）。
+                // 整条走自由侧，但**仍受 PI 权威剩余累计约束**：额度够 → 原样透传（逐字旧行为）；不够 → 截到额度 + 登记。
+                var grantQty = Math.Min(q, budgetLeft);
+                if (grantQty >= q)
+                {
+                    emittedByPi[pi] = emittedForPi + q;
+                    result.Add(demand);
+                    continue;
+                }
+
+                onOverCommit?.Invoke(new ContinuityOverCommitEvent(
+                    pi, demand.OrderId, demand.MaterialId, demand.DomainKey, demand.AllocationSequence,
+                    demand.StartStageCode, demand.LogicalDemandKey, q, 0m, q - grantQty, "PI_FREE_OVER_COMMIT"));
+
+                if (grantQty <= 0m) continue;   // 额度已用尽：不产需求（已登记，不静默丢）
+
+                // 额度不够整条：同键克隆并按额度截小（PlannedProcessQty 同比例反算）；已登记未满足部分
+                var scaledProcess = q > 0m ? Math.Round(demand.PlannedProcessQty * (grantQty / q), 4) : demand.PlannedProcessQty;
+                emittedByPi[pi] = emittedForPi + grantQty;
+                result.Add(CloneDemandRescaled(demand, grantQty, scaledProcess));
                 continue;
             }
 
@@ -2406,7 +2636,15 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                 consumedByWo[woKey] = prevConsumed + ci;
 
                 var key = demand.LogicalDemandKey + "/WO:" + ctx.MESWorkOrderNo;
-                var startOp = string.IsNullOrEmpty(ctx.StartOperationCode) ? null : ctx.StartOperationCode;
+                // 起点值：优先真码；无码时退回 5号位 新出口的**工序名**（取 A，2026-10-10）。
+                // 中间态（前道完工/后道未开工，占 82%）5号位 只吐名不吐码，此前本处直接取 null ⇒
+                // 名从未进入片 ⇒ 下游「名→码 反查」（见 ApplyContinuityBucketing 的 resolver 循环）拿不到输入，
+                // 232 片恒缺 StartOperationCode ⇒ 1号位 硬 Fail Closed 不产 Task。
+                // 此处放进字段的可能是「名」，但下游循环无条件过一遍 resolver：命中换真码、不中置 null
+                // ⇒ **载荷里绝不会留下名**，与原「宁可 null 不给名校」口径不冲突。
+                var startOp = !string.IsNullOrEmpty(ctx.StartOperationCode)
+                    ? ctx.StartOperationCode
+                    : (string.IsNullOrEmpty(ctx.StartOperationName) ? null : ctx.StartOperationName);
                 var startStage = !string.IsNullOrEmpty(ctx.StartStageCode) ? ctx.StartStageCode : demand.StartStageCode;
 
                 result.Add(CloneDemandSlice(demand, key, ci, Math.Round(ci * processRatio, 4),
@@ -2414,7 +2652,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                     continuationKey: ContinuationKeyOf(demand.PlanVersionId, ctx.MESWorkOrderNo)));
             }
 
-            var freeQty = q - sumE;
+            // ── Free 侧：F-06 —— 先受 PI 权威剩余**累计**约束，再把未满足部分登记（不静默）──
+            // desiredFree = q − ΣE（本需求自由侧的本意量）；freeQty = 再扣掉同 PI 已被其它需求/批次占用的额度后真正合法的新增量。
+            var desiredFree = q - sumE;
+            var freeQty = pRoot.HasValue
+                ? Math.Max(Math.Min(desiredFree, budgetLeft - sumE), 0m)
+                : desiredFree;
+
             if (freeQty > 0m)
             {
                 // Free 是新生产量：起点从路由首工序起（StartOperation=null，StartStage 由 FillStartStageCodes 回填）
@@ -2430,6 +2674,18 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                     demand.StartStageCode, demand.LogicalDemandKey, q, sumE, -freeQty, "EXECUTION_OVER_COMMIT"));
             }
 
+            // 本 Run 该 PI 的产出累计（Continuation + Free），供后续同 PI 需求扣减（R-21）
+            if (pRoot.HasValue)
+                emittedByPi[pi] = emittedForPi + sumE + freeQty;
+
+            // F-06 / R-21：自由侧被 PI 权威剩余累计截下的部分 —— 登记，绝不静默丢
+            if (pRoot.HasValue && desiredFree > freeQty)
+            {
+                onOverCommit?.Invoke(new ContinuityOverCommitEvent(
+                    pi, demand.OrderId, demand.MaterialId, demand.DomainKey, demand.AllocationSequence,
+                    demand.StartStageCode, demand.LogicalDemandKey, q, sumE, desiredFree - freeQty, "PI_FREE_OVER_COMMIT"));
+            }
+
             // §9.1 红线（有权威根时）：申报量 > 封顶（= min(Q, PI权威剩余)）——不砍单、登记，绝不静默
             if (pRoot.HasValue && rawSumE > cap)
             {
@@ -2441,6 +2697,41 @@ public class PeggingOrchestrator : IPeggingOrchestrator
 
         return result;
     }
+
+    /// <summary>
+    /// 同键克隆 + 按 PI 权威剩余额度**截小**数量（F-06 用）。与 <see cref="CloneDemandSlice"/> 的区别：
+    /// 不切分（键不变）、不改身份字段、不重算起点 —— 只是把需求量收敛到合法额度内。
+    /// </summary>
+    private static LogicalProductionDemand CloneDemandRescaled(
+        LogicalProductionDemand s, decimal netQty, decimal processQty) => new()
+    {
+        LogicalDemandKey        = s.LogicalDemandKey,
+        PlanVersionId           = s.PlanVersionId,
+        DomainKey               = s.DomainKey,
+        AllocationSequence      = s.AllocationSequence,
+        DemandKey               = s.DemandKey,
+        OrderId                 = s.OrderId,
+        MaterialId              = s.MaterialId,
+        FactoryId               = s.FactoryId,
+        StartStageCode          = s.StartStageCode,
+        RequiredStageCode       = s.RequiredStageCode,
+        StartOperationCode      = s.StartOperationCode,
+        NetOutputQty            = netQty,
+        PlannedProcessQty       = processQty,
+        UOM                     = s.UOM,
+        RequiredAvailableTime   = s.RequiredAvailableTime,
+        DemandSequence          = s.DemandSequence,
+        ProductionInstructionNo = s.ProductionInstructionNo,
+        IsUnlocated             = s.IsUnlocated,
+        PreferredResourceId     = s.PreferredResourceId,
+        FallbackResourceId      = s.FallbackResourceId,
+        IsContinuation          = s.IsContinuation,
+        ContinuationKey         = s.ContinuationKey,
+        RouteCode               = s.RouteCode,
+        PathId                  = s.PathId,
+        NoSplitMerge            = s.NoSplitMerge,
+        PreferredResourceCode   = s.PreferredResourceCode,
+    };
 
     private static LogicalProductionDemand CloneDemandSlice(
         LogicalProductionDemand s,
@@ -2473,7 +2764,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         FallbackResourceId     = s.FallbackResourceId,
         IsContinuation         = isContinuation,
         // ── v1.6 §1 + 0号位 2026-10-07 裁决：A/B 切片必须**显式**带齐身份字段，不靠默认值 ──
-        // 1号位 `PhaseTwoInitialScheduler.cs:285-301` 对 `IsContinuation` 需求做**硬 Fail Closed**：
+        // 1号位 `PhaseTwoInitialScheduler` 对 `IsContinuation` 需求做**硬 Fail Closed**：
         //   ContinuationKey / RouteCode / PathId / StartOperationCode / NoSplitMerge 缺任一 ⇒
         //   进 `UnscheduledDemandKeys`、**不产任何 Task**（静默丢单）。
         //   ⇒ 本方法逐项显式赋值；缺项必须在此处可见，不得依赖「反正有默认值」。
@@ -2511,9 +2802,9 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         decimal Quantity,
         decimal ContinuationQty,
         decimal ExcessQty,
-        string Kind)   // "EXECUTION_OVER_COMMIT" | "DEMAND_MISMATCH" | "DUPLICATE_WO_SHARE"
+        string Kind)   // "EXECUTION_OVER_COMMIT" | "DEMAND_MISMATCH" | "DUPLICATE_WO_SHARE" | "PI_FREE_OVER_COMMIT"
     {
-        /// <summary>DEMAND_MISMATCH（Q=0 仍开工）=错误级；其余（E&gt;Q 超量 / 同工单份额被重复引用）=警告级（登记不阻断）。</summary>
+        /// <summary>DEMAND_MISMATCH（Q=0 仍开工）=错误级；其余（E&gt;Q 超量 / 同工单份额被重复引用 / 同 PI 自由额度超顶）=警告级（登记不阻断）。</summary>
         public string Severity => Kind == "DEMAND_MISMATCH" ? "ERROR" : "WARNING";
 
         public string Message => Kind switch
@@ -2524,6 +2815,10 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             // 本需求不得再复制同一份 E ⇒ 登记并转 Free（不砍单、不按 Q 比例猜分）。
             "DUPLICATE_WO_SHARE" =>
                 $"PI {ProductionInstructionNo}: MES 工单份额 {ExcessQty} 已被本 Run 内其它需求消费（累计 {ContinuationQty}），不再重复计提，转自由份额",
+            // PM 2026-10-09 T2-06.6（F-06 / R-21）：同 PI 的新增自由批累计不得突破 PI 权威剩余，
+            // 超出部分**登记**（T2-06.5：不得只靠 Math.Min 悄悄丢掉未满足部分 / §九.6）。
+            "PI_FREE_OVER_COMMIT" =>
+                $"PI {ProductionInstructionNo}: 本需求带 PI（Q={Quantity}, 连续 ΣE={ContinuationQty}），自由侧超出该 PI 权威剩余累计额度 {ExcessQty}，已截小并入 Issue（不静默丢）",
             _ =>
                 $"PI {ProductionInstructionNo}: Q=0 但存在开工中剩余 ΣE={ContinuationQty}（Demand Mismatch），不产 Demand/Task"
         };
@@ -2865,7 +3160,14 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     ///
     /// 口径（用户 2026-10-09 定盘）：<c>PiRemainingQty = max(Quantity − ISNULL(ReceivedQty,0), 0)</c>，
     /// 两列在整条链（ODS 视图 → Staging → Canonical → [Order]）原样透传、零运算，故先后 - 原样等价。
-    /// 判别「有 PI」只看 <c>MTS_InstructionNo IS NOT NULL</c>——不看 OrderType 细分、不看 ZPQF、不看 OrderNo 前缀。
+    /// 判别「有 PI」只看 <c>MTS_InstructionNo IS NOT NULL</c>——不看 ZPQF、不看 OrderNo 前缀。
+    ///
+    /// <b>但「有 PI 号」≠「可入供给池」</b>：本方法是**供给侧**装载，另有一道**业务身份闸门**（PM v1.3 B-01）——
+    /// 普通客户订单（<c>OrderType='SALES_ORDER'</c>）**即使挂了 MTS 指示号**也**不得**作为 Supply：
+    /// 它是「要交货」（需求），不是「已有货」（供给），同一行同时进两张清单会让需求找到自己 ⇒ 静默不生产。
+    /// 厂间 SH（<c>CustomerSegment='跨厂'</c>）的供给资格**由其专路保留**（<c>LoadInterFactoryShipmentsAsync</c>），
+    /// **不在此路**——否则同一张 SH 会以 WIP 与 INTER_FACTORY_ORDER 两个身份重复入池。
+    /// 闸门对 <c>OrderType</c> 为 NULL 的行**放行**（不臆断身份，保持原行为），避免 `NULL='SALES_ORDER'`⇒UNKNOWN 静默滤空。
     ///
     /// 边界（PM T2-01.2：不用 0 / 客户需求量 / Stage MAX **偷偷**替代）：
     ///   · <c>ReceivedQty IS NULL</c> → 按 0 参与公式，但置 <c>HasMissingReceivedQty</c> 并留痕；
@@ -2914,7 +3216,14 @@ public class PeggingOrchestrator : IPeggingOrchestrator
               INNER JOIN Factory  f ON f.Id = o.FactoryId
               WHERE o.PlanVersionId = @PlanVersionId
                 AND o.MTS_InstructionNo IS NOT NULL
-                AND o.MTS_InstructionNo <> ''",
+                AND o.MTS_InstructionNo <> ''
+                -- B-01 业务身份闸门：客户订单行不得作为 Supply —— **不区分是否厂间 SH**。
+                -- 「挂了 MTS 指示号」不改变身份（PM v1.3 B-01 点名的正是这一形态）。
+                -- 厂间 SH 走**它自己的专路**（LoadInterFactoryShipmentsAsync → INTER_FACTORY_ORDER）；
+                -- 此处若再留 `OR CustomerSegment='跨厂'`，同一张 SH 会同时以 WIP 与 INTER_FACTORY_ORDER
+                -- 两个身份入池 = 重复计量（PV2 实测 4 行 / Σ593）；且源厂的 PI 本就不是本厂 WIP。
+                -- ISNULL 保证 OrderType 为 NULL 时不被 `NULL='SALES_ORDER'`⇒UNKNOWN 静默滤掉（放行，保持原行为）。
+                AND ISNULL(o.OrderType, N'') <> 'SALES_ORDER'",
             new { PlanVersionId = planVersionId },
             db: DatabaseId.APS)).ToList();
 
@@ -2946,6 +3255,8 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                       WHERE oc.Status IN ('Open','Released')
                         AND oc.MTS_InstructionNo IS NOT NULL
                         AND oc.MTS_InstructionNo <> ''
+                        -- B-01 同一道业务身份闸门（与 A 源逐字同口径）：客户订单行不得作为 Supply，含厂间 SH
+                        AND ISNULL(oc.OrderType, N'') <> 'SALES_ORDER'
                         AND oc.MaterialCode IN @MaterialCodes
                         AND NOT EXISTS (SELECT 1 FROM [Order] o
                                         WHERE o.PlanVersionId = @PlanVersionId
@@ -2956,10 +3267,24 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             rows.AddRange(extra);
         }
 
+        // B-01 闸门剔除量：只对 A 源计数（一次轻量 COUNT）。B 源是分块查询、同一谓词，
+        // 不再另开计数查询；A 源这一条即足以在运行日志里留证「闸门确实在剔行」。
+        var excludedSoRows = await _connectionManager.QueryFirstOrDefaultAsync<int>(
+            @"SELECT COUNT(*)
+              FROM [Order] o
+              WHERE o.PlanVersionId = @PlanVersionId
+                AND o.MTS_InstructionNo IS NOT NULL
+                AND o.MTS_InstructionNo <> N''
+                AND ISNULL(o.OrderType, N'') = 'SALES_ORDER'
+                AND ISNULL(o.CustomerSegment, N'') <> N'跨厂'",
+            new { PlanVersionId = planVersionId },
+            db: DatabaseId.APS);
+
         _logger.LogInformation(
             "[Pegging][T2-01] PI 事实装载来源：A=[Order] {OrderRows} 行 / B=Order_Canonical(本域物料宇宙 {Universe} 个物料，" +
-            "无产品族闸门) {ExtraRows} 行；合计 {Rows} 行（PlanVersionId={PlanVersionId}）",
-            orderRowCount, materialUniverse.Count, rows.Count - orderRowCount, rows.Count, planVersionId);
+            "无产品族闸门) {ExtraRows} 行；合计 {Rows} 行（PlanVersionId={PlanVersionId}）。" +
+            "[B-01 身份闸门] 已剔除普通客户订单（非厂间 SH，含挂 MTS 指示号者）A 源 {ExcludedSoRows} 行",
+            orderRowCount, materialUniverse.Count, rows.Count - orderRowCount, rows.Count, planVersionId, excludedSoRows);
 
         if (rows.Count == 0)
         {
@@ -3077,11 +3402,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// Received 已退出计算主链（不再装载，见 PM 裁定）；
     /// 计算器按 UNLOCATED 兜底闭合，2号位据此把未定位份额路由到新增生产。
     /// </summary>
-    private async Task<IReadOnlyDictionary<string, ProductionInstructionPositionResult>> LoadPiPositionsAsync(
+    private async Task<(IReadOnlyDictionary<string, ProductionInstructionPositionResult> Positions,
+                        PiOperationCodeResolver Resolver)> LoadPiPositionsAsync(
         IReadOnlyList<PiRemainingFact> piFacts,
         IReadOnlyList<WipStageLoadRow> wipStageRows,
         FrozenStrategySnapshot frozenSnapshot,
         int planVersionId,
+        int snapshotRunId,
         CancellationToken ct,
         bool persistPositionSnapshot = true)
     {
@@ -3092,7 +3419,8 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             _logger.LogWarning(
                 "[Pegging][T2-04] PI 权威事实为空 ⇒ 本次不产出任何 PI Position（无在制 PI）。" +
                 "若业务上确有在制 PI，请先核订单同步链是否已把 MTS_InstructionNo 带进 [Order]。");
-            return new Dictionary<string, ProductionInstructionPositionResult>();
+            return (new Dictionary<string, ProductionInstructionPositionResult>(),
+                    new PiOperationCodeResolver(new Dictionary<string, IReadOnlyList<RoutingOperationFact>>(StringComparer.Ordinal)));
         }
 
         // T2-04.2：driverRows = 「每个 PI 一行身份行」（StageCode 空、数量 0，仅供下游装载器枚举 PI/物料/工厂）
@@ -3128,7 +3456,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             .Where(p => !string.IsNullOrEmpty(p))
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        var batchByPi = await LoadBatchByPiAsync(piNos);
+        var batchByPi = await LoadBatchByPiAsync(piNos, planVersionId);
 
         // 1.b) 本批 StagePath（逐批一次分块查询）：(BatchNo, MaterialCode) → { StageCode → StageSeq }
         var batchStageByMaterial = new Dictionary<(string BatchNo, string MaterialCode), Dictionary<string, int>>();
@@ -3254,7 +3582,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
 
         // 1.9) 厂间在途事实（Transit，ext_ERP_InterplantInTransit_View；0 行，待 5号位 ODS 数据）
         // PM 0910：Transit 必须按生产指示号（TransitDocumentNo = PI No）精确归属，Material/目标厂仅做一致性校验。
-        var transitFacts = await LoadTransitFactsAsync(driverRows, ct);
+        var transitFacts = await LoadTransitFactsAsync(driverRows, planVersionId, ct);
         var piIdentities = driverRows
             .GroupBy(r => r.ProductionInstructionNo, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => (g.First().MaterialCode, g.First().FactoryCode), StringComparer.Ordinal);
@@ -3262,11 +3590,10 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         foreach (var issue in transitIssues)
             _logger.LogWarning("[Pegging] Transit 归属 Issue: {Issue}", issue);
 
-        // 1.95) 本次快照批次 ScheduleRunId（OperationProgress / MESWorkOrder 与 StageProgress 同批快照）
-        var scheduleRunId = await _connectionManager.QueryFirstOrDefaultAsync<int>(
-            "SELECT SourceScheduleRunId FROM PlanVersion WHERE Id = @PlanVersionId",
-            new { PlanVersionId = planVersionId },
-            db: DatabaseId.APS);
+        // 1.95) 原始 MES 快照源 Run（0号位《PM回复1009-1》§三 A-Q1/A-Q2/A-Q3）
+        //   由 LoadSupplyPoolAsync 统一解析后传入：候选/恢复 = Base 链上「有三类完整快照」的源 Run；夜间 = 本 Run。
+        //   ⚠️ 只用于**读原始快照**；本 PV 的 PI Position 快照**写**点仍用自身 SourceScheduleRunId（见 SavePiPositionSnapshotsAsync）。
+        var scheduleRunId = snapshotRunId;
 
         // 1.96) 每工单快照（IN_PROGRESS）+ 每工单工序进度——5号位 BuildExistingExecutionContexts 的两路事实源
         var workOrderFactsByPi = await LoadWorkOrderSnapshotFactsAsync(scheduleRunId, driverRows, ct);
@@ -3365,32 +3692,47 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             i => i.ProductionInstructionNo,
             i => new HashSet<string>(i.RoutingOperations.Select(o => o.OperationCode), StringComparer.Ordinal),
             StringComparer.Ordinal);
-        var startOpNonEmpty = 0;
-        var startOpUnmatchable = 0;
-        var startOpPis = new HashSet<string>(StringComparer.Ordinal);
+        // 名→码 反查器（2号位 装载层）：构造一次，供本方法出口核验与下游分桶消费共用同一份口径。
+        var opCodeResolver = new PiOperationCodeResolver(routingOpsByPi);
+
+        var startOpNonEmpty = 0;      // 出口非空（原始值）
+        var startOpAlreadyCode = 0;   // 出口值本身已是本 PI 的合法 OperationCode
+        var startOpResolved = 0;      // 出口为名、按名反查命中（含工单 RouteCode 消解）
+        var startOpUnresolved = 0;    // 出口为名、反查不中 ⇒ 消费侧留 null（Fail Closed）
+        var unresolvedByStage = new Dictionary<string, int>(StringComparer.Ordinal);
         var startOpSamples = new List<string>();
         var startOps = results
-            .SelectMany(r => (r.NextOperationContexts ?? (IReadOnlyList<NextOperationContextDto>)Array.Empty<NextOperationContextDto>())
-                .Select(c => (r.ProductionInstructionNo, Value: c.StartOperationCode))
+            .SelectMany(r =>
+                (r.NextOperationContexts ?? (IReadOnlyList<NextOperationContextDto>)Array.Empty<NextOperationContextDto>())
+                    .Select(c => (Pi: r.ProductionInstructionNo, Value: c.StartOperationCode,
+                                  Stage: (string?)c.StartStageCode, Route: (string?)null))
                 .Concat((r.ExistingExecutionContexts ?? (IReadOnlyList<ExistingExecutionContextDto>)Array.Empty<ExistingExecutionContextDto>())
-                    .Select(c => (r.ProductionInstructionNo, Value: c.StartOperationCode))));
-        foreach (var (pi, value) in startOps)
+                    .Select(c => (Pi: r.ProductionInstructionNo, Value: c.StartOperationCode,
+                                  Stage: (string?)c.StartStageCode, Route: (string?)c.RouteCode))));
+        foreach (var (pi, value, stage, route) in startOps)
         {
             if (string.IsNullOrEmpty(value)) continue;
             startOpNonEmpty++;
-            // 只在「该PI有 Routing 节点」时判不中：无 Routing 的物料是另一类问题（无工序），不混计。
-            if (opCodeSpaceByPi.TryGetValue(pi, out var codeSpace)
-                && codeSpace.Count > 0 && !codeSpace.Contains(value!))
-            {
-                startOpUnmatchable++;
-                startOpPis.Add(pi);
-                if (startOpSamples.Count < 10) startOpSamples.Add(value!);
-            }
+            // 只在「该PI有 Routing 节点」时判：无 Routing 的物料是另一类问题（无工序），不混计。
+            if (!opCodeSpaceByPi.TryGetValue(pi, out var codeSpace) || codeSpace.Count == 0)
+                continue;
+            if (codeSpace.Contains(value!)) { startOpAlreadyCode++; continue; }
+
+            var resolved = opCodeResolver.Resolve(pi, value, route);
+            if (resolved != null) { startOpResolved++; continue; }
+
+            startOpUnresolved++;
+            var st = string.IsNullOrEmpty(stage) ? "(无Stage)" : stage!;
+            unresolvedByStage[st] = unresolvedByStage.TryGetValue(st, out var n) ? n + 1 : 1;
+            if (startOpSamples.Count < 10) startOpSamples.Add(value!);
         }
         if (startOpNonEmpty > 0)
             _logger.LogInformation(
-                "[Pegging][红线] 续排起点出口核验：StartOperationCode 非空 {Tot} 条（涉及 {Pi} 个PI），其中 {Bad} 条不在该PI的 RoutingOperation.OperationCode 空间内（1号位 按 OperationCode 匹配 ⇒ 这类需求必然 S26 Unscheduled，无兜底）；样例=[{Samples}]",
-                startOpNonEmpty, startOpPis.Count, startOpUnmatchable,
+                "[Pegging][红线] 续排起点出口核验：StartOperationCode 非空 {Tot} 条；其中已是合法码 {IsCode} 条 / " +
+                "按「名→码 反查」命中 {Resolved} 条 / **反查不中 {Unresolved} 条**（消费侧留 null，1号位 Fail Closed 记 S26，不猜码）。" +
+                "反查不中按 Stage：{ByStage}；样例=[{Samples}]",
+                startOpNonEmpty, startOpAlreadyCode, startOpResolved, startOpUnresolved,
+                string.Join("/", unresolvedByStage.OrderByDescending(k => k.Value).Select(k => k.Key + "=" + k.Value)),
                 string.Join(",", startOpSamples.Distinct()));
         else
             _logger.LogInformation("[Pegging][红线] 续排起点出口核验：本次 StartOperationCode 全为空。⚠️ 这**不代表风险不存在**——它只说明本次这一批 PI 恰好全落在「工序已完/无 Routing 数据」的合法空分支（详见下条断口定位）。产工序名的分支在全库形态上普遍存在（(Material,Stage) 单在制工序 6,530 组），换批数据即会命中 ⇒ 别把「本次全空」记成「已排除」");
@@ -3415,9 +3757,9 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         //    `persistPositionSnapshot=false`（BFS-only / 双跑对照探针）：**只做闭环校验与留痕，
         //    不落库**。原因：该落库按 `PlanVersion.SourceScheduleRunId` DELETE+INSERT，探针跑一次就会
         //    覆盖夜间 run 的真实 PI Position 快照；而探针本身宣称「只读、不落库」。
-        await SavePiPositionSnapshotsAsync(planVersionId, inputs, results, ct, persistPositionSnapshot);
+        await SavePiPositionSnapshotsAsync(planVersionId, inputs, results, piFacts, ct, persistPositionSnapshot);
 
-        return results.ToDictionary(r => r.ProductionInstructionNo, StringComparer.Ordinal);
+        return (results.ToDictionary(r => r.ProductionInstructionNo, StringComparer.Ordinal), opCodeResolver);
     }
 
     /// <summary>
@@ -3632,11 +3974,17 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// 保存 PI Position 快照 + 数量闭环校验（2号位职责，2026-09-02 双专项冻结）。
     /// 冻结约束：Σ Position.Quantity = ERP PI RemainingQty；异常（数量不闭合 / 计算失败 / 位置缺失）
     /// 只登记（IssueCode 落快照 + 日志），不自行修正 5号位 计算出的位置数量。
+    ///
+    /// 2026-10-09（PM回复1009 F-08 / T2-04.4）：闭环校验升级为**两层**——
+    ///   ① 权威 ERP 入参自洽（<paramref name="piFacts"/> 的 `max(Quantity−ReceivedQty,0)` 是否等于喂给计算器的
+    ///      `ErpRemainingQty`、Received 是否缺失/倒挂、Quantity 是否非正）；
+    ///   ② 5号位 Position 与入参闭合。**只做 ① 时不知道源值对不对，只做 ② 时不知道两边一起错。**
     /// </summary>
     private async System.Threading.Tasks.Task SavePiPositionSnapshotsAsync(
         int planVersionId,
         IReadOnlyList<ProductionInstructionPositionInput> inputs,
         IReadOnlyList<ProductionInstructionPositionResult> results,
+        IReadOnlyList<PiRemainingFact> piFacts,
         CancellationToken ct,
         bool persist = true)
     {
@@ -3661,7 +4009,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             .GroupBy(i => i.ProductionInstructionNo, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First().MaterialCode, StringComparer.Ordinal);
 
-        var (rows, issues) = MapPositionSnapshots(scheduleRunId, planVersionId, inputs, resultsByPi, materialCodeByPi);
+        // F-08 第二层：权威 ERP 入参事实（同 PI 多行取「剩余最大」，与 LoadPiRemainingFactsAsync 同口径）
+        var piFactByPi = piFacts
+            .Where(f => !string.IsNullOrEmpty(f.ProductionInstructionNo))
+            .GroupBy(f => f.ProductionInstructionNo, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(f => f.PiRemainingQty).First(), StringComparer.Ordinal);
+
+        var (rows, issues) = MapPositionSnapshots(scheduleRunId, planVersionId, inputs, resultsByPi, materialCodeByPi, piFactByPi);
 
         foreach (var issue in issues)
             _logger.LogWarning("[Pegging] PI Position 闭环异常: {Issue}", issue);
@@ -3687,13 +4041,21 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     ///   - 数量不闭合：Σ Position.Quantity != ErpRemainingQty（容差 0.0001）→ IssueCode=QUANTITY_GAP
     ///   - 计算失败：result.IsSuccess == false → IssueCode=POSITION_FAILED
     ///   - 位置缺失：inputs 有 PI 但计算器无结果 → 记 issue，不落行
+    ///
+    /// 2026-10-09（PM回复1009 F-08 / T2-04.4）：新增**第二层**——校验喂进去的 `ErpRemainingQty` **自身**是否可信。
+    /// 只比 `ΣPosition vs 入参` 只能证明「两边一起错也照样闭合」；入参的真相在 `piFactByPi` 里。
+    ///   - `ErpRemainingQty != max(PiQuantity − ISNULL(PiReceivedQty,0), 0)` → ERP_SOURCE_MISMATCH
+    ///   - Quantity 非正 / Received 倒挂 / Received 缺失但按全额计              → ERP_QUANTITY_INVALID
+    ///   - 入参 PI 在权威事实里查不到                                          → ERP_FACT_MISSING
+    /// 传 `piFactByPi = null` ⇒ 退回旧行为（只做 Position 侧闭合），既有单测不变。
     /// </summary>
     internal static (List<ProductionInstructionPositionSnapshot> Rows, List<string> Issues) MapPositionSnapshots(
         int scheduleRunId,
         int planVersionId,
         IReadOnlyList<ProductionInstructionPositionInput> inputs,
         IReadOnlyDictionary<string, ProductionInstructionPositionResult> resultsByPi,
-        IReadOnlyDictionary<string, string> materialCodeByPi)
+        IReadOnlyDictionary<string, string> materialCodeByPi,
+        IReadOnlyDictionary<string, PiRemainingFact>? piFactByPi = null)
     {
         const decimal tolerance = 0.0001m;
 
@@ -3714,14 +4076,54 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             var hasClosureGap = Math.Abs(sum - input.ErpRemainingQty) > tolerance;
             var isFailed = !result.IsSuccess;
 
+            // ── 第二层：权威 ERP 入参自洽（F-08）────────────────────────────────────────
+            // 只登记、不修正：入参真相不在这里产生，2号位 无权在映射阶段改写它。
+            string? erpSourceIssueCode = null;
+            if (piFactByPi is not null)
+            {
+                if (!piFactByPi.TryGetValue(input.ProductionInstructionNo, out var piFact))
+                {
+                    erpSourceIssueCode = "ERP_FACT_MISSING";
+                    issues.Add($"PI {input.ProductionInstructionNo}: ERP 权威事实缺失（入参 ErpRemainingQty={input.ErpRemainingQty} 无对应 PiRemainingFact）");
+                }
+                else
+                {
+                    var expected = Math.Max(piFact.PiQuantity - (piFact.PiReceivedQty ?? 0m), 0m);
+                    if (Math.Abs(expected - input.ErpRemainingQty) > tolerance)
+                    {
+                        erpSourceIssueCode = "ERP_SOURCE_MISMATCH";
+                        issues.Add(
+                            $"PI {input.ProductionInstructionNo}: ERP 入参不自洽 —— 入参 ErpRemainingQty={input.ErpRemainingQty} " +
+                            $"vs 权威 max(Quantity={piFact.PiQuantity} − Received={(piFact.PiReceivedQty?.ToString() ?? "NULL")},0)={expected}");
+                    }
+                    else if (piFact.PiQuantity <= 0m && input.ErpRemainingQty > 0m)
+                    {
+                        erpSourceIssueCode = "ERP_QUANTITY_INVALID";
+                        issues.Add($"PI {input.ProductionInstructionNo}: ERP Quantity={piFact.PiQuantity} 非正但入参 ErpRemainingQty={input.ErpRemainingQty} > 0");
+                    }
+                    else if (piFact.HasOverReceivedQty)
+                    {
+                        erpSourceIssueCode = "ERP_QUANTITY_INVALID";
+                        issues.Add(
+                            $"PI {input.ProductionInstructionNo}: ERP Received 倒挂 —— Quantity={piFact.PiQuantity} Received={piFact.PiReceivedQty} ⇒ 剩余被压成 {input.ErpRemainingQty}");
+                    }
+                    else if (piFact.HasMissingReceivedQty)
+                    {
+                        erpSourceIssueCode = "ERP_QUANTITY_INVALID";
+                        issues.Add($"PI {input.ProductionInstructionNo}: ERP ReceivedQty 缺失，剩余按 Quantity={piFact.PiQuantity} 全额计（口径存疑）");
+                    }
+                }
+            }
+
             if (hasClosureGap)
                 issues.Add($"PI {input.ProductionInstructionNo}: 数量不闭合 ΣPosition={sum} vs ERP RemainingQty={input.ErpRemainingQty}");
             else if (isFailed)
                 issues.Add($"PI {input.ProductionInstructionNo}: 计算失败 {result.FailureReason}");
 
+            // IssueCode 单列 ⇒ 按「Position 侧优先、ERP 源侧次之」固定优先级取一条；全部原因已在上面逐条登记。
             var issueCode = hasClosureGap ? "QUANTITY_GAP"
                           : isFailed      ? "POSITION_FAILED"
-                          : null;
+                          : erpSourceIssueCode;
 
             foreach (var slice in result.Positions)
             {
@@ -3977,11 +4379,14 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// 返回扁平事实列表（不按键归组），由 AttributeInterplantTransitToPi 按 TransitDocumentNo（= PI No）精确归属（PM 0910 裁决，禁 Material+Factory 归组）。
     /// </summary>
     private async Task<IReadOnlyList<InterplantTransitFact>>
-        LoadTransitFactsAsync(IReadOnlyList<WipStageLoadRow> wipStageRows, CancellationToken ct)
+        LoadTransitFactsAsync(IReadOnlyList<WipStageLoadRow> wipStageRows, int planVersionId, CancellationToken ct)
     {
         var materialCodes = wipStageRows.Select(r => r.MaterialCode).Distinct().ToList();
         var factoryCodes  = wipStageRows.Select(r => r.FactoryCode).Distinct().ToList();
 
+        // 🔴 JOIN 键 `o.OrderNo` 是**跨 PlanVersionId 重复的业务键**（实测同一 OrderNo 平均在 2.97 个版本里各存一份）。
+        // 不过滤 ⇒ 每条在途视图行按命中的版本份数被放大，且 `o.OrderType` 可能取自历史版本副本。
+        // 必须锁死本 Run 的 PlanVersionId。（该视图实测 0 行，本改动为结构性堵漏。）
         var rows = await QueryChunkedInAsync(materialCodes, chunk =>
             _connectionManager.QueryAsync<TransitLoadRow>(
                 @"SELECT t.MaterialCode,
@@ -3994,11 +4399,12 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                          o.OrderType
                   FROM ext_ERP_InterplantInTransit_View t
                   INNER JOIN [Order] o ON o.OrderNo = t.SourceDocumentNo
-                  WHERE t.Quantity > 0
+                  WHERE o.PlanVersionId = @PlanVersionId
+                    AND t.Quantity > 0
                     AND o.OrderType = 'PRODUCTION_INSTRUCTION'
                     AND t.MaterialCode IN @MaterialCodes
                     AND t.FactoryCode  IN @FactoryCodes",
-                new { MaterialCodes = chunk, FactoryCodes = factoryCodes },
+                new { PlanVersionId = planVersionId, MaterialCodes = chunk, FactoryCodes = factoryCodes },
                 db: DatabaseId.APS, commandTimeout: 300));
 
         var facts = new List<InterplantTransitFact>(rows.Count);
@@ -4041,8 +4447,13 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// 装载厂间出荷指示（INTER_FACTORY_ORDER，SH级）事实。
     /// v1.0 口径：SH 本身是 Order（OrderType=SALES_ORDER + CustomerSegment='跨厂'，OrderNo=SH号），
     /// 单一 Supply 身份，量=Order.Quantity（指令总量），不再从 Transit/Received 视图归并两段。
+    ///
+    /// 🔴 必须按 <paramref name="planVersionId"/> 过滤：`[Order]` 按 PlanVersionId 分区，**同一张 SH
+    /// 在多个计划版本（夜间/手工各一次快照）里各存一份**（实测同一 OrderNo 同时存在于 PV2/PV5/PV24）。
+    /// 不过滤 ⇒ 本次 run 把同一批 SH 的**历史版本副本一并收进来**，供给凭空翻倍。
     /// </summary>
-    private async Task<IReadOnlyList<InterFactoryShipmentFact>> LoadInterFactoryShipmentsAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<InterFactoryShipmentFact>> LoadInterFactoryShipmentsAsync(
+        int planVersionId, CancellationToken ct)
     {
         var rows = await _connectionManager.QueryAsync<InterFactoryShipmentFact>(
             @"SELECT o.OrderNo         AS ShipmentNo,
@@ -4055,9 +4466,11 @@ public class PeggingOrchestrator : IPeggingOrchestrator
               FROM [Order] o
               INNER JOIN Material m ON m.Id = o.MaterialId
               INNER JOIN Factory  f ON f.Id = o.FactoryId
-              WHERE o.CustomerSegment = N'跨厂'
+              WHERE o.PlanVersionId = @PlanVersionId
+                AND o.CustomerSegment = N'跨厂'
                 AND o.OrderType = 'SALES_ORDER'
                 AND o.Quantity > 0",
+            new { PlanVersionId = planVersionId },
             db: DatabaseId.APS);
 
         return rows.ToList();
@@ -4819,12 +5232,12 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         //    ResourceId=14235 / 物料 5365690 / 部门 1031 / 工序 M102 —— 库内两行 RouteCode 分别为
         //    `ASSY` 与 `ASSY,组装`，**其余列全同**（Priority 同为 1）。`NormalizeToSingleRoute` 把两行都改写为
         //    RouteCode='DEFAULT' ⇒ 在 1号位 分组键 `EligibilityLookupKey(MaterialId, ProductionDepartmentId,
-        //    RouteCode, OperationCode)`（PhaseOneConstraintBuilder.cs:1108）下**塌进同一组**，
+        //    RouteCode, OperationCode)`（1号位 `PhaseOneConstraintBuilder`）下**塌进同一组**，
         //    组内按 ResourceId 建字典 ⇒ 同键 14235 撞字典。**重复不是查询查出来的，是归一化造出来的。**
         // 实测规模（2026-09-29，APS_Production，按 1号位 撞键口径 = 分组键 + ResourceId，COUNT(*)>1）：
         //    **5,533 组 / 98 个 ResourceId / 2,278 个物料** ⇒ 任何真实全量跑必崩；小规模测试撞不到
         //    （与上面 2100 参数溢出同一类「只有真规模才暴露」）。
-        // 为何工序没崩：紧接着 3714-3720 对 operations 做了同键去重 + Warning；**资质这一路当时漏了**。
+        // 为何工序没崩：紧接着对 `operations` 做的同键去重 + Warning（见 `[Pegging] RouteCode归一化: 工序去重`）；**资质这一路当时漏了**。
         // 故此处按**与 1号位 完全相同的撞键口径**去重（分组键 4 元 + ResourceId）。
         // 注：撞键两行在 1号位 可见字段上**逐列等同**（RouteCode 已同归一为 DEFAULT）⇒「取首条」无歧义、
         //    结果与取哪条无关。**不含 PathId**——1号位 分组键里没有它，带上它就会漏掉真正的撞键行。
@@ -5247,19 +5660,23 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// （而非全局 `MIN(StageSeq)`，PM §二十一.3）。一个 PI 若关联多个批次（异常情形），
     /// 取**字典序最小**者以保证结果稳定可复现——不取「最新」，避免同一份输入两次运行得到不同 Stage 顺序。
     /// </summary>
-    private async Task<Dictionary<string, string>> LoadBatchByPiAsync(List<string> piNos)
+    private async Task<Dictionary<string, string>> LoadBatchByPiAsync(List<string> piNos, int planVersionId)
     {
         var batchByPi = new Dictionary<string, string>(StringComparer.Ordinal);
         if (piNos.Count == 0)
             return batchByPi;
 
+        // 🔴 必须锁死本 Run 的 PlanVersionId：`MTS_InstructionNo` 同样是**跨 PlanVersionId 重复的业务键**，
+        // 不过滤会把历史版本副本上的批次一并捞进来。`OrderBomRequestLink.PlanVersionId` 实测与其
+        // `[Order].PlanVersionId` **逐行相等**（22,145 行零例外），故按 `o` 侧限定即可覆盖两侧。
         var rows = await QueryChunkedInAsync(piNos, chunk =>
             _connectionManager.QueryAsync<PiBatchRow>(
                 @"SELECT DISTINCT o.MTS_InstructionNo, r.BatchNo
                   FROM [Order] o
                   INNER JOIN OrderBomRequestLink r ON r.OrderId = o.Id
-                  WHERE o.MTS_InstructionNo IN @PiNos AND r.BatchNo IS NOT NULL",
-                new { PiNos = chunk },
+                  WHERE o.PlanVersionId = @PlanVersionId
+                    AND o.MTS_InstructionNo IN @PiNos AND r.BatchNo IS NOT NULL",
+                new { PlanVersionId = planVersionId, PiNos = chunk },
                 db: DatabaseId.APS));
 
         var ambiguous = 0;
@@ -5345,18 +5762,21 @@ public class PeggingOrchestrator : IPeggingOrchestrator
     /// <summary>
     /// ③c 连续份额路径身份回填（2026-10-09）：为每条 <c>IsContinuation</c> 需求补 <c>RouteCode / PathId</c>。
     ///
-    /// 为什么必须补：1号位 <c>PhaseTwoInitialScheduler.cs:310-325</c> 对 A/B 做**硬 Fail Closed** ——
+    /// <para><b>为什么必须补</b>：1号位 <c>PhaseTwoInitialScheduler</c> 对 A/B 做**硬 Fail Closed** ——
     /// <c>ContinuationKey / RouteCode / PathId / StartOperationCode / NoSplitMerge</c> 缺任一即记
     /// <c>UnscheduledDemandKeys</c> 且**不产任何 Task**；从 2号位 视角表现为「A/B 数量凭空消失」。
     /// 原实现只在 <c>CloneDemandSlice</c> 里从源需求**照抄**，而源需求这两个字段**从来没有被赋过值** ⇒
-    /// PV2 实测 284/284 片缺 RouteCode/PathId。
+    /// PV2 实测 284/284 片缺 RouteCode/PathId。</para>
     ///
-    /// 取值源 = **本次已归一化、即将随 <c>DomainSolveRequest</c> 交给 1号位的那份路由上下文**。
-    /// <c>NormalizeToSingleRoute</c> 后 V1 恒为 <c>DEFAULT / 1</c>；1号位 的 <c>RoutingGraph</c> 字典就是
-    /// 按这份载荷建的 ⇒ 给这个值才查得到图，**不是「猜唯一 Path」**（Q-3 禁的是图中存在多条时挑一条）。
+    /// <para><b>⚠ 这是临时桥接、不是终态</b>：取值源是上游刚被 <c>NormalizeToSingleRoute</c> 就地改写过的
+    /// 路由上下文 ⇒ 回填值**恒为 <c>DEFAULT / 1</c>**。冻结 <c>11_2号位v2.1</c> 执行红线 <b>Q1</b> 明令
+    /// 「<c>DEFAULT / 1</c> 不得作为归一化后的业务真值」「A/B 向 1号位 发送固定**真实** Route/Path，
+    /// **禁止预先压成 DEFAULT/1**」⇒ 本回填满足「1号位 查得到图、A/B 不丢单」，但**不满足 Q1 的真实值要求**。
+    /// 终态两条（① 1号位 <c>StageTimingNodeBuilder.GetRoutelessStages</c> 去 <c>RouteCode != "DEFAULT"</c>；
+    /// ② 5号位 按 slice 交付真实 RouteCode/PathId，Q-1008-1）完成后，本方法因「已带真值即跳过」而自动失效。</para>
     ///
-    /// 保守规则：该物料在本次载荷里存在 **0 条或多条不同 (RouteCode, PathId)** ⇒ **不填**、留 null，
-    /// 并计数告警 —— 保持 1号位 Fail Closed 原状，绝不静默挑一条。
+    /// <para><b>保守规则</b>：该物料在本次载荷里存在 <b>0 条或多条不同 (RouteCode, PathId)</b> ⇒ <b>不填</b>、
+    /// 留 null，并计数告警 —— 保持 1号位 Fail Closed 原状，绝不静默挑一条（Q-3 禁的是图中存在多条时挑一条）。</para>
     /// </summary>
     private static void FillContinuationRouteIdentities(
         PeggingResultVoucher voucher,
@@ -5376,6 +5796,8 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                 g => g.Select(o => (o.RouteCode, o.PathId)).Distinct().ToList());
 
         var filled = 0;
+        var filledFromAdapter = 0;   // 填的是归一化技术适配值（DEFAULT/1），非真实业务路径 —— 红线 Q1
+        var alreadyReal = 0;         // 已带真实值（5号位 按 slice 交付后走这里）
         var noRouting = 0;
         var ambiguous = 0;
         var samples = new List<string>(4);
@@ -5383,7 +5805,10 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         foreach (var demand in contDemands)
         {
             if (!string.IsNullOrEmpty(demand.RouteCode) && demand.PathId is not null)
-                continue;   // 已带（未来 5号位 按 slice 交付时不再覆盖）
+            {
+                alreadyReal++;   // 已带（5号位 按 slice 交付真实 RouteCode/PathId 后不再覆盖）
+                continue;
+            }
 
             if (!routesByMaterial.TryGetValue(demand.MaterialId, out var routes) || routes.Count == 0)
             {
@@ -5402,11 +5827,24 @@ public class PeggingOrchestrator : IPeggingOrchestrator
             demand.RouteCode = routes[0].RouteCode;
             demand.PathId = routes[0].PathId;
             filled++;
+            if (routes[0].RouteCode == "DEFAULT" && routes[0].PathId == 1)
+                filledFromAdapter++;
         }
 
         logger?.LogInformation(
-            "[Pegging][Continuity] A/B 路径身份回填: 片数={Total} 已填={Filled} 物料无路由={NoRouting} 多路径未填={Ambiguous}",
-            contDemands.Count, filled, noRouting, ambiguous);
+            "[Pegging][Continuity] A/B 路径身份回填: 片数={Total} 已填={Filled} 其中适配值={FromAdapter} 已带真值={AlreadyReal} 物料无路由={NoRouting} 多路径未填={Ambiguous}",
+            contDemands.Count, filled, filledFromAdapter, alreadyReal, noRouting, ambiguous);
+
+        // 红线 Q1 留痕：桥接期 A/B 路径身份是归一化技术适配值，**不是真实业务路径** ⇒ 必须可观测、不得静默。
+        // 该告警在「① 停归一化 + ② 5号位 按 slice 交付真实 RouteCode/PathId」两条都落地后自动消失。
+        if (filledFromAdapter > 0)
+            logger?.LogWarning(
+                "[Pegging][Continuity] ⚠ A/B 路径身份当前为**归一化技术适配值** {Adapter}/{Total} 片 " +
+                "（`NormalizeToSingleRoute` 产出的 DEFAULT/1，非真实业务路径）——违反冻结 `11_2号位v2.1` " +
+                "执行红线 Q1「DEFAULT/1 不得作为归一化后的业务真值」。桥接期行为：1号位 查得到图、A/B 不丢单；" +
+                "终态需 ① 1号位 `StageTimingNodeBuilder.GetRoutelessStages` 去 `RouteCode != \"DEFAULT\"` + " +
+                "② 5号位 按 slice 交付真实 RouteCode/PathId（Q-1008-1），二者齐备后本告警自动消失。",
+                filledFromAdapter, contDemands.Count);
 
         if (noRouting + ambiguous > 0)
             logger?.LogWarning(
@@ -5815,6 +6253,18 @@ public class PeggingOrchestrator : IPeggingOrchestrator
         public string?  OrderType        { get; set; }
         public string?  CustomerTier     { get; set; }
         public DateTime? IssueDate       { get; set; }
+        /// <summary>
+        /// 需求根，**按「有没有生产指示」分两类**（用户 2026-10-10 定盘）：
+        /// <list type="bullet">
+        ///   <item><b>有</b> <see cref="MTS_InstructionNo"/>（真 PI 行）：<c>max(Quantity − ISNULL(ReceivedQty,0), 0)</c>
+        ///     —— 与供给侧 PI 剩余同一条公式：Quantity 是**总量**、ReceivedQty 是**已完工入库量**，
+        ///     剩余才该进 APS（PV2 实测 PI 15526439：600/已收 480，MES 末道「捆包」=0 恰欠 120）。</item>
+        ///   <item><b>无</b> <see cref="MTS_InstructionNo"/>（无 PI 需求）：<c>Quantity</c> 原值，不走 PI 公式（PM R-17）。</item>
+        /// </list>
+        /// <b>不以 <see cref="OrderType"/> 判别</b>——它就是 <c>ZPQF</c> 的映射（ZPQF=1→SALES_ORDER、ZPQF=2→PRODUCTION_INSTRUCTION），
+        /// 而 ZPQF 的区分与我方无关（用户 2026-10-09 定盘）。
+        /// 取数见 <see cref="LoadOrdersForPeggingAsync"/> 的 SQL 注释。
+        /// </summary>
         public decimal  DemandQty        { get; set; }
         public DateTime DueDate          { get; set; }
         public string   UOM              { get; set; } = string.Empty;
@@ -5859,7 +6309,26 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                          o.OrderType,
                          o.CustomerTier,
                          o.IssueDate,
-                         o.Quantity    AS DemandQty,
+                         -- ── 需求根（用户 2026-10-10 定盘）：按「有没有生产指示」分两类 ──
+                         -- 判别「有 PI」**只看 `MTS_InstructionNo`**（与供给侧 `LoadPiRemainingFactsAsync` 同一条判据）：
+                         --   不看 `OrderType` / ZPQF、不看 OrderNo 前缀 —— `OrderType` 就是 `ZPQF` 的映射
+                         --   （`v_APS_SalesOrder`：`Cast(s.ZPQF AS NVARCHAR(50)) AS OrderType`；DDL：ZPQF=1→SALES_ORDER、
+                         --   ZPQF=2→PRODUCTION_INSTRUCTION），而 ZPQF 的区分**与我方无关**（用户 2026-10-09 定盘）。
+                         --
+                         -- 有生产指示（真 PI 行）：需求根 = PI 剩余 = max(Quantity − ISNULL(ReceivedQty,0), 0)，
+                         --   与供给侧 `LoadPiRemainingFactsAsync` 同一条公式。Quantity 是**总量**、ReceivedQty 是**已完工入库量**，
+                         --   原写法取裸 Quantity 会让需求多出 ReceivedQty，并经 L0 → BOM 子树全量放大（实测 PI 15526439：600 应 120）。
+                         -- 无生产指示（无 PI 需求）：需求根 = `Quantity` 原值 —— 不走 PI 公式（PM R-17「PI 公式只用于真 PI」）。
+                         --
+                         -- 库测（2026-10-10）：PV2 `[Order]` 22,144 行**全部有** `MTS_InstructionNo`（一行=一条需求，
+                         --   OrderNo 与 MTS_InstructionNo 各自唯一、零重复、零跨类型）⇒ 本次改动**数值零变化**，
+                         --   只是把「一律做减」收紧成「只对真 PI 行做减」，防上游将来给无 PI 行盖上假 ReceivedQty。
+                         CASE WHEN o.MTS_InstructionNo IS NOT NULL AND o.MTS_InstructionNo <> ''
+                                   AND o.Quantity - ISNULL(o.ReceivedQty, 0) > 0
+                              THEN o.Quantity - ISNULL(o.ReceivedQty, 0)
+                              WHEN o.MTS_InstructionNo IS NOT NULL AND o.MTS_InstructionNo <> ''
+                              THEN 0
+                              ELSE o.Quantity END AS DemandQty,
                          o.CustomerDueDate AS DueDate,
                          o.UOM,
                          m.ProductFamilyId,
@@ -6065,7 +6534,7 @@ public class PeggingOrchestrator : IPeggingOrchestrator
                 {
                     traversalStats.Record(node.MaterialCode, node.FactoryId);
 
-                    // 下级依赖需求 = Σ 父件净产出 × 配比（等效旧 L3800 AllocatedQty × edge.Qty）
+                    // 下级依赖需求 = Σ 父件净产出 × 配比（等效旧实现 `AllocatedQty × edge.Qty`）
                     decimal gross = level == 0
                         ? order.DemandQty
                         : node.ParentEdges.Sum(e =>

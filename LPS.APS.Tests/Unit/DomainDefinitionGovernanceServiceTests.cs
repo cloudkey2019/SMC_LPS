@@ -32,6 +32,11 @@ public class DomainDefinitionGovernanceServiceTests
         _repository
             .Setup(r => r.ExistsByKeyAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
+        // G2 默认：scope 组合唯一性通过（仅被测用例按需覆盖为 true）
+        _repository
+            .Setup(r => r.ExistsActiveScopeComboAsync(
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
 
         _service = new DomainDefinitionGovernanceService(
             _repository.Object,
@@ -186,5 +191,102 @@ public class DomainDefinitionGovernanceServiceTests
         _repository.Verify(r => r.SetActiveAsync(
             It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
         _auditRepo.Verify(r => r.AddAsync(It.IsAny<AuditLog>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ==================== G2：scope 组合唯一性（合法性校验职责） ====================
+
+    [Fact]
+    public async Task Create_同产品族已启用FAMILY域_抛异常()
+    {
+        // Arrange：同 ProductFamilyId=1 已存在启用 FAMILY 域（DomainKey 不同）→ 组合判重拒绝
+        _dataScopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Domain, "DOM2") }));
+        _repository
+            .Setup(r => r.ExistsActiveScopeComboAsync(
+                "FAMILY", 1, It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        // Act
+        var act = async () => await _service.CreateAsync(ValidFamilyInput("DOM2"), 1, "u1", CancellationToken.None);
+
+        // Assert：组合重复 → 拒绝，不落库、不审计
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*同一产品族仅允许一个启用域*");
+        _repository.Verify(r => r.CreateAsync(It.IsAny<DomainDefinition>(), It.IsAny<CancellationToken>()), Times.Never);
+        _auditRepo.Verify(r => r.AddAsync(It.IsAny<AuditLog>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_同工厂产品族已启用FACTORY_FAMILY域_抛异常()
+    {
+        // Arrange：FACTORY_FAMILY 同 FactoryId=9 + ProductFamilyId=2 已启用 → 拒绝
+        _repository.Setup(r => r.FactoryExistsAsync(9, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _dataScopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Domain, "DOM3") }));
+        _repository
+            .Setup(r => r.ExistsActiveScopeComboAsync(
+                "FACTORY_FAMILY", 2, 9, It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var input = new DomainDefinition
+        {
+            DomainKey = "DOM3",
+            DomainName = "厂族测试域",
+            ScopeType = "FACTORY_FAMILY",
+            ProductFamilyId = 2,
+            FactoryId = 9,
+        };
+
+        // Act
+        var act = async () => await _service.CreateAsync(input, 1, "u1", CancellationToken.None);
+
+        // Assert：组合重复 → 拒绝
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*同一工厂+产品族组合仅允许一个启用域*");
+        _repository.Verify(r => r.CreateAsync(It.IsAny<DomainDefinition>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Update_同组合已启用但排除自身_放行()
+    {
+        // Arrange：既有 Id=10（FAMILY, ProductFamilyId=1）更新，组合判重须排除自身 → 放行
+        _repository.Setup(r => r.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(ExistingDefinition(10, "DOM1"));
+        _dataScopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Domain, "DOM1") }));
+
+        var input = ValidFamilyInput("DOM1");
+        input.DomainName = "改名";
+
+        // Act
+        var result = await _service.UpdateAsync(10, input, 1, "u1", CancellationToken.None);
+
+        // Assert：放行更新（仓储 ExistsActiveScopeComboAsync 默认 false，排除自身）
+        result.DomainName.Should().Be("改名");
+        _repository.Verify(r => r.UpdateAsync(It.IsAny<DomainDefinition>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetActive_启用时同组合已启用_抛异常()
+    {
+        // Arrange：既有 Id=10 停用，启用时同 ProductFamilyId=1 已有其他启用域 → 拒绝启用
+        _repository.Setup(r => r.GetByIdAsync(10, It.IsAny<CancellationToken>())).ReturnsAsync(ExistingDefinition(10, "D1", isActive: false));
+        _dataScopeService
+            .Setup(s => s.ResolveScopeAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Domain, "D1") }));
+        _repository
+            .Setup(r => r.ExistsActiveScopeComboAsync(
+                "FAMILY", 1, It.IsAny<int?>(), 10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        // Act
+        var act = async () => await _service.SetActiveAsync(10, true, 1, "u1", CancellationToken.None);
+
+        // Assert：拒绝启用（排除自身 10 后仍有同组合启用域）
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        _repository.Verify(r => r.SetActiveAsync(
+            It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

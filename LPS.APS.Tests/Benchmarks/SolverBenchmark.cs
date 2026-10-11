@@ -228,6 +228,14 @@ public class SolverBenchmark
                         + $"  CloneShares={counters.CloneShares:N0}");
         _output.WriteLine($"        SlotSearch={counters.SlotSearches:N0}"
                         + $"  Phase4传播Task={counters.Phase4PropagatedTasks:N0}");
+        // V1_3 F-04：本 Run **实际生效**的技术预算快照（版本 / 取源 / 生效值）—— 逐 Run 可复现的证据。
+        _output.WriteLine($"  技术预算快照: version={counters.SolverBatchBudgetVersion ?? "(未登记)"}"
+                        + $"  source={counters.SolverBatchBudgetSource ?? "(未登记)"}"
+                        + $"  MaxOptimizationSplitCount={counters.SolverBatchBudgetMaxOptimizationSplitCount:N0}"
+                        + $"  MaxBatchCandidates={counters.SolverBatchBudgetMaxBatchCandidates:N0}");
+        _output.WriteLine($"  F-03门禁: PiLegalQty不可评估={counters.PiLegalQuantityGateUnevaluated:N0}"
+                        + $"  判越限FailClosed={counters.PiLegalQuantityGateBlocked:N0}"
+                        + $"  F-01回滚未命中={counters.OccupancyRollbackUnmatched:N0}");
 
         // ── **热点耗时排行**（谁最慢；含嵌套，故各项之和 > ΣPhase）──
         var hotspots = new (string Name, double Ms)[]

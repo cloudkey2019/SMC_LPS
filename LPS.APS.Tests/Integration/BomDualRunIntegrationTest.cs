@@ -27,24 +27,28 @@ namespace LPS.APS.Tests.Integration;
 /// 保护阈值采样（PM 0918-3 §八 指定 100/500/1000 反推阈值）：先跑 100 单探旧 DFS 的展开爆炸耗时，
 /// 再决定是否放开 500/1000。旧 DFS 对共享子件无记忆化会指数重遍历（2.6h 根因），故每档用 CancellationToken 兜底。
 /// </summary>
+/// <remarks>
+/// 【2026-10-10 修复】原写死 <c>PlanVersionId = 328</c>（FAMILY_X），该版本 09-29 清理后已不存在
+/// ⇒ 测试必失败。改为动态解析「订单最多的 PlanVersion」，口径见 <see cref="PlanVersionTestFixture"/>；
+/// 解析不到 = 环境态 ⇒ <c>Skip</c>。
+/// </remarks>
 public class BomDualRunIntegrationTest
 {
-    private const int PlanVersionId = 328;             // FAMILY_X（DomainKey 从库读，不硬编码）
     private const long StrategyProfileVersionId = 251L; // SP-DEMO-V2.0
 
     // 保护阈值采样第一档实测：100 单旧 DFS 在 15 分钟兜底内未收敛（DB 空闲、纯应用层 BOM 深递归 CPU），
     // 阈值下界 < 100。降档到 10 单先拿一份「能收敛」的 7 项报告 —— 碎片/重复展开是逐订单病态、非逐批次，
     // 10 单已足够对照新旧算法 I1-I3 + Δ + 硬指标。
-    [Fact(DisplayName = "双跑对照·保护阈值10单：旧DFS vs 新BFS 7项报告")]
+    [SkippableFact(DisplayName = "双跑对照·保护阈值10单：旧DFS vs 新BFS 7项报告")]
     public async Task DualRun_10Orders()
         => await RunDualAsync(orderCount: 10, timeout: TimeSpan.FromMinutes(20));
 
     // 保护阈值 500 / 1000 单：待 100 单探明旧 DFS 单档耗时后再放开（旧 DFS 无记忆化，中位病态单即可分钟级）。
-    // [Fact(DisplayName = "双跑对照·保护阈值500单")]
+    // [SkippableFact(DisplayName = "双跑对照·保护阈值500单")]
     // public async Task DualRun_500Orders()
     //     => await RunDualAsync(orderCount: 500, timeout: TimeSpan.FromMinutes(40));
     //
-    // [Fact(DisplayName = "双跑对照·保护阈值1000单")]
+    // [SkippableFact(DisplayName = "双跑对照·保护阈值1000单")]
     // public async Task DualRun_1000Orders()
     //     => await RunDualAsync(orderCount: 1000, timeout: TimeSpan.FromMinutes(80));
 
@@ -73,17 +77,25 @@ public class BomDualRunIntegrationTest
         var orchestrator = sp.GetRequiredService<IPeggingOrchestrator>();
         var conn = sp.GetRequiredService<DatabaseConnectionManager>();
 
+        var planVersionId = await PlanVersionTestFixture.ResolveMostPopulatedAsync(conn);
+        Skip.If(planVersionId is null, "库内无任何带订单的 PlanVersion —— 环境态，非缺陷。");
+        Skip.IfNot(await PlanVersionTestFixture.IsPublishedStrategyProfileVersionAsync(conn, StrategyProfileVersionId),
+            $"StrategyProfileVersion {StrategyProfileVersionId} 不存在或非 PUBLISHED —— 环境态，非缺陷。");
+        var pv = planVersionId!.Value;
+
         // DomainKey 以 PlanVersion 为准（PM 0902 终裁：禁止用 PlanVersionId/ScheduleRunId 冒充）
         var domainKey = await conn.QueryFirstOrDefaultAsync<string>(
-            "SELECT DomainKey FROM PlanVersion WHERE Id=@p", new { p = PlanVersionId }, db: DatabaseId.APS);
+            "SELECT DomainKey FROM PlanVersion WHERE Id=@p", new { p = pv }, db: DatabaseId.APS);
         var orderIds = (await conn.QueryAsync<long>(
             "SELECT TOP (@n) Id FROM [Order] WHERE PlanVersionId=@p ORDER BY Id",
-            new { n = orderCount, p = PlanVersionId }, db: DatabaseId.APS)).ToList();
+            new { n = orderCount, p = pv }, db: DatabaseId.APS)).ToList();
+
+        Skip.If(orderIds.Count == 0, $"PlanVersion {pv} 无订单 —— 环境态，非缺陷。");
 
         var now = DateTime.Now;
         var request = new PeggingExecutionRequest
         {
-            PlanVersionId      = PlanVersionId,
+            PlanVersionId      = pv,
             DomainKey          = domainKey ?? string.Empty,
             OrderIds           = orderIds,
             SnapshotAt         = now,
@@ -100,7 +112,7 @@ public class BomDualRunIntegrationTest
 
         using var cts = new CancellationTokenSource(timeout);
 
-        Console.WriteLine($"触发双跑 RunDualCompareAsync(PlanVersion={PlanVersionId}, Domain={request.DomainKey}, 订单={orderCount}, 硬超时={timeout.TotalMinutes}分) ...");
+        Console.WriteLine($"触发双跑 RunDualCompareAsync(PlanVersion={pv}, Domain={request.DomainKey}, 订单={orderCount}, 硬超时={timeout.TotalMinutes}分) ...");
         var dualTask = orchestrator.RunDualCompareAsync(request, cts.Token);
         // 硬超时（Task.WhenAny）替代协作取消：旧 DFS 无记忆化深递归不响应 ct（检查点只在订单边界），
         // 到点直接判「未收敛」作为保护阈值下界证据，避免被单订单病态递归无限拖住。
