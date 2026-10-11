@@ -869,12 +869,13 @@ public class GovernanceController : ControllerBase
     [HttpGet("domain-definition")]
     public async Task<IActionResult> GetDomainDefinitions(CancellationToken ct)
     {
-        var result = await _domainDefinitionService.GetAllAsync(ct);
+        // N-03（0号位 复审 v1.1）：用户态列表读——按操作人 Domain Scope 过滤（Global 全量 / 非 Global 仅授权域 / 无授权空列表）。
+        var result = await _domainDefinitionService.GetAllAsync(GetCurrentUserId(), ct);
         return Ok(ApiResponse<IReadOnlyList<DomainDefinition>>.Success(result));
     }
 
     /// <summary>当前有效域集合（G-D09/G-D10：2号位归域执行唯一事实源）</summary>
-    /// <remarks>开发者：3号位</remarks>
+    /// <remarks>开发者：3号位｜N-03：信任调用（2号位 归域执行唯一事实源），不做用户 Domain Scope 过滤——与用户态列表/详情严格分离。</remarks>
     [Authorize(Policy = PermissionCodes.PlanView)]
     [HttpGet("domain-definition/active")]
     public async Task<IActionResult> GetActiveDomainDefinitions(CancellationToken ct)
@@ -889,12 +890,21 @@ public class GovernanceController : ControllerBase
     [HttpGet("domain-definition/{id}")]
     public async Task<IActionResult> GetDomainDefinition(int id, CancellationToken ct)
     {
-        var entity = await _domainDefinitionService.GetByIdAsync(id, ct);
-        if (entity == null)
+        try
         {
-            return NotFound(ApiResponse.Fail(404, $"域定义不存在：{id}"));
+            // N-03（0号位 复审 v1.1）：用户态详情读——非 Global 用户目标域不在授权范围 → 403（防通过 Id 窥探他域定义）。
+            var entity = await _domainDefinitionService.GetByIdAsync(id, GetCurrentUserId(), ct);
+            if (entity == null)
+            {
+                return NotFound(ApiResponse.Fail(404, $"域定义不存在：{id}"));
+            }
+            return Ok(ApiResponse<DomainDefinition>.Success(entity));
         }
-        return Ok(ApiResponse<DomainDefinition>.Success(entity));
+        catch (ScopeViolationException ex)
+        {
+            _logger.LogWarning(ex, "域定义详情业务范围越权：{Id}", id);
+            return StatusCode(403, ApiResponse.Fail(403, ex.Message));
+        }
     }
 
     /// <summary>产品族下拉列表（Domain 维护页数据源；方案 A：前端 productFamilyId 数字选择器）</summary>
@@ -928,6 +938,11 @@ public class GovernanceController : ControllerBase
             var created = await _domainDefinitionService.CreateAsync(entity, GetCurrentUserId(), GetCurrentUserCode(), ct);
             return CreatedAtAction(nameof(GetDomainDefinition), new { id = created.Id }, ApiResponse<DomainDefinition>.Success(created));
         }
+        catch (ScopeViolationException ex)
+        {
+            _logger.LogWarning(ex, "域定义业务范围越权：{DomainKey}", entity.DomainKey);
+            return StatusCode(403, ApiResponse.Fail(403, ex.Message));
+        }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "域定义新建失败：{DomainKey}", entity.DomainKey);
@@ -945,6 +960,11 @@ public class GovernanceController : ControllerBase
         {
             var updated = await _domainDefinitionService.UpdateAsync(id, entity, GetCurrentUserId(), GetCurrentUserCode(), ct);
             return Ok(ApiResponse<DomainDefinition>.Success(updated));
+        }
+        catch (ScopeViolationException ex)
+        {
+            _logger.LogWarning(ex, "域定义业务范围越权：{Id}", id);
+            return StatusCode(403, ApiResponse.Fail(403, ex.Message));
         }
         catch (InvalidOperationException ex)
         {
@@ -964,6 +984,11 @@ public class GovernanceController : ControllerBase
             var updated = await _domainDefinitionService.SetActiveAsync(id, true, GetCurrentUserId(), GetCurrentUserCode(), ct);
             return Ok(ApiResponse<DomainDefinition>.Success(updated));
         }
+        catch (ScopeViolationException ex)
+        {
+            _logger.LogWarning(ex, "域定义业务范围越权：{Id}", id);
+            return StatusCode(403, ApiResponse.Fail(403, ex.Message));
+        }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "域定义启用失败：{Id}", id);
@@ -981,6 +1006,11 @@ public class GovernanceController : ControllerBase
         {
             var updated = await _domainDefinitionService.SetActiveAsync(id, false, GetCurrentUserId(), GetCurrentUserCode(), ct);
             return Ok(ApiResponse<DomainDefinition>.Success(updated));
+        }
+        catch (ScopeViolationException ex)
+        {
+            _logger.LogWarning(ex, "域定义业务范围越权：{Id}", id);
+            return StatusCode(403, ApiResponse.Fail(403, ex.Message));
         }
         catch (InvalidOperationException ex)
         {

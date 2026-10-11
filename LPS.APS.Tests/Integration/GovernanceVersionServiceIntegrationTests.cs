@@ -10,6 +10,7 @@ using LPS.APS.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using System.Text.Json;
 using System.Threading;
@@ -92,7 +93,7 @@ public class GovernanceVersionServiceIntegrationTests : IDisposable
         var options = new DbContextOptionsBuilder<AuthDbContext>()
             .UseSqlServer(authConn)
             .Options;
-        return new AuditLogRepository(new AuthDbContext(options));
+        return new AuditLogRepository(new AuthDbContext(options), NullLogger<AuditLogRepository>.Instance);
     }
 
     [SkippableFact]

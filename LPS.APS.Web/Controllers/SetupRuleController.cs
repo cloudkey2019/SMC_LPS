@@ -232,7 +232,7 @@ public class SetupRuleController : ControllerBase
 
         try
         {
-            var dto = await _setupRuleService.GetEligibilityAsync(operationCode.Trim(), materialIdValue, toMaterialIdValue, ct);
+            var dto = await _setupRuleService.GetEligibilityAsync(operationCode.Trim(), materialIdValue, toMaterialIdValue, GetCurrentUserId(), ct);
             return Ok(ApiResponse<OperationResourceEligibilityDto>.Success(dto));
         }
         catch (Exception ex)
@@ -269,7 +269,7 @@ public class SetupRuleController : ControllerBase
 
         try
         {
-            var dto = await _setupRuleService.GetDiffAsync(id, otherVersionId, ct);
+            var dto = await _setupRuleService.GetDiffAsync(id, otherVersionId, GetCurrentUserId(), ct);
             return Ok(ApiResponse<SetupDiffDto>.Success(dto));
         }
         catch (Exception ex)

@@ -8,6 +8,7 @@ using LPS.APS.Engine.Repositories.Governance;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 using DomainDefinition = LPS.APS.Core.Entities.APS.DomainDefinition;
@@ -54,8 +55,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         _service = new DomainDefinitionGovernanceService(
             _repo,
             _auditRepo,
-            _scopeService.Object,
-            loggerFactory.CreateLogger<DomainDefinitionGovernanceService>());
+            _scopeService.Object);
     }
 
     /// <summary>构造审计仓储（Auth 库 EF Core）</summary>
@@ -71,7 +71,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         var options = new DbContextOptionsBuilder<AuthDbContext>()
             .UseSqlServer(authConn)
             .Options;
-        return new AuditLogRepository(new AuthDbContext(options));
+        return new AuditLogRepository(new AuthDbContext(options), NullLogger<AuditLogRepository>.Instance);
     }
 
     /// <summary>插入测试用 ProductFamily / Factory 主数据（唯一 Code，Dispose 清理）</summary>
@@ -116,7 +116,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         created.IsActive.Should().BeTrue();
         created.SortOrder.Should().Be(100); // 未指定 SortOrder → 默认 100
 
-        var loaded = await _service.GetByIdAsync(created.Id);
+        var loaded = await _service.GetByIdAsync(created.Id, 1);
         loaded.Should().NotBeNull();
         loaded!.DomainKey.Should().Be(input.DomainKey);
         loaded.ScopeType.Should().Be("FAMILY");
@@ -238,7 +238,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         updated.DomainKey.Should().Be(created.DomainKey);
         updated.DomainName.Should().Be("改名后的测试域");
 
-        var loaded = await _service.GetByIdAsync(created.Id);
+        var loaded = await _service.GetByIdAsync(created.Id, 1);
         loaded!.DomainName.Should().Be("改名后的测试域");
     }
 
@@ -283,7 +283,7 @@ public class DomainDefinitionGovernanceIntegrationTests : IDisposable
         var act = async () => await _service.CreateAsync(input, 1, _uniqueSuffix);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*无权操作*");
+            .WithMessage("*业务范围越界*");
     }
 
     public void Dispose()

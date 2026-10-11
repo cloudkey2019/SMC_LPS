@@ -254,29 +254,20 @@ public class RunLifecycleService : IRunLifecycleService
         // P0-06：原子替换（同域既有 ACTIVE 归档 + 本版本置 ACTIVE，单事务）
         await _planVersionRepo.ReplaceActiveAsync(version, actor, activatedAt, ct);
 
-        try
+        // P1-05 + R-01（0号位 复审 v1.1，方案B）：审计写入失败由 AuditLogRepository.AddAsync 统一落对账日志
+        // （AuditReconcile：完整审计负载 JSON 供运维人工补录）并原样重抛——fail-closed 保持、可追溯性不降级。
+        await _auditLogRepository.AddAsync(new AuditLog
         {
-            await _auditLogRepository.AddAsync(new AuditLog
-            {
-                ActionCode = "ActivateCandidate",
-                EntityType = "PlanVersion",
-                EntityId = planVersionId.ToString(),
-                OldValue = PlanVersionComputedStatus,
-                NewValue = PlanVersionActiveStatus,
-                UserId = actorUserId,
-                UserCode = actor,
-                OccurredAt = activatedAt,
-                Remark = $"候选版本正式采用（CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）：{planVersionId}",
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            // 兜底（fail-closed，P1-05）：状态已落库而审计失败，保留对账键供后续对账，绝不静默丢审计
-            _logger.LogError(ex,
-                "候选激活审计写入失败（状态已落库、审计缺、需对账）：EntityType=PlanVersion EntityId={PlanVersionId} Before={OldStatus} After={NewStatus} Actor={Actor}",
-                planVersionId, PlanVersionComputedStatus, PlanVersionActiveStatus, actor);
-            throw;
-        }
+            ActionCode = "ActivateCandidate",
+            EntityType = "PlanVersion",
+            EntityId = planVersionId.ToString(),
+            OldValue = PlanVersionComputedStatus,
+            NewValue = PlanVersionActiveStatus,
+            UserId = actorUserId,
+            UserCode = actor,
+            OccurredAt = activatedAt,
+            Remark = $"候选版本正式采用（CANDIDATE → ACTIVE，原子替换同域旧 ACTIVE）：{planVersionId}",
+        }, ct);
     }
 
     /// <summary>P0-04：校验该 Candidate 已完成最小人工确认（存在 ConfirmCandidate 审计记录）</summary>

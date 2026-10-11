@@ -4,7 +4,6 @@ using Factory = LPS.APS.Core.Entities.APS.Factory;
 using AuditLog = LPS.APS.Core.Entities.Auth.AuditLog;
 using LPS.APS.Core.Authorization;
 using LPS.APS.Core.Interfaces;
-using Microsoft.Extensions.Logging;
 
 namespace LPS.APS.Application.Services;
 
@@ -38,28 +37,58 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
     private readonly IDomainDefinitionRepository _repository;
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly IDataScopeService _dataScopeService;
-    private readonly ILogger<DomainDefinitionGovernanceService> _logger;
 
     public DomainDefinitionGovernanceService(
         IDomainDefinitionRepository repository,
         IAuditLogRepository auditLogRepository,
-        IDataScopeService dataScopeService,
-        ILogger<DomainDefinitionGovernanceService> logger)
+        IDataScopeService dataScopeService)
     {
         _repository = repository;
         _auditLogRepository = auditLogRepository;
         _dataScopeService = dataScopeService;
-        _logger = logger;
     }
 
-    public Task<DomainDefinition?> GetByIdAsync(int id, CancellationToken ct = default)
-        => _repository.GetByIdAsync(id, ct);
+    public async Task<DomainDefinition?> GetByIdAsync(int id, int actorUserId, CancellationToken ct = default)
+    {
+        var entity = await _repository.GetByIdAsync(id, ct);
+        if (entity is null)
+        {
+            return null;
+        }
 
-    public Task<IReadOnlyList<DomainDefinition>> GetAllAsync(CancellationToken ct = default)
-        => _repository.GetAllAsync(null, ct);
+        // N-03（0号位 复审 v1.1）：非 Global 用户目标域不在授权 Domain 范围 → 403（防通过 Id 窥探他域定义）。
+        var allowedDomainKeys = await ResolveAllowedDomainKeysAsync(actorUserId, ct);
+        if (allowedDomainKeys is not null
+            && (allowedDomainKeys.Count == 0 || !allowedDomainKeys.Contains(entity.DomainKey)))
+        {
+            throw new ScopeViolationException(DataScopeTypes.Domain, entity.DomainKey);
+        }
+
+        return entity;
+    }
+
+    public async Task<IReadOnlyList<DomainDefinition>> GetAllAsync(int actorUserId, CancellationToken ct = default)
+    {
+        var all = await _repository.GetAllAsync(null, ct);
+
+        // N-03（0号位 复审 v1.1）：列表按操作人 Domain Scope 过滤——Global 不过滤；
+        // 非 Global 仅返回授权域；无任何 Domain 授权 → fail-closed 空列表（禁止先全量返回再前端隐藏）。
+        var allowedDomainKeys = await ResolveAllowedDomainKeysAsync(actorUserId, ct);
+        if (allowedDomainKeys is null)
+        {
+            return all;
+        }
+
+        if (allowedDomainKeys.Count == 0)
+        {
+            return new List<DomainDefinition>();
+        }
+
+        return all.Where(d => allowedDomainKeys.Contains(d.DomainKey)).ToList();
+    }
 
     public Task<IReadOnlyList<DomainDefinition>> GetActiveAsync(CancellationToken ct = default)
-        => _repository.GetActiveAsync(ct);
+        => _repository.GetActiveAsync(ct); // N-03：信任调用（2号位 归域执行唯一事实源，G-D09/G-D10），不过滤
 
     public Task<IReadOnlyList<ProductFamily>> GetProductFamiliesAsync(CancellationToken ct = default)
         => _repository.GetProductFamiliesAsync(ct);
@@ -140,12 +169,13 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         var existing = await _repository.GetByIdAsync(id, ct)
             ?? throw new InvalidOperationException($"域定义不存在：{id}");
 
+        // 越权校验先于幂等早返回（SCOPE-04）：防对授权范围外已启用/已停用域做幂等 enable/disable 探到 200+完整对象（Id 窥探）
+        await EnsureDomainAllowsAsync(actorUserId, existing.DomainKey, ct);
+
         if (existing.IsActive == isActive)
         {
             return existing; // 幂等：状态未变不重复审计
         }
-
-        await EnsureDomainAllowsAsync(actorUserId, existing.DomainKey, ct);
 
         // G2：启用时同样校验 scope 组合唯一性（排除自身），防止重复启用域
         if (isActive)
@@ -155,7 +185,9 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
 
         await _auditLogRepository.EnsureWritableAsync(ct);
 
-        await _repository.SetActiveAsync(id, isActive, operatedBy, DateTime.Now, ct);
+        await _repository.SetActiveAsync(
+            id, isActive, operatedBy, DateTime.Now,
+            existing.ScopeType, existing.ProductFamilyId, existing.FactoryId, ct);
 
         var updated = new DomainDefinition
         {
@@ -283,8 +315,32 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         var scope = await _dataScopeService.ResolveScopeAsync(actorUserId, ct);
         if (!scope.Allows(DataScopeTypes.Domain, domainKey))
         {
-            throw new InvalidOperationException($"当前用户（UserId={actorUserId}）无权操作 Domain={domainKey}（业务范围未授权）");
+            // N-04（0号位 复审 v1.1）：业务范围越权统一抛 ScopeViolationException（Web 层映射 403），
+            // 区别于参数/状态非法（InvalidOperationException → 400）。
+            throw new ScopeViolationException(DataScopeTypes.Domain, domainKey);
         }
+    }
+
+    /// <summary>
+    /// 解析当前用户在 Domain 维度可查询的域键集合（N-03，查询 Scope）。
+    /// Global → null（不过滤，全放行）；非 Global → 授权 DomainKey 集合（无任何 Domain 授权 → 空集合，fail-closed 空列表）。
+    /// 与写路径 <see cref="EnsureDomainAllowsAsync"/>（按目标对象单点校验）互补：查询侧按集合过滤。
+    /// </summary>
+    private async Task<IReadOnlySet<string>?> ResolveAllowedDomainKeysAsync(int actorUserId, CancellationToken ct)
+    {
+        var ctx = await _dataScopeService.ResolveScopeAsync(actorUserId, ct);
+        if (ctx.IsGlobal)
+        {
+            return null;
+        }
+
+        var domainKeys = ctx.GetValues(DataScopeTypes.Domain);
+        if (domainKeys is null || domainKeys.Count == 0)
+        {
+            return new HashSet<string>();
+        }
+
+        return domainKeys.ToHashSet();
     }
 
     private static string StatusOf(bool isActive) => isActive ? "Active" : "Inactive";
@@ -298,29 +354,20 @@ public class DomainDefinitionGovernanceService : IDomainDefinitionGovernanceServ
         string? operatedBy,
         CancellationToken ct)
     {
-        try
+        // P1-05 + R-01（0号位 复审 v1.1，方案B）：审计写入失败由 AuditLogRepository.AddAsync 统一落对账日志
+        // （AuditReconcile：完整审计负载 JSON 供运维人工补录）并原样重抛——fail-closed 保持、可追溯性不降级。
+        await _auditLogRepository.AddAsync(new AuditLog
         {
-            await _auditLogRepository.AddAsync(new AuditLog
-            {
-                ActionCode = operationType,
-                EntityType = EntityTypeDomainDefinition,
-                EntityId = entity.Id.ToString(),
-                VersionCode = null,
-                OldValue = beforeStatus,
-                NewValue = afterStatus,
-                UserId = actorUserId,
-                UserCode = operatedBy,
-                OccurredAt = DateTime.Now,
-                Remark = $"域定义 {entity.DomainKey}（{entity.ScopeType}）"
-            }, ct);
-        }
-        catch (Exception ex)
-        {
-            // P1-05：审计事实与状态变更同属关键治理写，审计失败即抛（fail-closed），绝不静默吞掉审计（可追溯性不降级）。
-            _logger.LogError(ex,
-                "域定义审计写入失败（状态已落库、审计缺、需对账）：OperationType={OperationType} EntityType={EntityType} EntityId={EntityId} Before={BeforeStatus} After={AfterStatus} OperatedBy={OperatedBy} DomainKey={DomainKey}",
-                operationType, EntityTypeDomainDefinition, entity.Id, beforeStatus, afterStatus, operatedBy, entity.DomainKey);
-            throw;
-        }
+            ActionCode = operationType,
+            EntityType = EntityTypeDomainDefinition,
+            EntityId = entity.Id.ToString(),
+            VersionCode = null,
+            OldValue = beforeStatus,
+            NewValue = afterStatus,
+            UserId = actorUserId,
+            UserCode = operatedBy,
+            OccurredAt = DateTime.Now,
+            Remark = $"域定义 {entity.DomainKey}（{entity.ScopeType}）"
+        }, ct);
     }
 }

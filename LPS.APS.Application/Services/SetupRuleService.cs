@@ -281,7 +281,8 @@ public sealed class SetupRuleService : ISetupRuleService
     }
 
     /// <inheritdoc />
-    public async Task<OperationResourceEligibilityDto> GetEligibilityAsync(string operationCode, int materialId, int? toMaterialId, CancellationToken ct = default)
+    public async Task<OperationResourceEligibilityDto> GetEligibilityAsync(
+        string operationCode, int materialId, int? toMaterialId, int actorUserId, CancellationToken ct = default)
     {
         var fromIds = await _masterDataLookup.GetEligibleResourceIdsAsync(operationCode, materialId, ct);
 
@@ -293,6 +294,36 @@ public sealed class SetupRuleService : ISetupRuleService
         }
 
         var resourceInfos = await _masterDataLookup.GetResourceInfosAsync(ids, ct);
+
+        // N-02（0号位 复审 v1.1）：资源资格按操作人 Department Scope 过滤——Global 不过滤；
+        // 非 Global 仅返回授权部门资源（资源部门码缺失/未授权 fail-closed 剔除）；无任何部门授权 → 空结果（ResourceCodes/Resources 一致为空）。
+        var allowedDeptCodes = await ResolveAllowedDeptCodesAsync(actorUserId, ct);
+        if (allowedDeptCodes is not null)
+        {
+            if (allowedDeptCodes.Count == 0)
+            {
+                return new OperationResourceEligibilityDto
+                {
+                    OperationCode = operationCode,
+                    ResourceCodes = new List<string>(),
+                    Resources = new List<OperationResourceInfoDto>(),
+                };
+            }
+
+            var filtered = new List<ResourceLookupInfo>(resourceInfos.Count);
+            foreach (var resource in resourceInfos)
+            {
+                var deptCode = await _masterDataLookup.GetDepartmentCodeAsync(resource.ProductionDepartmentId, ct);
+                if (string.IsNullOrWhiteSpace(deptCode) || !allowedDeptCodes.Contains(deptCode))
+                {
+                    continue;
+                }
+                filtered.Add(resource);
+            }
+            resourceInfos = filtered;
+            ids = resourceInfos.Select(r => r.Id).ToList();
+        }
+
         var resourceById = resourceInfos.ToDictionary(r => r.Id);
 
         var departmentIds = resourceInfos.Select(r => r.ProductionDepartmentId).Distinct().ToList();
@@ -365,7 +396,7 @@ public sealed class SetupRuleService : ISetupRuleService
     }
 
     /// <inheritdoc />
-    public async Task<SetupDiffDto> GetDiffAsync(long versionId, long otherVersionId, CancellationToken ct = default)
+    public async Task<SetupDiffDto> GetDiffAsync(long versionId, long otherVersionId, int actorUserId, CancellationToken ct = default)
     {
         if (versionId == otherVersionId)
         {
@@ -378,11 +409,20 @@ public sealed class SetupRuleService : ISetupRuleService
         var sourceRules = SetupTransitionRuleProjector.ExtractRules(sourceVersion.ContentSnapshotJson).Where(r => r.IsActive).ToList();
         var targetRules = SetupTransitionRuleProjector.ExtractRules(targetVersion.ContentSnapshotJson).Where(r => r.IsActive).ToList();
 
+        var codes = new MasterDataCodeCache(_masterDataLookup, ct);
+
+        // N-01（0号位 复审 v1.1）：版本 Diff 按操作人 Department Scope 过滤——Global 不过滤；
+        // 非 Global 仅统计授权部门规则的变更（Add/Mod/Remove 计数一致）；无任何部门授权 → fail-closed 空 Diff（三计数 0）。
+        var allowedDeptCodes = await ResolveAllowedDeptCodesAsync(actorUserId, ct);
+        if (allowedDeptCodes is not null)
+        {
+            sourceRules = await FilterByDeptScopeAsync(sourceRules, allowedDeptCodes, codes, ct);
+            targetRules = await FilterByDeptScopeAsync(targetRules, allowedDeptCodes, codes, ct);
+        }
+
         // 冻结校验器保证同版本内有效规则唯一键无重复（EXACT 七元组 / DEFAULT 五元组各自判重），ToDictionary 安全。
         var sourceByKey = sourceRules.ToDictionary(BuildKey);
         var targetByKey = targetRules.ToDictionary(BuildKey);
-
-        var codes = new MasterDataCodeCache(_masterDataLookup, ct);
 
         var added = new List<SetupRuleChangeDto>();
         var modified = new List<SetupRuleChangeDto>();
@@ -641,6 +681,34 @@ public sealed class SetupRuleService : ISetupRuleService
         }
 
         return deptCodes.ToHashSet();
+    }
+
+    /// <summary>
+    /// N-01：按 Department Scope 过滤规则列表（非 Global 调用方使用）——仅保留授权部门规则；
+    /// 无任何部门授权（allowedDeptCodes 为空集）→ fail-closed 空列表；规则部门码缺失/未授权 → 剔除。
+    /// </summary>
+    private async Task<List<SetupTransitionRule>> FilterByDeptScopeAsync(
+        IReadOnlyList<SetupTransitionRule> rules,
+        IReadOnlySet<string> allowedDeptCodes,
+        MasterDataCodeCache codes,
+        CancellationToken ct)
+    {
+        if (allowedDeptCodes.Count == 0)
+        {
+            return new List<SetupTransitionRule>();
+        }
+
+        var result = new List<SetupTransitionRule>(rules.Count);
+        foreach (var rule in rules)
+        {
+            var deptCode = await codes.DepartmentCodeAsync(rule.ProductionDepartmentId);
+            if (string.IsNullOrWhiteSpace(deptCode) || !allowedDeptCodes.Contains(deptCode))
+            {
+                continue;
+            }
+            result.Add(rule);
+        }
+        return result;
     }
 
     /// <summary>

@@ -75,19 +75,29 @@ public class SetupRuleServiceScopeTests
         ContentSnapshotJson = SetupTransitionRuleProjector.SetRules("{}", rules),
     };
 
-    /// <summary>EXACT 规则（Id = BuildRuleId(VersionId, seq)，部门可指定）。</summary>
-    private static SetupTransitionRule BuildExactRule(int seq, int departmentId) => new()
+    /// <summary>N-01 版本构建（可指定版本 Id，用于双版本 Diff 对比）。</summary>
+    private static RuleSetVersion BuildVersion(long id, params SetupTransitionRule[] rules) => new()
+    {
+        Id = id,
+        RuleSetId = 1,
+        VersionCode = id == VersionId ? "V1" : "V2",
+        Status = GovernanceVersionStatus.Draft,
+        ContentSnapshotJson = SetupTransitionRuleProjector.SetRules("{}", rules),
+    };
+
+    /// <summary>EXACT 规则（Id = BuildRuleId(VersionId, seq)，部门可指定；OperationCode/SetupMinutes 可覆盖用于 Diff 差异构造）。</summary>
+    private static SetupTransitionRule BuildExactRule(int seq, int departmentId, string operationCode = "OP10", decimal setupMinutes = 30) => new()
     {
         Id = SetupTransitionRuleProjector.BuildRuleId(VersionId, seq),
         RuleSetVersionId = VersionId,
         ProductionDepartmentId = departmentId,
         StageCode = "S1",
-        OperationCode = "OP10",
+        OperationCode = operationCode,
         ResourceId = 1,
         FromMaterialId = 100,
         ToMaterialId = 200,
         RuleType = SetupTransitionRuleType.Exact,
-        SetupMinutes = 30,
+        SetupMinutes = setupMinutes,
         IsActive = true,
         CreatedBy = "u",
         CreatedAt = DateTime.Now,
@@ -363,5 +373,165 @@ public class SetupRuleServiceScopeTests
         // Assert：放行返回 DTO
         result.Should().NotBeNull();
         result!.Id.Should().Be(ruleId);
+    }
+
+    // ---------- N-01/N-02（0号位 复审 v1.1）GetDiff / GetEligibility Department Scope ----------
+
+    /// <summary>N-02 资源资格主数据：RES-1 属 DEPT-A(10)、RES-2 属 DEPT-B(20)；Operation=OP10 物料 100 合法资源 {1,2}。</summary>
+    private void SetupEligibilityData()
+    {
+        _masterData.Setup(m => m.GetEligibleResourceIdsAsync("OP10", 100, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { 1, 2 });
+        _masterData.Setup(m => m.GetResourceInfosAsync(It.IsAny<IReadOnlyCollection<int>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[]
+            {
+                new ResourceLookupInfo { Id = 1, ResourceCode = "RES-1", ResourceName = "设备一", ProductionDepartmentId = DeptInScope },
+                new ResourceLookupInfo { Id = 2, ResourceCode = "RES-2", ResourceName = "设备二", ProductionDepartmentId = DeptOldOutOfScope },
+            });
+        _masterData.Setup(m => m.GetDepartmentInfosAsync(It.IsAny<IReadOnlyCollection<int>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[]
+            {
+                new DepartmentLookupInfo { Id = DeptInScope, DeptCode = "DEPT-A", StageCode = "S1" },
+                new DepartmentLookupInfo { Id = DeptOldOutOfScope, DeptCode = "DEPT-B", StageCode = "S1" },
+            });
+    }
+
+    [Fact]
+    public async Task GetEligibilityAsync_非Global仅返回授权部门资源()
+    {
+        // Arrange：RES-1 属 DEPT-A（授权）、RES-2 属 DEPT-B（越权）；授权仅 DEPT-A
+        SetupDepartmentCodeLookup();
+        SetupEligibilityData();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Department, "DEPT-A") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetEligibilityAsync("OP10", 100, null, ActorUserId, CancellationToken.None);
+
+        // Assert：仅授权部门资源回显，RES-2 被剔除（ResourceCodes/Resources 口径一致）
+        result.ResourceCodes.Should().BeEquivalentTo(new[] { "RES-1" });
+        result.Resources.Should().ContainSingle();
+        result.Resources[0].ResourceCode.Should().Be("RES-1");
+        result.Resources[0].DepartmentCode.Should().Be("DEPT-A");
+    }
+
+    [Fact]
+    public async Task GetEligibilityAsync_非Global无部门授权_返回空结果()
+    {
+        // Arrange：仅 Factory 授权（无 Department）
+        SetupDepartmentCodeLookup();
+        SetupEligibilityData();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Factory, "BJ") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetEligibilityAsync("OP10", 100, null, ActorUserId, CancellationToken.None);
+
+        // Assert：fail-closed 空结果（禁止先全量再前端隐藏）
+        result.ResourceCodes.Should().BeEmpty();
+        result.Resources.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetEligibilityAsync_Global返回全量()
+    {
+        // Arrange：Global 不过滤
+        SetupDepartmentCodeLookup();
+        SetupEligibilityData();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.Global);
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetEligibilityAsync("OP10", 100, null, ActorUserId, CancellationToken.None);
+
+        // Assert：RES-1 与 RES-2 均返回
+        result.ResourceCodes.Should().HaveCount(2);
+        result.Resources.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task GetDiffAsync_非Global仅统计授权部门变更()
+    {
+        // Arrange：源/目标版本差异含 DEPT-A（rule1 不变 + rule3 新增）与 DEPT-B（rule2 修改）；授权仅 DEPT-A
+        _versionRepo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(2,
+                BuildExactRule(1, DeptInScope, "OP10", 30),
+                BuildExactRule(2, DeptOldOutOfScope, "OP10", 30)));
+        _versionRepo.Setup(r => r.GetByIdAsync(3, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(3,
+                BuildExactRule(1, DeptInScope, "OP10", 30),
+                BuildExactRule(2, DeptOldOutOfScope, "OP10", 45),
+                BuildExactRule(3, DeptInScope, "OP20", 40)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Department, "DEPT-A") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetDiffAsync(2, 3, ActorUserId, CancellationToken.None);
+
+        // Assert：仅授权部门变更入 Diff——新增 OP20（DEPT-A）、DEPT-B 的修改不计数（Add/Mod/Remove 口径一致）
+        result.AddedCount.Should().Be(1);
+        result.ModifiedCount.Should().Be(0);
+        result.RemovedCount.Should().Be(0);
+        result.SetupRuleChanges.Added.Should().ContainSingle(a => a.OperationCode == "OP20");
+        result.SetupRuleChanges.Modified.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetDiffAsync_非Global无部门授权_返回空Diff()
+    {
+        // Arrange：仅 Factory 授权（无 Department）
+        _versionRepo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(2, BuildExactRule(1, DeptInScope)));
+        _versionRepo.Setup(r => r.GetByIdAsync(3, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(3, BuildExactRule(1, DeptInScope), BuildExactRule(2, DeptOldOutOfScope)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.FromPolicies(new[] { (DataScopeTypes.Factory, "BJ") }));
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetDiffAsync(2, 3, ActorUserId, CancellationToken.None);
+
+        // Assert：fail-closed 空 Diff（三计数 0，禁止先全量再前端隐藏）
+        result.AddedCount.Should().Be(0);
+        result.ModifiedCount.Should().Be(0);
+        result.RemovedCount.Should().Be(0);
+        result.SetupRuleChanges.Added.Should().BeEmpty();
+        result.SetupRuleChanges.Modified.Should().BeEmpty();
+        result.SetupRuleChanges.Removed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetDiffAsync_Global返回全量差异()
+    {
+        // Arrange：Global 不过滤——DEPT-A 新增 + DEPT-B 修改均入 Diff
+        _versionRepo.Setup(r => r.GetByIdAsync(2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(2,
+                BuildExactRule(1, DeptInScope, "OP10", 30),
+                BuildExactRule(2, DeptOldOutOfScope, "OP10", 30)));
+        _versionRepo.Setup(r => r.GetByIdAsync(3, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildVersion(3,
+                BuildExactRule(1, DeptInScope, "OP10", 30),
+                BuildExactRule(2, DeptOldOutOfScope, "OP10", 45),
+                BuildExactRule(3, DeptInScope, "OP20", 40)));
+        SetupDepartmentCodeLookup();
+        _dataScope.Setup(d => d.ResolveScopeAsync(ActorUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DataScopeContext.Global);
+        var svc = CreateService();
+
+        // Act
+        var result = await svc.GetDiffAsync(2, 3, ActorUserId, CancellationToken.None);
+
+        // Assert：全量差异——新增 OP20（DEPT-A）+ 修改 OP10（DEPT-B）
+        result.AddedCount.Should().Be(1);
+        result.ModifiedCount.Should().Be(1);
+        result.RemovedCount.Should().Be(0);
+        result.SetupRuleChanges.Added.Should().ContainSingle(a => a.OperationCode == "OP20");
+        result.SetupRuleChanges.Modified.Should().ContainSingle(m => m.OperationCode == "OP10");
     }
 }

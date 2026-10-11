@@ -12,13 +12,25 @@ namespace LPS.APS.Core.Interfaces;
 /// <remarks>开发者：3号位</remarks>
 public interface IDomainDefinitionGovernanceService
 {
-    /// <summary>按主键查询域定义</summary>
-    Task<DomainDefinition?> GetByIdAsync(int id, CancellationToken ct = default);
+    /// <summary>
+    /// 按主键查询域定义（用户态详情读）。
+    /// N-03（0号位 复审 v1.1）：非 Global 用户目标域不在授权 Domain 范围 → 抛 <see cref="Exceptions.ScopeViolationException"/>（403，
+    /// 防通过 Id 窥探他域定义）。<paramref name="actorUserId"/> 为受信主体（Controller 从登录身份取）。
+    /// </summary>
+    Task<DomainDefinition?> GetByIdAsync(int id, int actorUserId, CancellationToken ct = default);
 
-    /// <summary>查询全部域定义（含停用）</summary>
-    Task<IReadOnlyList<DomainDefinition>> GetAllAsync(CancellationToken ct = default);
+    /// <summary>
+    /// 查询全部域定义（含停用，用户态列表读）。
+    /// N-03（0号位 复审 v1.1）：列表按操作人 Domain Scope 过滤——Global 不过滤；非 Global 仅返回授权域；
+    /// 无任何 Domain 授权 → fail-closed 空列表。<paramref name="actorUserId"/> 为受信主体。
+    /// </summary>
+    Task<IReadOnlyList<DomainDefinition>> GetAllAsync(int actorUserId, CancellationToken ct = default);
 
-    /// <summary>查询当前有效（IsActive=1）域集合</summary>
+    /// <summary>
+    /// 查询当前有效（IsActive=1）域集合。
+    /// N-03（0号位 复审 v1.1）：信任调用（2号位 归域执行唯一事实源，G-D09/G-D10）——不做用户 Domain Scope 过滤，
+    /// 与用户态列表/详情（<see cref="GetAllAsync(int, CancellationToken)"/> / <see cref="GetByIdAsync(int, int, CancellationToken)"/>）严格分离。
+    /// </summary>
     Task<IReadOnlyList<DomainDefinition>> GetActiveAsync(CancellationToken ct = default);
 
     /// <summary>产品族下拉列表（Domain 维护页数据源）</summary>

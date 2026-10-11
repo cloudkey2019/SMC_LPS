@@ -40,14 +40,24 @@ public interface ISetupRuleService
     /// <summary>删除规则（#4 / #8，按 Id 硬删）</summary>
     Task DeleteAsync(long id, int actorUserId, string actorUserCode, CancellationToken cancellationToken = default);
 
-    /// <summary>工序资源资格查询（#9：当前 Operation 合法资源 ∩ 前后产品合法设备交集，Code 回带）</summary>
-    Task<OperationResourceEligibilityDto> GetEligibilityAsync(string operationCode, int materialId, int? toMaterialId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 工序资源资格查询（#9：当前 Operation 合法资源 ∩ 前后产品合法设备交集，Code 回带）。
+    /// N-02（0号位 复审 v1.1）：资源资格按操作人 Department Scope 过滤——Global 不过滤；非 Global 仅返回授权部门资源
+    /// （资源部门码缺失/未授权 fail-closed 剔除）；无任何部门授权 → 空结果（ResourceCodes/Resources 一致为空）。
+    /// <paramref name="actorUserId"/> 为受信主体（Controller 从登录身份取）。
+    /// </summary>
+    Task<OperationResourceEligibilityDto> GetEligibilityAsync(string operationCode, int materialId, int? toMaterialId, int actorUserId, CancellationToken cancellationToken = default);
 
     /// <summary>规则集版本列表（#11；可选按规则集/状态过滤，Status 为治理六态原文）</summary>
     Task<IReadOnlyList<SetupRuleSetVersionDto>> ListRuleSetVersionsAsync(long? ruleSetId, string? status, CancellationToken cancellationToken = default);
 
-    /// <summary>版本 Setup 换型规则差异（#12：added/modified/removed + 计数 + 目标版本发布态）</summary>
-    Task<SetupDiffDto> GetDiffAsync(long versionId, long otherVersionId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// 版本 Setup 换型规则差异（#12：added/modified/removed + 计数 + 目标版本发布态）。
+    /// N-01（0号位 复审 v1.1）：差异按操作人 Department Scope 过滤——Global 不过滤；非 Global 仅统计授权部门规则变更
+    /// （Add/Mod/Remove 计数一致）；无任何部门授权 → fail-closed 空 Diff（三计数 0）。
+    /// <paramref name="actorUserId"/> 为受信主体（Controller 从登录身份取）。
+    /// </summary>
+    Task<SetupDiffDto> GetDiffAsync(long versionId, long otherVersionId, int actorUserId, CancellationToken cancellationToken = default);
 
     /// <summary>发布规则集版本（#13：发布前 Setup 冲突全量预校验 → 治理版本状态机推进）</summary>
     Task PublishAsync(long versionId, string? changeReason, int actorUserId, string actorUserCode, CancellationToken cancellationToken = default);
